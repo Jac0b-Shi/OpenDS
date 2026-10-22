@@ -1,6 +1,8 @@
 version: '1.0'
 name: opends-gitee-release
 displayName: OpenDS 签名发行版同步
+ref_variable:
+  - OPENDS_GITEE_TOKEN
 triggers:
   push:
     tags:
@@ -23,5 +25,7 @@ stages:
         displayName: 复用已发布且通过签名校验的产物
         pythonVersion: '3.9'
         commands:
-          - command -v git && command -v gpg
-          - python3 scripts/mirror_gitee_release.py
+          - |
+            set -eu
+            cd "${WORKSPACE:?Gitee Go WORKSPACE is not set}"
+            bash scripts/Run-GiteeRelease.sh
