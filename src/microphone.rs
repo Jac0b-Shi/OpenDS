@@ -5,10 +5,12 @@ use crate::{
     opus::LibOpusDecoder,
 };
 use std::collections::VecDeque;
+use std::sync::Arc;
 pub struct Microphone<D = LibOpusDecoder> {
     decoder: D,
     pending: VecDeque<i16>,
     gain: Gain,
+    test_capture: Option<Arc<crate::audio_test_source::SourceCapture>>,
 }
 impl Microphone {
     pub fn new() -> Option<Self> {
@@ -16,10 +18,14 @@ impl Microphone {
             decoder: LibOpusDecoder::new()?,
             pending: VecDeque::with_capacity(960),
             gain: Gain::default(),
+            test_capture: None,
         })
     }
 }
 impl<D: OpusDecoder> Microphone<D> {
+    pub fn set_test_capture(&mut self, capture: Arc<crate::audio_test_source::SourceCapture>) {
+        self.test_capture = Some(capture);
+    }
     pub fn set_gain_db(&mut self, db: u8) {
         self.gain.set(db);
     }
@@ -43,6 +49,9 @@ impl<D: OpusDecoder> Microphone<D> {
         }
         observe(&pcm[..n], false);
         self.gain.apply(&mut pcm[..n]);
+        if let Some(capture) = &self.test_capture {
+            capture.push(&pcm[..n]);
+        }
         let mut forwarded = [0i16; OPUS_FRAMES + 48];
         let mut count = 0;
         append_frames(&mut self.pending, &pcm[..n], &mut |frame| {
@@ -145,6 +154,7 @@ mod tests {
             decoder: Decoder,
             pending: VecDeque::new(),
             gain: Gain::default(),
+            test_capture: None,
         };
         let mut observed = Vec::new();
         let mut sends = 0;
@@ -174,6 +184,7 @@ mod tests {
             decoder: Decoder,
             pending: VecDeque::new(),
             gain: Gain::default(),
+            test_capture: None,
         };
         let mut calls = 0;
         assert!(mic.decode_observed(
@@ -193,6 +204,7 @@ mod tests {
             decoder: Decoder,
             pending: VecDeque::new(),
             gain: Gain::default(),
+            test_capture: None,
         };
         mic.set_gain_db(24);
         let mut observations = Vec::new();
@@ -214,6 +226,39 @@ mod tests {
         assert!(observations[1].1);
         assert_eq!(observations[1].0, sent);
         assert!((sent[399] - 6340).abs() < 3); // +24 dB = 15.85x
+    }
+    #[test]
+    fn manual_test_tap_matches_post_gain_pcm_before_any_usb_rejection() {
+        let capture = Arc::new(crate::audio_test_source::SourceCapture::default());
+        let mut mic = Microphone {
+            decoder: Decoder,
+            pending: VecDeque::new(),
+            gain: Gain::default(),
+            test_capture: Some(capture.clone()),
+        };
+        mic.set_gain_db(29);
+        let recording = capture.begin();
+        let mut sent = Vec::new();
+        assert!(mic.decode_observed(
+            &[0; 71],
+            false,
+            |_, _| {},
+            |frame| {
+                sent.extend(
+                    frame
+                        .chunks_exact(2)
+                        .map(|s| i16::from_le_bytes([s[0], s[1]])),
+                );
+                true
+            }
+        ));
+        let captured = recording.finish();
+        assert_eq!(captured.pcm, sent);
+        assert_eq!(captured.dropped, 0);
+        let recording = capture.begin();
+        assert!(mic.decode(&[0; 71], |_| false));
+        // Even a closed/rejecting USB endpoint leaves a complete BT reference.
+        assert_eq!(recording.finish().pcm.len(), 480 * 2);
     }
     #[test]
     fn gain_bypass_is_exact_and_plosive_limiter_recovers() {

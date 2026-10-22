@@ -1,3 +1,4 @@
+use crate::audio_test_source::{Captured, SourceCapture};
 use std::{
     ptr::null_mut,
     sync::{
@@ -19,18 +20,26 @@ pub struct Status {
     pub message: String,
     pub busy: bool,
     pub recorded: bool,
+    pub source_recorded: bool,
 }
 struct State {
     status: Status,
     pcm: Arc<[i16]>,
+    source_pcm: Arc<[i16]>,
 }
 pub struct Test {
     shared: Arc<Mutex<State>>,
     cancel: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    source: Arc<SourceCapture>,
 }
 impl Default for Test {
     fn default() -> Self {
+        Self::with_source(Arc::new(SourceCapture::default()))
+    }
+}
+impl Test {
+    pub fn with_source(source: Arc<SourceCapture>) -> Self {
         Self {
             shared: Arc::new(Mutex::new(State {
                 status: Status {
@@ -38,9 +47,11 @@ impl Default for Test {
                     ..Default::default()
                 },
                 pcm: Arc::from([]),
+                source_pcm: Arc::from([]),
             })),
             cancel: Arc::new(AtomicBool::new(false)),
             worker: None,
+            source,
         }
     }
 }
@@ -49,6 +60,7 @@ fn status(shared: &Mutex<State>, message: impl Into<String>, busy: bool) {
         s.status.message = message.into();
         s.status.busy = busy;
         s.status.recorded = !s.pcm.is_empty();
+        s.status.source_recorded = !s.source_pcm.is_empty();
     }
 }
 fn countdown(shared: &Mutex<State>, cancel: &AtomicBool) -> bool {
@@ -72,6 +84,7 @@ impl Test {
                 message: "处理中…".into(),
                 busy: true,
                 recorded: false,
+                source_recorded: false,
             })
     }
     pub fn cancel(&mut self, clear: bool) {
@@ -79,7 +92,9 @@ impl Test {
         if let Ok(mut s) = self.shared.lock() {
             if clear {
                 s.pcm = Arc::from([]);
+                s.source_pcm = Arc::from([]);
                 s.status.recorded = false;
+                s.status.source_recorded = false;
             }
         }
         if self.worker.as_ref().is_none_or(|w| w.is_finished()) {
@@ -90,6 +105,12 @@ impl Test {
         }
     }
     pub fn start(&mut self, record: bool) -> Result<(), String> {
+        self.start_job(record, false)
+    }
+    pub fn play_source(&mut self) -> Result<(), String> {
+        self.start_job(false, true)
+    }
+    fn start_job(&mut self, record: bool, source_replay: bool) -> Result<(), String> {
         if self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
             return Err("请先取消或等待当前测试结束".into());
         }
@@ -99,13 +120,20 @@ impl Test {
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = self.cancel.clone();
         let shared = self.shared.clone();
+        let source = self.source.clone();
         let replay = if record {
             if let Ok(mut s) = shared.lock() {
                 s.pcm = Arc::from([]);
+                s.source_pcm = Arc::from([]);
             }
             None
         } else {
-            Some(shared.lock().map_err(|_| "录音不可用")?.pcm.clone())
+            let s = shared.lock().map_err(|_| "录音不可用")?;
+            Some(if source_replay {
+                s.source_pcm.clone()
+            } else {
+                s.pcm.clone()
+            })
         };
         if replay.as_ref().is_some_and(|p| p.is_empty()) {
             return Err("请先录制一段声音".into());
@@ -114,8 +142,10 @@ impl Test {
             &shared,
             if record {
                 "准备开始 · 3"
+            } else if source_replay {
+                "正在回听蓝牙端 · 默认播放设备"
             } else {
-                "正在回听 · 默认播放设备"
+                "正在回听 USB 端 · 默认播放设备"
             },
             true,
         );
@@ -125,7 +155,7 @@ impl Test {
                 .spawn(move || {
                     let result = if record {
                         if countdown(&shared, &cancel) {
-                            capture(&shared, &cancel).map(Some)
+                            capture(&shared, &cancel, &source).map(Some)
                         } else {
                             Ok(None)
                         }
@@ -137,11 +167,14 @@ impl Test {
                         return;
                     }
                     match result {
-                        Ok(Some(pcm)) => {
+                        Ok(Some((pcm, source))) => {
                             let (zero_frames, longest, interior) = zero_runs(&pcm);
                             crate::logging::record(&format!(
                                 "麦克风测试：采集 {} 帧；双声道全零 {} 帧，最长 {} 帧，内部至少 1ms 的零段 {} 个",
                                 pcm.len() / 2, zero_frames, longest, interior));
+                            crate::logging::record(&format!(
+                                "麦克风对照：蓝牙端 {} 帧，最长包间隔 {:.1}ms，诊断队列丢包 {}；USB 端 {} 帧",
+                                source.pcm.len() / 2, source.longest_gap_ms, source.dropped, pcm.len() / 2));
                             let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                             let seconds = pcm.len() as f32 / (RATE * 2) as f32;
                             if let Ok(mut s) = shared.lock() {
@@ -149,6 +182,7 @@ impl Test {
                                     return;
                                 }
                                 s.pcm = pcm.into();
+                                s.source_pcm = source.pcm.into();
                                 s.status = Status {
                                     message: format!(
                                         "录制 {seconds:.1} 秒 · 峰值 {:.1}%{}",
@@ -156,11 +190,12 @@ impl Test {
                                         if peak == 0 {
                                             " · 未录到声音，请检查静音与麦克风设置"
                                         } else {
-                                            " · 可点击回听"
+                                            " · 请分别回听两端"
                                         }
                                     ),
                                     busy: false,
                                     recorded: !s.pcm.is_empty(),
+                                    source_recorded: !s.source_pcm.is_empty(),
                                 };
                             }
                         }
@@ -234,7 +269,11 @@ fn check(code: u32, operation: &str) -> Result<(), String> {
         ))
     }
 }
-fn capture(shared: &Mutex<State>, cancel: &AtomicBool) -> Result<Vec<i16>, String> {
+fn capture(
+    shared: &Mutex<State>,
+    cancel: &AtomicBool,
+    source: &SourceCapture,
+) -> Result<(Vec<i16>, Captured), String> {
     unsafe {
         let mut ids = Vec::new();
         for id in 0..waveInGetNumDevs() {
@@ -278,6 +317,7 @@ fn capture(shared: &Mutex<State>, cancel: &AtomicBool) -> Result<Vec<i16>, Strin
             waveInAddBuffer(handle, &mut *device.header, device.header_size()),
             "提交录音缓冲",
         )?;
+        let recording = source.begin();
         check(waveInStart(handle), "启动录音")?;
         let started = Instant::now();
         while !device.done() && !cancel.load(Acquire) {
@@ -302,7 +342,7 @@ fn capture(shared: &Mutex<State>, cancel: &AtomicBool) -> Result<Vec<i16>, Strin
         pcm.truncate(count);
         // Header is unprepared before the backing allocation can be released.
         drop(device);
-        Ok(pcm)
+        Ok((pcm, recording.finish()))
     }
 }
 fn playback(pcm: Arc<[i16]>, cancel: &AtomicBool) -> Result<(), String> {
@@ -419,6 +459,7 @@ mod tests {
         assert!(test.worker.is_none());
         assert!(!test.snapshot().recorded);
         assert!(test.start(false).is_err());
+        assert!(test.play_source().is_err());
         assert!(test.worker.is_none());
     }
     #[test]
@@ -427,5 +468,6 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         assert!(!countdown(&test.shared, &cancelled));
         assert!(test.shared.lock().unwrap().pcm.is_empty());
+        assert!(test.shared.lock().unwrap().source_pcm.is_empty());
     }
 }

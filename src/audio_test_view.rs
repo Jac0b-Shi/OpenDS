@@ -13,7 +13,7 @@ fn wide(s: &str) -> Vec<u16> {
 }
 struct State {
     hwnd: HWND,
-    controls: [HWND; 6],
+    controls: [HWND; 7],
     font: HFONT,
     test: Test,
     monitor: Arc<Monitor>,
@@ -34,9 +34,9 @@ impl Dialog {
             RegisterClassW(&wc);
             let state = Box::new(RefCell::new(State {
                 hwnd: null_mut(),
-                controls: [null_mut(); 6],
+                controls: [null_mut(); 7],
                 font: null_mut(),
-                test: Test::default(),
+                test: Test::with_source(monitor.mic_test_capture.clone()),
                 monitor,
             }));
             let ptr = &*state as *const RefCell<State>;
@@ -80,16 +80,16 @@ impl Dialog {
             for (i, (class, text, x, y, w, h)) in [
                 (
                     "STATIC",
-                    "倒数 3 秒后录音 5 秒；录音仅暂存在内存中。",
+                    "倒数 3 秒后录音 5 秒，可分别回听蓝牙端和 USB 端。\r\n录音仅暂存在内存，关闭窗口即清除。",
                     20,
                     22,
                     520,
                     38,
                 ),
-                ("BUTTON", "录音 5 秒", 20, 72, 135, 34),
-                ("BUTTON", "取消", 168, 72, 80, 34),
-                ("BUTTON", "回听", 262, 72, 100, 34),
-                ("BUTTON", "清除录音", 376, 72, 130, 34),
+                ("BUTTON", "录音 5 秒", 20, 72, 110, 34),
+                ("BUTTON", "取消", 138, 72, 65, 34),
+                ("BUTTON", "回听 USB 端", 319, 72, 110, 34),
+                ("BUTTON", "清除录音", 437, 72, 100, 34),
                 (
                     "STATIC",
                     "回听使用系统默认播放设备。关闭此窗口会清除录音。",
@@ -98,6 +98,7 @@ impl Dialog {
                     520,
                     72,
                 ),
+                ("BUTTON", "回听蓝牙端", 211, 72, 100, 34),
             ]
             .into_iter()
             .enumerate()
@@ -186,11 +187,12 @@ impl State {
         );
         for (control, (x, y, w, h)) in self.controls.iter().zip([
             (20, 22, 520, 38),
-            (20, 72, 135, 34),
-            (168, 72, 80, 34),
-            (262, 72, 100, 34),
-            (376, 72, 130, 34),
+            (20, 72, 110, 34),
+            (138, 72, 65, 34),
+            (319, 72, 110, 34),
+            (437, 72, 100, 34),
             (20, 130, 520, 72),
+            (211, 72, 100, 34),
         ]) {
             SendMessageW(*control, WM_SETFONT, font as usize, 1);
             MoveWindow(*control, p(x), p(y), p(w), p(h), 1);
@@ -208,7 +210,14 @@ impl State {
         );
         EnableWindow(self.controls[2], status.busy as i32);
         EnableWindow(self.controls[3], (!status.busy && status.recorded) as i32);
-        EnableWindow(self.controls[4], (!status.busy && status.recorded) as i32);
+        EnableWindow(
+            self.controls[4],
+            (!status.busy && (status.recorded || status.source_recorded)) as i32,
+        );
+        EnableWindow(
+            self.controls[6],
+            (!status.busy && status.source_recorded) as i32,
+        );
         SetWindowTextW(
             self.controls[5],
             wide(&format!(
@@ -261,6 +270,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> L
                     let _ = s.test.start(false);
                 }
                 5 => s.test.cancel(true),
+                7 => {
+                    let _ = s.test.play_source();
+                }
                 _ => {}
             };
             s.refresh();

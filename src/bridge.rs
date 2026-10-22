@@ -495,7 +495,9 @@ fn run_session(
     let (mut full, mut simple) = (0u64, 0u64);
     let mut gyro = [0i16; 3];
     let mut microphone = if cfg.microphone_enabled {
-        Some(crate::microphone::Microphone::new().ok_or("麦克风解码器不可用")?)
+        let mut mic = crate::microphone::Microphone::new().ok_or("麦克风解码器不可用")?;
+        mic.set_test_capture(state.monitor.mic_test_capture.clone());
+        Some(mic)
     } else {
         None
     };

@@ -6,6 +6,7 @@
 mod attach;
 mod audio;
 mod audio_test;
+mod audio_test_source;
 mod audio_test_view;
 mod audio_thread;
 mod bridge;
