@@ -9,7 +9,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -106,6 +106,8 @@ pub struct AudioStats {
     pub failed: AtomicBool,
 }
 pub struct AudioSession {
+    pub monitor: OnceLock<Arc<crate::monitor::Monitor>>,
+    pub forward_pcm: AtomicBool,
     pub pcm: PcmBuffer,
     pub haptics: PcmBuffer,
     pub generation: AtomicU64,
@@ -119,6 +121,8 @@ pub struct AudioSession {
 impl AudioSession {
     pub fn new(blocks: usize) -> Arc<Self> {
         Arc::new(Self {
+            monitor: OnceLock::new(),
+            forward_pcm: AtomicBool::new(true),
             pcm: PcmBuffer::new(blocks, 4),
             haptics: PcmBuffer::new(blocks, 2),
             generation: AtomicU64::new(0),
@@ -232,6 +236,14 @@ fn encode_block(
     block: &[i16],
     route: u8,
 ) -> Option<[u8; OPUS_BYTES]> {
+    encode_observed(encoder, block, route, |_| {})
+}
+fn encode_observed(
+    encoder: &mut impl OpusEncoder,
+    block: &[i16],
+    route: u8,
+    mut observe: impl FnMut(&[i16]),
+) -> Option<[u8; OPUS_BYTES]> {
     let front = if route == audio::route::SPEAKER {
         audio::downmix_4_to_2(block, audio::FRAMES_PER_BLOCK)
     } else {
@@ -251,7 +263,12 @@ fn encode_block(
         .collect();
     let mut packet = [0; OPUS_BYTES];
     // 不给短 Opus 包补零；短于 200B 的 CBR 包代表配置或编码错误。
-    (encoder.encode(&pcm, &mut packet) == OPUS_BYTES).then_some(packet)
+    if encoder.encode(&pcm, &mut packet) == OPUS_BYTES {
+        observe(&pcm);
+        Some(packet)
+    } else {
+        None
+    }
 }
 
 /// 音频打开后保持固定节拍：欠载发静音，同时继续发送灯光和扳机状态。
@@ -339,6 +356,10 @@ fn spawn_with_sink<S: OutputSink>(
                 let has_data = pcm.is_some() || native.is_some();
                 let (mut state, route) =
                     audio_state(&game, &cfg, session.headset.load(Ordering::Relaxed));
+                if let Some(m) = session.monitor.get() {
+                    m.route.store(route as u32, Ordering::Relaxed);
+                    m.volume.store(state[5] as u32, Ordering::Relaxed);
+                }
                 crate::output::adapt_rumble(
                     &mut state,
                     session.vibration_v2.load(Ordering::Relaxed),
@@ -359,6 +380,12 @@ fn spawn_with_sink<S: OutputSink>(
                     state[37] = (state[37] & !7) | 2;
                     if needs_prime && (has_data || cfg.microphone_enabled) {
                         ok = physical.write(&audio::build_init_prime(&state));
+                        if ok && cfg.microphone_enabled {
+                            ok = physical.write(&audio::microphone_control(seq, true));
+                            if ok {
+                                seq = seq.wrapping_add(1);
+                            }
+                        }
                         if ok {
                             primed = true;
                             needs_prime = false;
@@ -389,9 +416,16 @@ fn spawn_with_sink<S: OutputSink>(
                                 if selected { state[2] } else { 0 },
                             );
                         }
+                        let mut front = [0i16; audio::OPUS_FRAMES * 2];
                         let packet = if cfg.audio_enabled && !warm {
                             pcm.as_ref().and_then(|p| {
-                                encoder.as_mut().and_then(|e| encode_block(e, p, route))
+                                encoder.as_mut().and_then(|e| {
+                                    encode_observed(e, p, route, |samples| {
+                                        if session.monitor.get().is_some_and(|m| m.wants(1)) {
+                                            front.copy_from_slice(samples);
+                                        }
+                                    })
+                                })
                             })
                         } else {
                             None
@@ -407,6 +441,10 @@ fn spawn_with_sink<S: OutputSink>(
                             }
                             ok &= physical.write(&report);
                             if ok {
+                                if let Some(m) = session.monitor.get() {
+                                    m.speaker_forwarded(&front);
+                                    m.haptics(&h);
+                                }
                                 stats.blocks.fetch_add(1, Ordering::Relaxed);
                                 stats.output_frames.fetch_add(1, Ordering::Relaxed);
                             }
@@ -473,6 +511,9 @@ fn spawn_with_sink<S: OutputSink>(
                 if let Some(r) = crate::output::usb_to_bluetooth(&usb, seq) {
                     let _ = physical.write(&r);
                 }
+            }
+            if cfg.microphone_enabled {
+                let _ = physical.write(&audio::microphone_control(seq.wrapping_add(1), false));
             }
         })
 }

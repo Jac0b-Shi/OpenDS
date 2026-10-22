@@ -1,6 +1,6 @@
 diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8fdaa3d15c4c3a517c5c2721415c5f5d9e3069e
+index 0000000000000000000000000000000000000000..3b28d020c75ee9ee0fb337d0b26dbcc2d9e8e114
 --- /dev/null
 +++ b/OPENDS-PATCH.md
 @@ -0,0 +1,93 @@
@@ -89,14 +89,39 @@ index 0000000000000000000000000000000000000000..d8fdaa3d15c4c3a517c5c2721415c5f5
 +avoid a circular dependency on the DLL hash recorded here.
 +
 +<!-- BUILD-INFO:BEGIN -->
-+DLL SHA-256: `28481ea329a98e80ff1e159c91ed5d30847e48213c7bb567cba172239cd00094`
++DLL SHA-256: `0b4a8fde017726e802bf65554db8ad863291959112b1105085a218e615efff02`
 +
-+Source SHA-256 (rules in build-info.json): `5cb73d8cba5d763769ea6584ea3a3265553cac75fff8fd1315cfde4160c8a57c`
++Source SHA-256 (rules in build-info.json): `7a5ff91723358e520d0d4cb6d69ea4bae086e1257fba58bfa07ceab95e23c5bb`
 +
 +Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
 +
 +Independent forced rebuild matched: True.
 +<!-- BUILD-INFO:END -->
+diff --git a/_testing/usbip_client.go b/_testing/usbip_client.go
+index 85a98bb10bf3d0fc03d95ce5173f4715a3cc832d..69cea3fb79186378bcf8fb1dadc9ae0280dd6bdf 100644
+--- a/_testing/usbip_client.go
++++ b/_testing/usbip_client.go
+@@ -350,8 +350,8 @@ func (c *TestUsbIpClient) submitRaw(conn net.Conn, dir uint32, ep uint32, outPay
+ type IsoPacketDesc struct {
+ 	Offset       uint32
+ 	Length       uint32
+-	Status       uint32
+ 	ActualLength uint32
++	Status       uint32
+ }
+ 
+ func encodeIsoDescs(lengths []uint32) []byte {
+@@ -374,8 +374,8 @@ func decodeIsoDescs(b []byte) []IsoPacketDesc {
+ 		out = append(out, IsoPacketDesc{
+ 			Offset:       binary.BigEndian.Uint32(b[o : o+4]),
+ 			Length:       binary.BigEndian.Uint32(b[o+4 : o+8]),
+-			Status:       binary.BigEndian.Uint32(b[o+8 : o+12]),
+-			ActualLength: binary.BigEndian.Uint32(b[o+12 : o+16]),
++			ActualLength: binary.BigEndian.Uint32(b[o+8 : o+12]),
++			Status:       binary.BigEndian.Uint32(b[o+12 : o+16]),
+ 		})
+ 	}
+ 	return out
 diff --git a/device/dualsense/device.go b/device/dualsense/device.go
 index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba9faa3c5f 100644
 --- a/device/dualsense/device.go
@@ -266,6 +291,99 @@ index e7c2576c3a03775f55cd4426af3d9ed6139a68dc..4fc2df8f2062790cc5175ee4de3032d5
  }
  
  // rawInputReport returns the published snapshot, or nil when passthrough is
+diff --git a/device/isoc_framing_test.go b/device/isoc_framing_test.go
+index 9fb036964ad2a380789bc28e78be12c4961b1256..e2bf75fb9756d308c9b00a53b5542d92cbe2424c 100644
+--- a/device/isoc_framing_test.go
++++ b/device/isoc_framing_test.go
+@@ -2,6 +2,7 @@ package device_test
+ 
+ import (
+ 	"context"
++	"encoding/binary"
+ 	"testing"
+ 	"time"
+ 
+@@ -127,6 +128,80 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
+ 		assert.Equal(t, uint32(192), d.ActualLength, "packet %d must carry a full frame", i)
+ 	}
+ 
++	// Windows reserves the asynchronous endpoint's 196-byte maximum per packet.
++	// The device still returns 192 PCM bytes at every service opportunity. USB/IP
++	// packs those bytes contiguously and the descriptors retain requested offsets.
++	micAsync, asyncDescs, err := usbipClient.SubmitIso(imp.Conn, usbip.DirIn, 2, nil, []uint32{196, 196, 196, 196})
++	require.NoError(t, err)
++	require.Len(t, micAsync, 4*192)
++	require.Len(t, asyncDescs, 4)
++	for i, d := range asyncDescs {
++		assert.Equal(t, uint32(i*196), d.Offset)
++		assert.Equal(t, uint32(196), d.Length)
++		assert.Equal(t, uint32(192), d.ActualLength, "packet %d", i)
++		assert.Zero(t, d.Status, "packet %d", i)
++	}
++
++	// A smaller host request must truncate each packet before packing it.
++	micShort, shortDescs, err := usbipClient.SubmitIso(imp.Conn, usbip.DirIn, 2, nil, []uint32{96, 96})
++	require.NoError(t, err)
++	require.Len(t, micShort, 192)
++	require.Len(t, shortDescs, 2)
++	for _, d := range shortDescs {
++		assert.Equal(t, uint32(96), d.ActualLength)
++		assert.Zero(t, d.Status)
++	}
++
++	// Queue numbered synthetic mic frames, then pipeline multi-packet URBs as
++	// Windows does. Sharing a per-frame clock between URB goroutines must not
++	// round-robin their reads: each host buffer needs consecutive audio frames.
++	openMic := [8]byte{0x01, 0x0b, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00}
++	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 0, nil, &openMic))
++	micDevice, ok := b.Devices()[0].(interface{ QueueMicrophonePCM([]byte) bool })
++	require.True(t, ok)
++	const pipelineURBs = 4
++	const packetsPerURB = 4
++	for i := 0; i < pipelineURBs*packetsPerURB; i++ {
++		frame := make([]byte, 192)
++		for j := range frame {
++			frame[j] = byte(i + 1)
++		}
++		require.True(t, micDevice.QueueMicrophonePCM(frame))
++	}
++	require.NoError(t, imp.Conn.SetDeadline(time.Now().Add(2*time.Second)))
++	for i := uint32(0); i < pipelineURBs; i++ {
++		cmd := usbip.CmdSubmit{
++			Basic:             usbip.HeaderBasic{Command: usbip.CmdSubmitCode, Seqnum: 10000 + i, Dir: usbip.DirIn, Ep: 2},
++			TransferBufferLen: packetsPerURB * 196,
++			NumberOfPackets:   packetsPerURB,
++		}
++		require.NoError(t, cmd.Write(imp.Conn))
++		descriptors := make([]byte, packetsPerURB*16)
++		for j := uint32(0); j < packetsPerURB; j++ {
++			binary.BigEndian.PutUint32(descriptors[j*16:j*16+4], j*196)
++			binary.BigEndian.PutUint32(descriptors[j*16+4:j*16+8], 196)
++		}
++		_, err := imp.Conn.Write(descriptors)
++		require.NoError(t, err)
++	}
++	for i := 0; i < pipelineURBs; i++ {
++		header := make([]byte, 48)
++		require.NoError(t, usbip.ReadExactly(imp.Conn, header))
++		seq := binary.BigEndian.Uint32(header[4:8])
++		require.Equal(t, uint32(10000+i), seq, "isochronous mic URBs must finish in submission order")
++		require.Equal(t, uint32(packetsPerURB*192), binary.BigEndian.Uint32(header[24:28]))
++		payload := make([]byte, packetsPerURB*192)
++		require.NoError(t, usbip.ReadExactly(imp.Conn, payload))
++		for j := 0; j < packetsPerURB; j++ {
++			for _, sample := range payload[j*192 : (j+1)*192] {
++				require.Equal(t, byte(i*packetsPerURB+j+1), sample, "URB %d packet %d", i, j)
++			}
++		}
++		descriptors := make([]byte, packetsPerURB*16)
++		require.NoError(t, usbip.ReadExactly(imp.Conn, descriptors))
++	}
++	require.NoError(t, imp.Conn.SetDeadline(time.Time{}))
++
+ 	// Plain control + interrupt traffic on the same stream proves framing held.
+ 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirIn, 0, nil, &setup))
+ 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirIn, 4, nil, nil))
 diff --git a/go.mod b/go.mod
 index 4a9bad22c05354bd29a5382a064fd67484943ef9..146af925ec48cb730fe25307cd51379627aa07d1 100644
 --- a/go.mod
@@ -278,6 +396,205 @@ index 4a9bad22c05354bd29a5382a064fd67484943ef9..146af925ec48cb730fe25307cd513796
  
  require (
  	fyne.io/systray v1.12.2
+diff --git a/internal/server/usb/iso_test.go b/internal/server/usb/iso_test.go
+index 8e8cbed97d7bddac0a024b6217e06e544133757e..08f51f7d6e3dcee10dfdd8b5e6445baff987c317 100644
+--- a/internal/server/usb/iso_test.go
++++ b/internal/server/usb/iso_test.go
+@@ -25,29 +25,46 @@ func isoReq(lengths ...uint32) []byte {
+ }
+ 
+ func TestBuildIsoReplySinglePacket(t *testing.T) {
+-	got := buildIsoReply(isoReq(192), 1, 192)
++	got := buildIsoReply(isoReq(192), 1, 192, nil)
+ 	require.Len(t, got, isoDescSize)
+ 	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[0:4]))
+ 	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[4:8]))
+-	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[8:12]))
+-	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[12:16]))
++	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[8:12]))
++	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[12:16]))
+ }
+ 
+ func TestBuildIsoReplyShortActual(t *testing.T) {
+-	got := buildIsoReply(isoReq(196), 1, 192)
++	got := buildIsoReply(isoReq(196), 1, 192, nil)
+ 	require.Len(t, got, isoDescSize)
+ 	assert.Equal(t, uint32(196), binary.BigEndian.Uint32(got[4:8]))
+-	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[8:12]))
+-	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[12:16]))
++	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[8:12]))
++	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[12:16]))
+ }
+ 
+ func TestBuildIsoReplyDistributesAcrossPackets(t *testing.T) {
+-	got := buildIsoReply(isoReq(192, 192), 2, 192)
++	got := buildIsoReply(isoReq(192, 192), 2, 192, nil)
+ 	require.Len(t, got, 2*isoDescSize)
+-	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[12:16]))
+-	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[28:32]))
+-	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[8:12]))
++	assert.Equal(t, uint32(192), binary.BigEndian.Uint32(got[8:12]))
+ 	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[24:28]))
++	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[12:16]))
++	assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[28:32]))
++}
++
++func TestBuildIsoReplyLinuxWireLayout(t *testing.T) {
++	// Linux usbip_iso_packet_descriptor: offset, length, actual_length, status.
++	// Literal fixture deliberately does not use the server's field helpers.
++	want := []byte{0, 0, 0, 0, 0, 0, 0, 196, 0, 0, 0, 192, 0, 0, 0, 0}
++	assert.Equal(t, want, buildIsoReply(isoReq(196), 1, 192, []uint32{192}))
++}
++
++func TestBuildIsoReplyKeepsEachShortPacket(t *testing.T) {
++	got := buildIsoReply(isoReq(196, 196, 196, 196), 4, 3*192, []uint32{192, 0, 192, 192})
++	for i, actual := range []uint32{192, 0, 192, 192} {
++		o := i * isoDescSize
++		assert.Equal(t, uint32(i*196), binary.BigEndian.Uint32(got[o:o+4]))
++		assert.Equal(t, actual, binary.BigEndian.Uint32(got[o+8:o+12]))
++		assert.Equal(t, uint32(0), binary.BigEndian.Uint32(got[o+12:o+16]))
++	}
+ }
+ 
+ func mixedEndpointDescriptor() *usbdesc.Descriptor {
+diff --git a/internal/server/usb/server.go b/internal/server/usb/server.go
+index 7e49faf606d6e108a6851592ed1ef14950eb5bcb..b0252dceb70deca7525f782edf4110733d91dc19 100644
+--- a/internal/server/usb/server.go
++++ b/internal/server/usb/server.go
+@@ -611,7 +611,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 	var writeMu sync.Mutex
+ 	var retOut bytes.Buffer
+ 	retOut.Grow(retSubmitHeaderSize)
+-	writeRet := func(seq, actualLen uint32, respData []byte, flush bool, nPkts uint32, isoReq []byte, isoActualTotal uint32) error {
++	writeRet := func(seq, actualLen uint32, respData []byte, flush bool, nPkts uint32, isoReq []byte, isoActualTotal uint32, packetActuals []uint32) error {
+ 		writeMu.Lock()
+ 		defer writeMu.Unlock()
+ 		ret := usbip.RetSubmit{
+@@ -635,7 +635,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 			}
+ 		}
+ 		if nPkts > 0 {
+-			if _, err := writer.Write(buildIsoReply(isoReq, nPkts, isoActualTotal)); err != nil {
++			if _, err := writer.Write(buildIsoReply(isoReq, nPkts, isoActualTotal, packetActuals)); err != nil {
+ 				return fmt.Errorf("write RET_SUBMIT iso descriptors: %w", err)
+ 			}
+ 		}
+@@ -662,6 +662,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 
+ 	// One frame clock per isochronous endpoint, shared by concurrent URBs.
+ 	var isocPacers sync.Map // uint32 (ep) -> *isocPacer
++	// The read loop owns this map. Multi-packet IN URBs must consume contiguous
++	// audio in submission order, not interleave their packets across goroutines.
++	isocInTail := make(map[uint32]<-chan struct{})
+ 
+ 	var outPayloadScratch []byte
+ 
+@@ -786,15 +789,34 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 			pendingMu.Unlock()
+ 			interval := endpointInterval(dev.GetDescriptor(), ep)
+ 			var pacer *isocPacer
++			var previous <-chan struct{}
++			var completed chan struct{}
+ 			if isoc && nPkts > 0 {
+ 				p, _ := isocPacers.LoadOrStore(ep, &isocPacer{})
+ 				pacer = p.(*isocPacer)
++				previous = isocInTail[ep]
++				completed = make(chan struct{})
++				isocInTail[ep] = completed
+ 			}
+ 
+ 			go func(seq, ep, dir uint32, nPkts uint32, isoReq []byte) {
+ 				defer urbCancel()
++				if completed != nil {
++					defer close(completed)
++					// Even a cancelled queued URB must retain its place in the
++					// chain until its predecessor finishes, or the next URB can
++					// overtake that predecessor and scramble the PCM again.
++					if previous != nil {
++						<-previous
++					}
++					if urbCtx.Err() != nil {
++						return
++					}
++				}
+ 				var respData []byte
++				var packetActuals []uint32
+ 				if pacer != nil {
++					packetActuals = make([]uint32, nPkts)
+ 					// Isochronous IN: one packet per USB frame. Each packet is a
+ 					// separate service opportunity, so the device is asked once
+ 					// per frame and the reply is held until that frame elapses.
+@@ -809,6 +831,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 						if urbCtx.Err() != nil {
+ 							return
+ 						}
++						requested := binary.BigEndian.Uint32(isoReq[i*isoDescSize+4 : i*isoDescSize+8])
++						actual := min(uint32(len(part)), requested)
++						packetActuals[i] = actual
++						part = part[:actual]
+ 						respData = append(respData, part...)
+ 					}
+ 				} else {
+@@ -850,7 +876,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 				delete(pending, seq)
+ 				pendingMu.Unlock()
+ 
+-				if err := writeRet(seq, uint32(len(respData)), respData, true, nPkts, isoReq, uint32(len(respData))); err != nil {
++				if err := writeRet(seq, uint32(len(respData)), respData, true, nPkts, isoReq, uint32(len(respData)), packetActuals); err != nil {
+ 					if isClientDisconnect(err) {
+ 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
+ 					} else {
+@@ -887,7 +913,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 				pendingMu.Lock()
+ 				delete(pending, seq)
+ 				pendingMu.Unlock()
+-				if err := writeRet(seq, uint32(len(outPayload)), nil, true, nPkts, isoReq, uint32(len(outPayload))); err != nil {
++				if err := writeRet(seq, uint32(len(outPayload)), nil, true, nPkts, isoReq, uint32(len(outPayload)), nil); err != nil {
+ 					if isClientDisconnect(err) {
+ 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
+ 					} else {
+@@ -907,17 +933,18 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
+ 			isoActual = uint32(len(outPayload))
+ 			respData = nil
+ 		}
+-		if err := writeRet(seq, actualLen, respData, ep == 0, nPkts, isoReq, isoActual); err != nil {
++		if err := writeRet(seq, actualLen, respData, ep == 0, nPkts, isoReq, isoActual, nil); err != nil {
+ 			return err
+ 		}
+ 	}
+ }
+ 
+ // buildIsoReply encodes the isochronous packet descriptors for RET_SUBMIT:
+-// offset/length echoed from the request template, status forced to 0, and
+-// actual_length set from actualTotal distributed across packets in request
+-// order (each capped at its requested length, remainder flows downstream).
+-func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32) []byte {
++// Wire order is offset, length, actual_length, status (Linux USB/IP).
++// IN uses the bytes returned at each service opportunity: an async 196-byte
++// request can receive 192 bytes in every packet, not 196/196/196/180.
++// OUT falls back to distributing the accepted transfer length.
++func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32, packetActuals []uint32) []byte {
+ 	out := make([]byte, len(tmpl))
+ 	copy(out, tmpl)
+ 	remaining := actualTotal
+@@ -925,12 +952,15 @@ func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32) []byte {
+ 		o := i * isoDescSize
+ 		reqLen := binary.BigEndian.Uint32(out[o+4 : o+8])
+ 		actual := reqLen
++		if packetActuals != nil {
++			actual = min(actual, packetActuals[i])
++		}
+ 		if actual > remaining {
+ 			actual = remaining
+ 		}
+ 		remaining -= actual
+-		binary.BigEndian.PutUint32(out[o+8:o+12], 0)
+-		binary.BigEndian.PutUint32(out[o+12:o+16], actual)
++		binary.BigEndian.PutUint32(out[o+8:o+12], actual)
++		binary.BigEndian.PutUint32(out[o+12:o+16], 0)
+ 	}
+ 	return out
+ }
 diff --git a/lib/viiper/dualsense.go b/lib/viiper/dualsense.go
 index 4c250f56bd42478c8825d5ef3196ee7f40163e60..7863d1a82659732977c3ea50e705a37dedef3d95 100644
 --- a/lib/viiper/dualsense.go

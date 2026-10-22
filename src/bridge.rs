@@ -19,6 +19,7 @@ use std::{
 
 #[derive(Default)]
 pub struct BridgeState {
+    pub monitor: Arc<crate::monitor::Monitor>,
     pub running: AtomicBool,
     pub connected: AtomicBool,
     /// Confirmed through the current session's HidHide control handle.
@@ -92,7 +93,10 @@ impl BridgeController {
         {
             return Err("Opus 编码器不可用；请安装配套运行库，或关闭音频和原生触觉转发。".into());
         }
-        let state = Arc::new(BridgeState::default());
+        let state = Arc::new(BridgeState {
+            monitor: self.state.monitor.clone(),
+            ..BridgeState::default()
+        });
         state.running.store(true, Ordering::Release);
         self.state = state.clone();
         self.worker = Some(
@@ -108,6 +112,8 @@ impl BridgeController {
                         _ => {}
                     }
                     state.connected.store(false, Ordering::Release);
+                    state.monitor.connected.store(false, Ordering::Release);
+                    state.monitor.reset();
                     state.hidhide_healthy.store(false, Ordering::Release);
                     state.running.store(false, Ordering::Release);
                     state.log("桥接已停止");
@@ -167,6 +173,7 @@ extern "C" fn on_output(handle: usize, p: *const viiper::DsOutputState) {
 }
 extern "C" fn on_audio(handle: usize, p: *const u8, len: usize) {
     if !p.is_null() {
+        let mut monitor = None;
         callback(handle, |s| {
             s.stats.pcm_callbacks.fetch_add(1, Ordering::Relaxed);
             s.stats
@@ -181,8 +188,17 @@ extern "C" fn on_audio(handle: usize, p: *const u8, len: usize) {
                 s.stats.pcm_nonzero.fetch_add(1, Ordering::Relaxed);
             }
             let generation = s.generation.load(Ordering::Acquire);
-            s.pcm.push_bytes(data, generation);
+            if s.forward_pcm.load(Ordering::Relaxed) {
+                s.pcm.push_bytes(data, generation);
+            }
+            monitor = s
+                .monitor
+                .get()
+                .and_then(|m| m.ticket(0).map(|ticket| (m.clone(), ticket)));
         });
+        if let Some((m, ticket)) = monitor {
+            m.bytes_with(ticket, unsafe { std::slice::from_raw_parts(p, len) });
+        }
     }
 }
 extern "C" fn on_haptics(handle: usize, p: *const u8, len: usize) {
@@ -195,13 +211,20 @@ extern "C" fn on_haptics(handle: usize, p: *const u8, len: usize) {
                 s.stats.haptics_nonzero.fetch_add(1, Ordering::Relaxed);
             }
             let generation = s.generation.load(Ordering::Acquire);
-            s.haptics
-                .push_bytes(unsafe { std::slice::from_raw_parts(p, len) }, generation);
+            if s.forward_pcm.load(Ordering::Relaxed) {
+                s.haptics
+                    .push_bytes(unsafe { std::slice::from_raw_parts(p, len) }, generation);
+            }
         });
     }
 }
 extern "C" fn on_reset(handle: usize) {
-    callback(handle, |s| s.reset());
+    callback(handle, |s| {
+        s.reset();
+        if let Some(m) = s.monitor.get() {
+            m.reset();
+        }
+    });
 }
 
 struct Session {
@@ -290,6 +313,8 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
         waiting = false;
         let result = run_session(&cfg, Arc::new(physical), state, started, limit);
         state.connected.store(false, Ordering::Release);
+        state.monitor.connected.store(false, Ordering::Release);
+        state.monitor.reset();
         match result {
             Ok(()) => break,
             Err(e) => {
@@ -363,6 +388,18 @@ fn run_session(
         return Err("配套 VIIPER 缺少真机 USB 描述符配置，请使用当前发布包中的 DLL".into());
     }
     let audio = AudioSession::new(cfg.buffer as usize);
+    let _ = audio.monitor.set(state.monitor.clone());
+    audio
+        .forward_pcm
+        .store(cfg.audio_enabled || cfg.haptics_enabled, Ordering::Relaxed);
+    state.monitor.edge.store(
+        physical.product_id == viiper::PID_DUALSENSE_EDGE,
+        Ordering::Relaxed,
+    );
+    state
+        .monitor
+        .microphone
+        .store(cfg.microphone_enabled, Ordering::Relaxed);
     let vibration_v2 = crate::output::uses_vibration_v2(physical.product_id, firmware);
     audio.vibration_v2.store(vibration_v2, Ordering::Relaxed);
     state.log(format!(
@@ -417,7 +454,8 @@ fn run_session(
     if !session.device.set_output_callback(on_output) {
         return Err("libVIIPER 缺少输出回调；请使用配套版本".into());
     }
-    if cfg.audio_enabled || cfg.haptics_enabled {
+    let mut audio_subscribed = cfg.audio_enabled || cfg.haptics_enabled || state.monitor.wants(0);
+    if audio_subscribed {
         if !session.device.set_audio_callback(on_audio)
             || !session.device.set_haptics_callback(on_haptics)
             || !session.device.set_reset_callback(on_reset)
@@ -440,6 +478,8 @@ fn run_session(
             .attach_prepared(cfg.port, || expired(started, limit, state))?,
     );
     state.connected.store(true, Ordering::Release);
+    state.monitor.reset();
+    state.monitor.connected.store(true, Ordering::Release);
     state.log("桥接已连接；输入、输出、音频使用独立调度");
     let mut last_valid = Instant::now();
     let mut last_stats = Instant::now();
@@ -456,6 +496,16 @@ fn run_session(
         None
     };
     while !expired(started, limit, state) {
+        let subscribe = cfg.audio_enabled || cfg.haptics_enabled || state.monitor.wants(0);
+        if subscribe != audio_subscribed {
+            if !session
+                .device
+                .monitor_audio_callbacks(subscribe, on_audio, on_haptics, on_reset)
+            {
+                return Err("更新音频监视订阅失败".into());
+            }
+            audio_subscribed = subscribe;
+        }
         if audio.stats.failed.load(Ordering::Acquire) {
             return Err("连续写入物理手柄失败".into());
         }
@@ -474,14 +524,44 @@ fn run_session(
                     continue;
                 };
                 if report.has_audio_payload() {
+                    state.monitor.mic_tagged.fetch_add(1, Ordering::Relaxed);
+                    state
+                        .monitor
+                        .mic_prefix
+                        .store(report.data[2] as u32, Ordering::Relaxed);
                     if let (Some(mic), Some(packet)) =
                         (microphone.as_mut(), report.microphone_frame())
                     {
-                        let _ = mic.decode(packet, |frame| session.device.send_microphone(frame));
+                        state.monitor.mic_packets.fetch_add(1, Ordering::Relaxed);
+                        if !mic.decode_observed(
+                            packet,
+                            state.monitor.wants(4),
+                            |pcm, forwarded| {
+                                if !forwarded {
+                                    state
+                                        .monitor
+                                        .mic_samples
+                                        .fetch_add(pcm.len() as u64, Ordering::Relaxed);
+                                }
+                                state
+                                    .monitor
+                                    .pcm(if forwarded { 4 } else { 3 }, 1, 48000, pcm)
+                            },
+                            |frame| {
+                                let ok = session.device.send_microphone(frame);
+                                if ok {
+                                    state.monitor.mic_usb_frames.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ok
+                            },
+                        ) {
+                            state.monitor.mic_failed();
+                        }
                     }
                     continue;
                 }
                 if let Some(s) = report.parse() {
+                    state.monitor.input(s);
                     gyro = s.motion.gyro;
                     if report.is_full_bluetooth() {
                         full += 1;
@@ -534,6 +614,14 @@ fn run_session(
             old_outputs = outputs;
             last_stats = Instant::now();
             if diagnostic.elapsed() >= Duration::from_secs(60) {
+                state.log(format!(
+                    "麦克风：音频标记={} 头={:02X} Opus包={} 解码样本={} USB接收帧={}",
+                    state.monitor.mic_tagged.load(Ordering::Relaxed),
+                    state.monitor.mic_prefix.load(Ordering::Relaxed),
+                    state.monitor.mic_packets.load(Ordering::Relaxed),
+                    state.monitor.mic_samples.load(Ordering::Relaxed),
+                    state.monitor.mic_usb_frames.load(Ordering::Relaxed)
+                ));
                 let raw = audio
                     .stats
                     .last_output

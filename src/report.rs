@@ -300,8 +300,8 @@ impl InputReport {
 
     /// 蓝牙 0x31 报告里携带的麦克风 Opus 帧（71 字节）。
     pub fn microphone_frame(&self) -> Option<&[u8]> {
-        if self.has_audio_payload() && self.data.get(2) == Some(&0xD4) && self.data.len() >= 3 + 71
-        {
+        // Byte 2 varies between reports; it is not a fixed audio marker.
+        if self.has_audio_payload() && self.data.len() >= 3 + 71 {
             Some(&self.data[3..3 + 71])
         } else {
             None
@@ -541,15 +541,21 @@ mod tests {
 
     #[test]
     fn microphone_reports_never_become_gamepad_input() {
-        let mut data = vec![0; 78];
-        data[0] = 0x31;
-        data[1] = 2;
-        data[2] = 0xD4;
-        data[3..74].fill(0x9a);
-        let r = InputReport::new(data).unwrap();
-        assert_eq!(r.microphone_frame().unwrap(), &[0x9a; 71]);
-        assert!(r.usb_payload().is_none());
-        assert!(r.parse().is_none());
+        for header in 0..=255 {
+            let mut data = vec![0; 78];
+            data[0] = 0x31;
+            data[1] = 2;
+            data[2] = header;
+            data[3..74].fill(0x9a);
+            let r = InputReport::new(data).unwrap();
+            assert_eq!(r.microphone_frame().unwrap(), &[0x9a; 71]);
+            assert!(r.usb_payload().is_none());
+            assert!(r.parse().is_none());
+        }
+        let mut short = vec![0; 73];
+        short[0] = 0x31;
+        short[1] = 2;
+        assert!(InputReport::new(short).is_none());
     }
 
     #[test]

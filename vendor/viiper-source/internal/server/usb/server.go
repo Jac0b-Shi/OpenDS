@@ -611,7 +611,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	var writeMu sync.Mutex
 	var retOut bytes.Buffer
 	retOut.Grow(retSubmitHeaderSize)
-	writeRet := func(seq, actualLen uint32, respData []byte, flush bool, nPkts uint32, isoReq []byte, isoActualTotal uint32) error {
+	writeRet := func(seq, actualLen uint32, respData []byte, flush bool, nPkts uint32, isoReq []byte, isoActualTotal uint32, packetActuals []uint32) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		ret := usbip.RetSubmit{
@@ -635,7 +635,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			}
 		}
 		if nPkts > 0 {
-			if _, err := writer.Write(buildIsoReply(isoReq, nPkts, isoActualTotal)); err != nil {
+			if _, err := writer.Write(buildIsoReply(isoReq, nPkts, isoActualTotal, packetActuals)); err != nil {
 				return fmt.Errorf("write RET_SUBMIT iso descriptors: %w", err)
 			}
 		}
@@ -662,6 +662,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 
 	// One frame clock per isochronous endpoint, shared by concurrent URBs.
 	var isocPacers sync.Map // uint32 (ep) -> *isocPacer
+	// The read loop owns this map. Multi-packet IN URBs must consume contiguous
+	// audio in submission order, not interleave their packets across goroutines.
+	isocInTail := make(map[uint32]<-chan struct{})
 
 	var outPayloadScratch []byte
 
@@ -786,15 +789,34 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			pendingMu.Unlock()
 			interval := endpointInterval(dev.GetDescriptor(), ep)
 			var pacer *isocPacer
+			var previous <-chan struct{}
+			var completed chan struct{}
 			if isoc && nPkts > 0 {
 				p, _ := isocPacers.LoadOrStore(ep, &isocPacer{})
 				pacer = p.(*isocPacer)
+				previous = isocInTail[ep]
+				completed = make(chan struct{})
+				isocInTail[ep] = completed
 			}
 
 			go func(seq, ep, dir uint32, nPkts uint32, isoReq []byte) {
 				defer urbCancel()
+				if completed != nil {
+					defer close(completed)
+					// Even a cancelled queued URB must retain its place in the
+					// chain until its predecessor finishes, or the next URB can
+					// overtake that predecessor and scramble the PCM again.
+					if previous != nil {
+						<-previous
+					}
+					if urbCtx.Err() != nil {
+						return
+					}
+				}
 				var respData []byte
+				var packetActuals []uint32
 				if pacer != nil {
+					packetActuals = make([]uint32, nPkts)
 					// Isochronous IN: one packet per USB frame. Each packet is a
 					// separate service opportunity, so the device is asked once
 					// per frame and the reply is held until that frame elapses.
@@ -809,6 +831,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						if urbCtx.Err() != nil {
 							return
 						}
+						requested := binary.BigEndian.Uint32(isoReq[i*isoDescSize+4 : i*isoDescSize+8])
+						actual := min(uint32(len(part)), requested)
+						packetActuals[i] = actual
+						part = part[:actual]
 						respData = append(respData, part...)
 					}
 				} else {
@@ -850,7 +876,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				delete(pending, seq)
 				pendingMu.Unlock()
 
-				if err := writeRet(seq, uint32(len(respData)), respData, true, nPkts, isoReq, uint32(len(respData))); err != nil {
+				if err := writeRet(seq, uint32(len(respData)), respData, true, nPkts, isoReq, uint32(len(respData)), packetActuals); err != nil {
 					if isClientDisconnect(err) {
 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
 					} else {
@@ -887,7 +913,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				pendingMu.Lock()
 				delete(pending, seq)
 				pendingMu.Unlock()
-				if err := writeRet(seq, uint32(len(outPayload)), nil, true, nPkts, isoReq, uint32(len(outPayload))); err != nil {
+				if err := writeRet(seq, uint32(len(outPayload)), nil, true, nPkts, isoReq, uint32(len(outPayload)), nil); err != nil {
 					if isClientDisconnect(err) {
 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
 					} else {
@@ -907,17 +933,18 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			isoActual = uint32(len(outPayload))
 			respData = nil
 		}
-		if err := writeRet(seq, actualLen, respData, ep == 0, nPkts, isoReq, isoActual); err != nil {
+		if err := writeRet(seq, actualLen, respData, ep == 0, nPkts, isoReq, isoActual, nil); err != nil {
 			return err
 		}
 	}
 }
 
 // buildIsoReply encodes the isochronous packet descriptors for RET_SUBMIT:
-// offset/length echoed from the request template, status forced to 0, and
-// actual_length set from actualTotal distributed across packets in request
-// order (each capped at its requested length, remainder flows downstream).
-func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32) []byte {
+// Wire order is offset, length, actual_length, status (Linux USB/IP).
+// IN uses the bytes returned at each service opportunity: an async 196-byte
+// request can receive 192 bytes in every packet, not 196/196/196/180.
+// OUT falls back to distributing the accepted transfer length.
+func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32, packetActuals []uint32) []byte {
 	out := make([]byte, len(tmpl))
 	copy(out, tmpl)
 	remaining := actualTotal
@@ -925,12 +952,15 @@ func buildIsoReply(tmpl []byte, nPkts uint32, actualTotal uint32) []byte {
 		o := i * isoDescSize
 		reqLen := binary.BigEndian.Uint32(out[o+4 : o+8])
 		actual := reqLen
+		if packetActuals != nil {
+			actual = min(actual, packetActuals[i])
+		}
 		if actual > remaining {
 			actual = remaining
 		}
 		remaining -= actual
-		binary.BigEndian.PutUint32(out[o+8:o+12], 0)
-		binary.BigEndian.PutUint32(out[o+12:o+16], actual)
+		binary.BigEndian.PutUint32(out[o+8:o+12], actual)
+		binary.BigEndian.PutUint32(out[o+12:o+16], 0)
 	}
 	return out
 }

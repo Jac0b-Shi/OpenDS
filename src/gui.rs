@@ -50,6 +50,7 @@ struct Controls {
     audio: nwg::CheckBox,
     haptics: nwg::CheckBox,
     microphone: nwg::CheckBox,
+    audio_test: nwg::Button,
     route: nwg::ComboBox<String>,
     device: nwg::ComboBox<String>,
     buffer: nwg::TextInput,
@@ -84,6 +85,8 @@ struct App {
     dependency_attention: Cell<bool>,
     dependency_check: Cell<std::time::Instant>,
     installation: RefCell<Option<crate::dependencies::Installation>>,
+    monitor_view: RefCell<Option<crate::monitor_view::MonitorView>>,
+    audio_test_view: RefCell<Option<crate::audio_test_view::Dialog>>,
 }
 impl Deref for App {
     type Target = Controls;
@@ -132,6 +135,8 @@ impl App {
             dependency_attention: Cell::new(false),
             dependency_check: Cell::new(std::time::Instant::now()),
             installation: RefCell::new(None),
+            monitor_view: RefCell::new(None),
+            audio_test_view: RefCell::new(None),
         };
         let resources = nwg::EmbedResource::load(None).map_err(|e| e.to_string())?;
         a.ui.icon = nwg::Icon::from_embed(&resources, Some(1), None).map_err(|e| e.to_string())?;
@@ -199,6 +204,7 @@ impl App {
             button!(stop, "停止");
             button!(save, "保存设置");
             button!(refresh, "刷新设备");
+            button!(audio_test, "麦克风测试…");
             button!(restore, "恢复手柄可见性");
             button!(quit, "退出 OpenDS");
             for label in [
@@ -265,7 +271,8 @@ impl App {
             button!(doctor, "重新检查");
             button!(usbip, "安装 USB/IP Win2");
             button!(hidhide_link, "安装 HidHide");
-            for name in ["概览", "连接与反馈", "设备隐藏", "诊断与日志"] {
+            for name in ["概览", "实时监视", "连接与反馈", "设备隐藏", "诊断与日志"]
+            {
                 let mut b = Default::default();
                 nwg::Button::builder()
                     .parent(window)
@@ -301,7 +308,7 @@ impl App {
                 .register_callback(&ui.count_input)
                 .register_callback(&ui.count_output)
                 .register_callback(&ui.count_audio)
-                .register_callback(&ui.nav[3])
+                .register_callback(&ui.nav[4])
                 .register(&ui.usbip, "停止桥接后可下载并打开 USB/IP Win2 官方安装向导")
                 .register(
                     &ui.hidhide_link,
@@ -315,7 +322,18 @@ impl App {
         build.map_err(|e| e.to_string())?;
         a.dpi
             .set(unsafe { GetDpiForWindow(theme::hwnd(&a.window.handle)) }.max(96));
+        unsafe {
+            let h = theme::hwnd(&a.window.handle);
+            let style = GetWindowLongPtrW(h, GWL_STYLE);
+            SetWindowLongPtrW(h, GWL_STYLE, style | WS_CLIPCHILDREN as isize);
+        }
         let a = Rc::new(a);
+        *a.monitor_view.borrow_mut() = Some(crate::monitor_view::MonitorView::new(
+            theme::hwnd(&a.window.handle),
+            a.controller.borrow().state.monitor.clone(),
+            &cfg,
+            a.path.clone(),
+        )?);
         a.apply_fonts()?;
         unsafe {
             let hwnd = theme::hwnd(&a.logs.handle);
@@ -326,7 +344,7 @@ impl App {
         }
         a.refresh();
         if !crate::dependencies::ready() {
-            a.page.set(3);
+            a.page.set(4);
             a.controller
                 .borrow()
                 .state
@@ -362,6 +380,7 @@ impl App {
             &self.audio.handle,
             &self.haptics.handle,
             &self.microphone.handle,
+            &self.audio_test.handle,
             &self.route.handle,
             &self.device.handle,
             &self.buffer.handle,
@@ -414,6 +433,15 @@ impl App {
         let x = 228;
         let cw = w - x - 32;
         let page = self.page.get();
+        if let Some(v) = self.monitor_view.borrow_mut().as_mut() {
+            v.place(
+                theme::px(x, dpi),
+                theme::px(112, dpi),
+                theme::px(cw, dpi),
+                theme::px(h - 136, dpi),
+                page == 1,
+            );
+        }
         for control in self.all() {
             unsafe {
                 ShowWindow(theme::hwnd(control), SW_HIDE);
@@ -442,11 +470,13 @@ impl App {
                 );
                 put(&self.logs.handle, x + 24, 498, cw - 48, (h - 546).max(52));
             }
-            1 => {
+            1 => {}
+            2 => {
                 put(&self.device.handle, x + 24, 158, cw - 48, 240);
                 put(&self.audio.handle, x + 24, 221, cw / 2 - 32, 28);
                 put(&self.haptics.handle, x + cw / 2, 221, cw / 2 - 24, 28);
                 put(&self.microphone.handle, x + 24, 258, cw / 2 - 32, 28);
+                put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
                 put(&self.route.handle, x + 24, 324, cw - 48, 180);
                 put(&self.speaker.handle, x + 24, 396, cw / 2 - 48, 34);
                 put(&self.haptic_gain.handle, x + cw / 2, 396, cw / 2 - 24, 34);
@@ -465,7 +495,7 @@ impl App {
                 put(&self.refresh.handle, x, h - 62, 136, 38);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
-            2 => {
+            3 => {
                 put(&self.active.handle, x + 24, 176, cw - 48, 28);
                 put(&self.whitelist.handle, x + 24, 244, cw - 48, 174);
                 put(&self.app_path.handle, x + 24, 443, cw - 48, 34);
@@ -537,9 +567,10 @@ impl App {
             theme::MUTED,
         );
         text(28, h - 116, 154, 22, "v0.1.0", &f.small, theme::MUTED);
-        let titles = ["概览", "连接与反馈", "设备隐藏", "诊断与日志"];
+        let titles = ["概览", "实时监视", "连接与反馈", "设备隐藏", "诊断与日志"];
         let descriptions = [
             "连接状态与反馈数据，尽在此处。",
+            "按键与音频实时呈现，采集由你手动开启。",
             "选择手柄，调整声音、触觉与连接行为。",
             "让游戏只接收虚拟手柄的输入。",
             "检查运行依赖，查看连接与恢复记录。",
@@ -598,7 +629,8 @@ impl App {
                     );
                 }
             }
-            1 => {
+            1 => {}
+            2 => {
                 card(x, 112, cw, 490);
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, "物理手柄"),
@@ -611,7 +643,7 @@ impl App {
                     text(left, y, width, 24, s, &f.small, theme::MUTED);
                 }
             }
-            2 => {
+            3 => {
                 card(x, 112, cw, 448);
                 text(
                     x + 24,
@@ -715,7 +747,7 @@ impl App {
                         nav == Some(self.page.get() as usize),
                         self.dpi.get(),
                     );
-                    if nav == Some(3) && self.dependency_attention.get() {
+                    if nav == Some(4) && self.dependency_attention.get() {
                         let dpi = self.dpi.get();
                         let radius = theme::px(8, dpi);
                         let right = item.rcItem.right - theme::px(14, dpi);
@@ -800,7 +832,10 @@ impl App {
         Ok(c)
     }
     fn save_settings(&self) -> Result<Config, String> {
-        let c = self.read_config()?;
+        let mut c = self.read_config()?;
+        if let Some(v) = self.monitor_view.borrow().as_ref() {
+            (c.monitor_sample_hz, c.monitor_fps, c.monitor_seconds) = v.preferences();
+        }
         c.save(&self.path)?;
         let startup = checked(&self.start_on_login);
         if crate::startup::enabled()? != startup {
@@ -878,7 +913,7 @@ impl App {
         let attention = !status.ready();
         if self.dependency_attention.replace(attention) != attention {
             unsafe {
-                InvalidateRect(theme::hwnd(&self.nav[3].handle), std::ptr::null(), 1);
+                InvalidateRect(theme::hwnd(&self.nav[4].handle), std::ptr::null(), 1);
             }
         }
         self.dependency_check.set(std::time::Instant::now());
@@ -945,6 +980,9 @@ impl App {
         }
     }
     fn update(&self) {
+        if let Some(v) = self.monitor_view.borrow_mut().as_mut() {
+            v.refresh();
+        }
         self.poll_installation();
         let mut c = self.controller.borrow_mut();
         c.poll();
@@ -1045,7 +1083,7 @@ impl App {
             };
             if let Some((name, count)) = value {
                 data.on_tooltip_text().set_text(&format!("{name}：{count}"));
-            } else if handle == self.nav[3] {
+            } else if handle == self.nav[4] {
                 data.on_tooltip_text()
                     .set_text(if self.dependency_attention.get() {
                         "缺少或无法访问运行依赖，请打开诊断检查"
@@ -1120,6 +1158,11 @@ impl App {
             return;
         }
         if let Some(i) = self.nav.iter().position(|b| handle == *b) {
+            if i != 2 {
+                if let Some(d) = self.audio_test_view.borrow().as_ref() {
+                    d.hide();
+                }
+            }
             self.page.set(i as u8);
             self.layout();
             return;
@@ -1144,6 +1187,20 @@ impl App {
         } else if handle == self.refresh {
             self.refresh();
             Ok(())
+        } else if handle == self.audio_test {
+            (|| -> Result<(), String> {
+                let mut dialog = self.audio_test_view.borrow_mut();
+                if dialog.is_none() {
+                    *dialog = Some(crate::audio_test_view::Dialog::new(
+                        theme::hwnd(&self.window.handle),
+                        self.controller.borrow().state.monitor.clone(),
+                    )?);
+                }
+                if let Some(dialog) = dialog.as_ref() {
+                    dialog.show();
+                }
+                Ok(())
+            })()
         } else if handle == self.restore {
             crate::hidhide::recover_if_needed().map(|_| self.refresh())
         } else if handle == self.add {
@@ -1185,6 +1242,8 @@ impl App {
 }
 impl Drop for App {
     fn drop(&mut self) {
+        self.audio_test_view.get_mut().take();
+        self.monitor_view.get_mut().take();
         unsafe {
             DeleteObject(self.white_brush as _);
         }
@@ -1199,7 +1258,10 @@ pub fn run(
     run_inner(cfg, path, error, false, background)
 }
 pub fn smoke_test() -> Result<(), String> {
-    run_inner(Config::default(), Config::path(), None, true, false)
+    let path = std::env::temp_dir().join(format!("opends-ui-smoke-{}.ini", std::process::id()));
+    let result = run_inner(Config::default(), path.clone(), None, true, false);
+    let _ = std::fs::remove_file(path);
+    result
 }
 fn run_inner(
     cfg: Config,
@@ -1209,7 +1271,24 @@ fn run_inner(
     background: bool,
 ) -> Result<(), String> {
     let app = App::build(cfg, path, error, background)?;
+    #[cfg(debug_assertions)]
+    let demo = if smoke && std::env::var_os("OPENDS_UI_SMOKE_DEMO").is_some() {
+        app.window.set_text("OpenDS · 界面测试（模拟信号）");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Some((
+            stop.clone(),
+            crate::monitor::demo(app.controller.borrow().state.monitor.clone(), stop),
+        ))
+    } else {
+        None
+    };
     if smoke {
+        app.window.set_visible(true);
+        app.page.set(1);
+        app.layout();
+        if let Some(v) = app.monitor_view.borrow_mut().as_mut() {
+            v.smoke();
+        }
         let hwnd = theme::hwnd(&app.window.handle);
         for kind in [ICON_SMALL, ICON_BIG] {
             if unsafe { SendMessageW(hwnd, WM_GETICON, kind as usize, 0) } == 0 {
@@ -1217,7 +1296,14 @@ fn run_inner(
             }
         }
         app.smoke_deadline.set(Some(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            std::time::Instant::now()
+                + std::time::Duration::from_secs(
+                    std::env::var("OPENDS_UI_SMOKE_SECONDS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(2)
+                        .clamp(2, 600),
+                ),
         ));
     }
     let weak = Rc::downgrade(&app);
@@ -1239,6 +1325,11 @@ fn run_inner(
     app.update();
     app.layout();
     nwg::dispatch_thread_events();
+    #[cfg(debug_assertions)]
+    if let Some((stop, worker)) = demo {
+        stop.store(true, Ordering::Release);
+        let _ = worker.join();
+    }
     unsafe {
         KillTimer(theme::hwnd(&app.window.handle), 0x4f44);
     }

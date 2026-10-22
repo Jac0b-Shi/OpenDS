@@ -431,6 +431,29 @@ impl Device {
         ok
     }
 
+    pub fn monitor_audio_callbacks(
+        &self,
+        enabled: bool,
+        audio: AudioCallback,
+        haptics: AudioCallback,
+        reset: ResetCallback,
+    ) -> bool {
+        let Some(a) = self.api.set_audio_callback else {
+            return false;
+        };
+        let Some(h) = self.api.set_haptics_callback else {
+            return false;
+        };
+        let Some(r) = self.api.set_reset_callback else {
+            return false;
+        };
+        unsafe {
+            a(self.handle, enabled.then_some(audio)) != 0
+                && h(self.handle, enabled.then_some(haptics)) != 0
+                && r(self.handle, enabled.then_some(reset)) != 0
+        }
+    }
+
     pub fn send_microphone(&self, frame: &[u8; 192]) -> bool {
         self.api
             .set_mic

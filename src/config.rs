@@ -44,6 +44,9 @@ pub struct Config {
     pub headphone_volume: u8,
     /// 空串表示自动选择；否则只连接指定物理 HID 路径。
     pub device_path: String,
+    pub monitor_sample_hz: u32,
+    pub monitor_fps: u32,
+    pub monitor_seconds: u32,
 }
 
 impl Default for Config {
@@ -70,6 +73,9 @@ impl Default for Config {
             speaker_volume: 255,
             headphone_volume: 63,
             device_path: String::new(),
+            monitor_sample_hz: 100,
+            monitor_fps: 60,
+            monitor_seconds: 60,
         }
     }
 }
@@ -89,6 +95,15 @@ impl Config {
             self.usb_face = 0;
         }
         self.audio_route = self.audio_route.min(2);
+        if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
+            self.monitor_sample_hz = 100;
+        }
+        if ![15, 30, 60].contains(&self.monitor_fps) {
+            self.monitor_fps = 60;
+        }
+        if ![30, 60, 120, 300, 600, 900].contains(&self.monitor_seconds) {
+            self.monitor_seconds = 60;
+        }
     }
 
     /// 触觉增益的实际倍率。
@@ -171,6 +186,9 @@ impl Config {
                 "speaker_volume" => number!(speaker_volume),
                 "headphone_volume" => number!(headphone_volume),
                 "device_path" => cfg.device_path = value.to_owned(),
+                "monitor_sample_hz" => number!(monitor_sample_hz),
+                "monitor_fps" => number!(monitor_fps),
+                "monitor_seconds" => number!(monitor_seconds),
                 _ => {}
             }
         }
@@ -202,7 +220,10 @@ impl Config {
             audio_route,
             speaker_volume,
             headphone_volume,
-            device_path
+            device_path,
+            monitor_sample_hz,
+            monitor_fps,
+            monitor_seconds
         );
         if self.device_path.contains(['\r', '\n']) {
             return Err("设备路径含换行符".into());

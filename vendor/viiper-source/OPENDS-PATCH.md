@@ -83,9 +83,9 @@ The build record excludes this notes file from the source fingerprint to
 avoid a circular dependency on the DLL hash recorded here.
 
 <!-- BUILD-INFO:BEGIN -->
-DLL SHA-256: `28481ea329a98e80ff1e159c91ed5d30847e48213c7bb567cba172239cd00094`
+DLL SHA-256: `0b4a8fde017726e802bf65554db8ad863291959112b1105085a218e615efff02`
 
-Source SHA-256 (rules in build-info.json): `5cb73d8cba5d763769ea6584ea3a3265553cac75fff8fd1315cfde4160c8a57c`
+Source SHA-256 (rules in build-info.json): `7a5ff91723358e520d0d4cb6d69ea4bae086e1257fba58bfa07ceab95e23c5bb`
 
 Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
 

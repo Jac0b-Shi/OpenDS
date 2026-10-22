@@ -5,6 +5,8 @@
 )]
 mod attach;
 mod audio;
+mod audio_test;
+mod audio_test_view;
 mod audio_thread;
 mod bridge;
 mod config;
@@ -15,6 +17,8 @@ mod hid;
 mod hidhide;
 mod logging;
 mod microphone;
+mod monitor;
+mod monitor_view;
 #[cfg(not(feature = "bundled-opus"))]
 mod opus;
 #[cfg(feature = "bundled-opus")]
@@ -91,7 +95,6 @@ fn cli() -> Result<(), String> {
             return Ok(());
         }
         "ui-smoke-test" => {
-            let _instance = persistence::InstanceGuard::acquire()?;
             gui::smoke_test()?;
             println!("GUI 创建、图标加载、事件循环和正常退出检查通过");
             return Ok(());

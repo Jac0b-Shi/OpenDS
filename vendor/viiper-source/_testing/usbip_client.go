@@ -350,8 +350,8 @@ func (c *TestUsbIpClient) submitRaw(conn net.Conn, dir uint32, ep uint32, outPay
 type IsoPacketDesc struct {
 	Offset       uint32
 	Length       uint32
-	Status       uint32
 	ActualLength uint32
+	Status       uint32
 }
 
 func encodeIsoDescs(lengths []uint32) []byte {
@@ -374,8 +374,8 @@ func decodeIsoDescs(b []byte) []IsoPacketDesc {
 		out = append(out, IsoPacketDesc{
 			Offset:       binary.BigEndian.Uint32(b[o : o+4]),
 			Length:       binary.BigEndian.Uint32(b[o+4 : o+8]),
-			Status:       binary.BigEndian.Uint32(b[o+8 : o+12]),
-			ActualLength: binary.BigEndian.Uint32(b[o+12 : o+16]),
+			ActualLength: binary.BigEndian.Uint32(b[o+8 : o+12]),
+			Status:       binary.BigEndian.Uint32(b[o+12 : o+16]),
 		})
 	}
 	return out

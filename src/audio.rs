@@ -135,6 +135,20 @@ pub fn enable_microphone(report: &mut [u8; COMBINED_REPORT_SIZE]) {
     report[COMBINED_REPORT_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
 }
 
+pub fn microphone_control(seq: u8, enabled: bool) -> [u8; HAPTICS_REPORT_SIZE] {
+    // Explicit audio-control subreport, independently of speaker PCM. The
+    // controller keeps this mode until another control report or reconnect.
+    let mut r = [0; HAPTICS_REPORT_SIZE];
+    r[0] = 0x32;
+    r[1] = (seq & 15) << 4;
+    r[2] = 0x91;
+    r[3] = 1;
+    r[4] = if enabled { 3 } else { 2 };
+    let crc = crate::report::bt_output_crc32(&r[..HAPTICS_REPORT_SIZE - 4]);
+    r[HAPTICS_REPORT_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
+    r
+}
+
 /// 构造 `0x32` init-prime 报告（142 字节），用于**打开蓝牙音频/触觉通道**。
 ///
 /// 不先发这个，`0x36` 里的音频段不会被播放。布局（DualSenseClient

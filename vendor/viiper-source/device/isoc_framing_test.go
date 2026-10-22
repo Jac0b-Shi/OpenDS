@@ -2,6 +2,7 @@ package device_test
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -126,6 +127,80 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
 	for i, d := range multiDescs {
 		assert.Equal(t, uint32(192), d.ActualLength, "packet %d must carry a full frame", i)
 	}
+
+	// Windows reserves the asynchronous endpoint's 196-byte maximum per packet.
+	// The device still returns 192 PCM bytes at every service opportunity. USB/IP
+	// packs those bytes contiguously and the descriptors retain requested offsets.
+	micAsync, asyncDescs, err := usbipClient.SubmitIso(imp.Conn, usbip.DirIn, 2, nil, []uint32{196, 196, 196, 196})
+	require.NoError(t, err)
+	require.Len(t, micAsync, 4*192)
+	require.Len(t, asyncDescs, 4)
+	for i, d := range asyncDescs {
+		assert.Equal(t, uint32(i*196), d.Offset)
+		assert.Equal(t, uint32(196), d.Length)
+		assert.Equal(t, uint32(192), d.ActualLength, "packet %d", i)
+		assert.Zero(t, d.Status, "packet %d", i)
+	}
+
+	// A smaller host request must truncate each packet before packing it.
+	micShort, shortDescs, err := usbipClient.SubmitIso(imp.Conn, usbip.DirIn, 2, nil, []uint32{96, 96})
+	require.NoError(t, err)
+	require.Len(t, micShort, 192)
+	require.Len(t, shortDescs, 2)
+	for _, d := range shortDescs {
+		assert.Equal(t, uint32(96), d.ActualLength)
+		assert.Zero(t, d.Status)
+	}
+
+	// Queue numbered synthetic mic frames, then pipeline multi-packet URBs as
+	// Windows does. Sharing a per-frame clock between URB goroutines must not
+	// round-robin their reads: each host buffer needs consecutive audio frames.
+	openMic := [8]byte{0x01, 0x0b, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00}
+	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 0, nil, &openMic))
+	micDevice, ok := b.Devices()[0].(interface{ QueueMicrophonePCM([]byte) bool })
+	require.True(t, ok)
+	const pipelineURBs = 4
+	const packetsPerURB = 4
+	for i := 0; i < pipelineURBs*packetsPerURB; i++ {
+		frame := make([]byte, 192)
+		for j := range frame {
+			frame[j] = byte(i + 1)
+		}
+		require.True(t, micDevice.QueueMicrophonePCM(frame))
+	}
+	require.NoError(t, imp.Conn.SetDeadline(time.Now().Add(2*time.Second)))
+	for i := uint32(0); i < pipelineURBs; i++ {
+		cmd := usbip.CmdSubmit{
+			Basic:             usbip.HeaderBasic{Command: usbip.CmdSubmitCode, Seqnum: 10000 + i, Dir: usbip.DirIn, Ep: 2},
+			TransferBufferLen: packetsPerURB * 196,
+			NumberOfPackets:   packetsPerURB,
+		}
+		require.NoError(t, cmd.Write(imp.Conn))
+		descriptors := make([]byte, packetsPerURB*16)
+		for j := uint32(0); j < packetsPerURB; j++ {
+			binary.BigEndian.PutUint32(descriptors[j*16:j*16+4], j*196)
+			binary.BigEndian.PutUint32(descriptors[j*16+4:j*16+8], 196)
+		}
+		_, err := imp.Conn.Write(descriptors)
+		require.NoError(t, err)
+	}
+	for i := 0; i < pipelineURBs; i++ {
+		header := make([]byte, 48)
+		require.NoError(t, usbip.ReadExactly(imp.Conn, header))
+		seq := binary.BigEndian.Uint32(header[4:8])
+		require.Equal(t, uint32(10000+i), seq, "isochronous mic URBs must finish in submission order")
+		require.Equal(t, uint32(packetsPerURB*192), binary.BigEndian.Uint32(header[24:28]))
+		payload := make([]byte, packetsPerURB*192)
+		require.NoError(t, usbip.ReadExactly(imp.Conn, payload))
+		for j := 0; j < packetsPerURB; j++ {
+			for _, sample := range payload[j*192 : (j+1)*192] {
+				require.Equal(t, byte(i*packetsPerURB+j+1), sample, "URB %d packet %d", i, j)
+			}
+		}
+		descriptors := make([]byte, packetsPerURB*16)
+		require.NoError(t, usbip.ReadExactly(imp.Conn, descriptors))
+	}
+	require.NoError(t, imp.Conn.SetDeadline(time.Time{}))
 
 	// Plain control + interrupt traffic on the same stream proves framing held.
 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirIn, 0, nil, &setup))
