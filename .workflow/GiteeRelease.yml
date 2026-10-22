@@ -1,0 +1,27 @@
+version: '1.0'
+name: opends-gitee-release
+displayName: OpenDS 签名发行版同步
+triggers:
+  push:
+    tags:
+      prefix: [v]
+strategy:
+  blocking: true
+  stepTimeout: 30
+# Bind the secret OPENDS_GITEE_TOKEN in Gitee's environment-variable UI.
+# Do not put its value in this file or in GitHub Actions secrets.
+# This task scans published versions, so a manual run also backfills old tags.
+stages:
+  - stage:
+    name: mirror_release
+    displayName: 校验并发布 Gitee Release
+    strategy: naturally
+    trigger: auto
+    steps:
+      - step: build@python
+        name: publish_release
+        displayName: 复用已发布且通过签名校验的产物
+        pythonVersion: '3.9'
+        commands:
+          - command -v git && command -v gpg
+          - python3 scripts/mirror_gitee_release.py

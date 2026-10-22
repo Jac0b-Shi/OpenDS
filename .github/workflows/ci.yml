@@ -53,6 +53,8 @@ jobs:
           persist-credentials: false
       - name: Test release signature gate with isolated fixture keys
         run: python scripts/tests/test_release_tag.py
+      - name: Test Gitee release integrity, signatures and resumable uploads
+        run: python scripts/tests/test_gitee_release.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 (node24)
         with:
           go-version-file: vendor/viiper-source/go.mod
@@ -94,7 +96,7 @@ jobs:
               assert binary.testzip() is None and source.testzip() is None
               for line in binary.read('SHA256SUMS.txt').decode('ascii').splitlines():
                   digest, name = line.split(maxsplit=1)
-                  assert hashlib.sha256(binary.read(name.replace('\\', '/'))).hexdigest() == digest
+                  assert hashlib.sha256(binary.read(name.replace(chr(92), '/'))).hexdigest() == digest
               assert binary.read('libVIIPER.dll') == source.read('vendor/viiper/libVIIPER.dll')
               assert binary.read('scripts/Driver-Download.ps1') == source.read('scripts/Driver-Download.ps1')
               assert 'Cargo.lock' in source.namelist() and 'vendor/opends-viiper.patch' in source.namelist()
