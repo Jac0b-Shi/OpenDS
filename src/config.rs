@@ -38,6 +38,7 @@ pub struct Config {
     pub audio_enabled: bool,
     pub haptics_enabled: bool,
     pub microphone_enabled: bool,
+    pub microphone_gain_db: u8,
     /// 0 自动（优先游戏路由，其次耳机插入状态），1 扬声器，2 耳机。
     pub audio_route: u8,
     pub speaker_volume: u8,
@@ -69,6 +70,7 @@ impl Default for Config {
             audio_enabled: true,
             haptics_enabled: true,
             microphone_enabled: false,
+            microphone_gain_db: 0,
             audio_route: 0,
             speaker_volume: 255,
             headphone_volume: 63,
@@ -95,6 +97,7 @@ impl Config {
             self.usb_face = 0;
         }
         self.audio_route = self.audio_route.min(2);
+        self.microphone_gain_db = self.microphone_gain_db.min(30);
         if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
             self.monitor_sample_hz = 100;
         }
@@ -182,6 +185,7 @@ impl Config {
                 "audio_enabled" => boolean!(audio_enabled),
                 "haptics_enabled" => boolean!(haptics_enabled),
                 "microphone_enabled" => boolean!(microphone_enabled),
+                "microphone_gain_db" => number!(microphone_gain_db),
                 "audio_route" => number!(audio_route),
                 "speaker_volume" => number!(speaker_volume),
                 "headphone_volume" => number!(headphone_volume),
@@ -217,6 +221,7 @@ impl Config {
             audio_enabled,
             haptics_enabled,
             microphone_enabled,
+            microphone_gain_db,
             audio_route,
             speaker_volume,
             headphone_volume,
@@ -305,5 +310,24 @@ mod tests {
         assert_eq!(c.haptics_gain, 10);
         assert_eq!(c.opus_complexity, 10);
         assert_eq!(c.usb_face, 0);
+    }
+    #[test]
+    fn microphone_gain_is_opt_in_clamped_and_round_trips() {
+        assert_eq!(Config::default().microphone_gain_db, 0);
+        assert_eq!(
+            Config::parse("microphone_gain_db=255")
+                .unwrap()
+                .microphone_gain_db,
+            30
+        );
+        assert!(Config::parse("microphone_gain_db=-1").is_err());
+        let path = std::env::temp_dir().join(format!("opends-gain-{}.ini", std::process::id()));
+        let cfg = Config {
+            microphone_gain_db: 24,
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap().microphone_gain_db, 24);
+        std::fs::remove_file(path).unwrap();
     }
 }

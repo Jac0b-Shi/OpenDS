@@ -400,6 +400,10 @@ fn run_session(
         .monitor
         .microphone
         .store(cfg.microphone_enabled, Ordering::Relaxed);
+    state
+        .monitor
+        .microphone_gain_db
+        .store(cfg.microphone_gain_db as u32, Ordering::Relaxed);
     let vibration_v2 = crate::output::uses_vibration_v2(physical.product_id, firmware);
     audio.vibration_v2.store(vibration_v2, Ordering::Relaxed);
     state.log(format!(
@@ -532,6 +536,9 @@ fn run_session(
                     if let (Some(mic), Some(packet)) =
                         (microphone.as_mut(), report.microphone_frame())
                     {
+                        mic.set_gain_db(
+                            state.monitor.microphone_gain_db.load(Ordering::Relaxed) as u8
+                        );
                         state.monitor.mic_packets.fetch_add(1, Ordering::Relaxed);
                         if !mic.decode_observed(
                             packet,

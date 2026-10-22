@@ -57,6 +57,7 @@ struct Controls {
     port: nwg::TextInput,
     speaker: nwg::TextInput,
     haptic_gain: nwg::TextInput,
+    mic_gain: nwg::ComboBox<String>,
     active: nwg::CheckBox,
     whitelist: nwg::ListBox<String>,
     app_path: nwg::TextInput,
@@ -259,6 +260,21 @@ impl App {
             input!(buffer, &cfg.buffer.to_string());
             input!(speaker, &cfg.speaker_volume.to_string());
             input!(haptic_gain, &cfg.haptics_gain.to_string());
+            nwg::ComboBox::builder()
+                .parent(window)
+                .collection(
+                    (0..=30)
+                        .map(|db| {
+                            if db == 0 {
+                                "0 dB（原始）".into()
+                            } else {
+                                format!("+{db} dB · 限幅")
+                            }
+                        })
+                        .collect(),
+                )
+                .selected_index(Some(cfg.microphone_gain_db as usize))
+                .build(&mut ui.mic_gain)?;
             cb!(active, "启用 HidHide 设备隐藏", false);
             nwg::ListBox::builder()
                 .parent(window)
@@ -387,6 +403,7 @@ impl App {
             &self.port.handle,
             &self.speaker.handle,
             &self.haptic_gain.handle,
+            &self.mic_gain.handle,
             &self.active.handle,
             &self.whitelist.handle,
             &self.app_path.handle,
@@ -478,8 +495,15 @@ impl App {
                 put(&self.microphone.handle, x + 24, 258, cw / 2 - 32, 28);
                 put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
                 put(&self.route.handle, x + 24, 324, cw - 48, 180);
-                put(&self.speaker.handle, x + 24, 396, cw / 2 - 48, 34);
-                put(&self.haptic_gain.handle, x + cw / 2, 396, cw / 2 - 24, 34);
+                put(&self.speaker.handle, x + 24, 396, cw / 3 - 40, 34);
+                put(
+                    &self.haptic_gain.handle,
+                    x + cw / 3 + 8,
+                    396,
+                    cw / 3 - 32,
+                    34,
+                );
+                put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 250);
                 put(&self.port.handle, x + 24, 464, cw / 2 - 48, 34);
                 put(&self.buffer.handle, x + cw / 2, 464, cw / 2 - 24, 34);
                 put(&self.auto_start.handle, x + 24, 511, cw / 2 - 32, 28);
@@ -635,8 +659,9 @@ impl App {
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, "物理手柄"),
                     (x + 24, 296, cw - 48, "声音输出"),
-                    (x + 24, 364, cw / 2 - 48, "扬声器音量  ·  0–255"),
-                    (x + cw / 2, 364, cw / 2 - 24, "触觉增益  ·  10–20"),
+                    (x + 24, 364, cw / 3 - 40, "扬声器音量  ·  0–255"),
+                    (x + cw / 3 + 8, 364, cw / 3 - 32, "触觉增益  ·  10–20"),
+                    (x + 2 * cw / 3, 364, cw / 3 - 24, "麦克风增益 · 即时生效"),
                     (x + 24, 432, cw / 2 - 48, "本机服务端口"),
                     (x + cw / 2, 432, cw / 2 - 24, "音频缓冲上限  ·  1–128 块"),
                 ] {
@@ -822,6 +847,7 @@ impl App {
         c.audio_enabled = checked(&self.audio);
         c.haptics_enabled = checked(&self.haptics);
         c.microphone_enabled = checked(&self.microphone);
+        c.microphone_gain_db = self.mic_gain.selection().unwrap_or(0).min(30) as u8;
         c.audio_route = self.route.selection().unwrap_or(0) as u8;
         c.device_path = self
             .device
@@ -1070,6 +1096,27 @@ impl App {
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
+        if event == E::OnComboxBoxSelection && handle == self.mic_gain {
+            let db = self.mic_gain.selection().unwrap_or(0).min(30) as u8;
+            let result = Config::load(&self.path).and_then(|mut c| {
+                c.microphone_gain_db = db;
+                c.save(&self.path)
+            });
+            if let Err(e) = result {
+                self.mic_gain
+                    .set_selection(Some(self.config.borrow().microphone_gain_db as usize));
+                self.error(e);
+            } else {
+                self.config.borrow_mut().microphone_gain_db = db;
+                self.controller
+                    .borrow()
+                    .state
+                    .monitor
+                    .microphone_gain_db
+                    .store(db as u32, Ordering::Relaxed);
+            }
+            return;
+        }
         if event == E::OnTooltipText {
             let state = self.controller.borrow().state.clone();
             let value = if handle == self.count_input {

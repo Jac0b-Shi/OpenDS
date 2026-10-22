@@ -1307,6 +1307,16 @@ impl ViewState {
                 },
                 self.hub.volume.load(Relaxed)
             )
+        } else if group == 2 {
+            format!(
+                "源：原始电平 · 转发：+{} dB{}",
+                self.hub.microphone_gain_db.load(Relaxed),
+                if self.hub.microphone_gain_db.load(Relaxed) > 0 {
+                    " / 限幅"
+                } else {
+                    ""
+                }
+            )
         } else {
             "蓝色源信号 / 橙色转发 · 固定 ±100%".into()
         };
