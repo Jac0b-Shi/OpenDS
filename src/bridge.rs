@@ -493,6 +493,18 @@ fn run_session(
     let mut old_callbacks = 0;
     let mut diagnostic = Instant::now();
     let (mut full, mut simple) = (0u64, 0u64);
+    let mut mic_buffer_ms = cfg.microphone_buffer_ms as u32;
+    state
+        .monitor
+        .microphone_buffer_ms
+        .store(mic_buffer_ms, Ordering::Relaxed);
+    if cfg.microphone_enabled && !session.device.microphone_buffer(mic_buffer_ms) {
+        return Err("麦克风缓冲配置失败，请使用配套 libVIIPER.dll".into());
+    }
+    state.monitor.mic_buffered.store(0, Ordering::Relaxed);
+    state.monitor.mic_underruns.store(0, Ordering::Relaxed);
+    state.monitor.mic_dropped.store(0, Ordering::Relaxed);
+    let mut mic_stats_at = Instant::now();
     let mut gyro = [0i16; 3];
     let mut microphone = if cfg.microphone_enabled {
         let mut mic = crate::microphone::Microphone::new().ok_or("麦克风解码器不可用")?;
@@ -530,6 +542,19 @@ fn run_session(
                     continue;
                 };
                 if report.has_audio_payload() {
+                    let wanted = state.monitor.microphone_buffer_ms.load(Ordering::Relaxed);
+                    if wanted != mic_buffer_ms && session.device.microphone_buffer(wanted) {
+                        mic_buffer_ms = wanted;
+                        state.log(format!("麦克风安全缓冲已调整为 {wanted} ms"));
+                    }
+                    if mic_stats_at.elapsed() >= Duration::from_millis(250) {
+                        if let Some(s) = session.device.microphone_stats() {
+                            state.monitor.mic_buffered.store(s[0], Ordering::Relaxed);
+                            state.monitor.mic_underruns.store(s[1], Ordering::Relaxed);
+                            state.monitor.mic_dropped.store(s[2], Ordering::Relaxed);
+                        }
+                        mic_stats_at = Instant::now();
+                    }
                     state.monitor.mic_tagged.fetch_add(1, Ordering::Relaxed);
                     state
                         .monitor

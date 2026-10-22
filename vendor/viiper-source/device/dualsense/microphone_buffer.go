@@ -5,10 +5,48 @@ import (
 	"math"
 )
 
+// Caller holds d.mtx. Retain counters across host close/reopen, not PCM.
+func (d *DualSense) flushMicrophoneBuffer() {
+	if d.micBuffer != nil {
+		d.micUnderruns += d.micBuffer.underruns
+		d.micDropped += d.micBuffer.dropped
+		d.micBuffer = nil
+	}
+}
+
+func (d *DualSense) SetMicrophoneBufferMs(ms uint32) bool {
+	if ms < 32 || ms > 256 {
+		return false
+	}
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.micBufferMs != ms {
+		d.flushMicrophoneBuffer()
+		d.micBufferMs = ms
+	}
+	return true
+}
+
+// Queued sample frames, underrun events, dropped sample frames, rate in ppm.
+func (d *DualSense) MicrophoneBufferStats() [4]uint64 {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	stats := [4]uint64{0, d.micUnderruns, d.micDropped, 1000000}
+	if b := d.micBuffer; b != nil {
+		stats[0] = uint64(b.count)
+		stats[1] += b.underruns
+		stats[2] += b.dropped
+		if b.ratio != 0 {
+			stats[3] = uint64(math.Round(b.ratio * 1000000))
+		}
+	}
+	return stats
+}
+
 const (
 	micSamplesPerFrame = 48
 	micPreRollFrames   = 128 // milliseconds, independent of speaker/haptics latency
-	micQueueDepth      = 256
+	micQueueDepth      = 512
 	micSampleCapacity  = micQueueDepth * micSamplesPerFrame
 )
 
@@ -21,6 +59,7 @@ type microphoneBuffer struct {
 	head, count           int
 	position, ratio, mean float64
 	primed                bool
+	target                int
 	underruns, dropped    uint64
 }
 
@@ -40,7 +79,10 @@ func (b *microphoneBuffer) push(frame []byte) {
 }
 
 func (b *microphoneBuffer) pop() []byte {
-	const target = float64(micPreRollFrames * micSamplesPerFrame)
+	target := float64(b.target)
+	if target == 0 {
+		target = micPreRollFrames * micSamplesPerFrame
+	}
 	if !b.primed {
 		if b.count < int(target) {
 			return nil

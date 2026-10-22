@@ -51,7 +51,7 @@ impl Dialog {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 p(570),
-                p(280),
+                p(320),
                 parent,
                 null_mut(),
                 wc.hInstance,
@@ -96,7 +96,7 @@ impl Dialog {
                     20,
                     130,
                     520,
-                    72,
+                    110,
                 ),
                 ("BUTTON", "回听蓝牙端", 211, 72, 100, 34),
             ]
@@ -191,7 +191,7 @@ impl State {
             (138, 72, 65, 34),
             (319, 72, 110, 34),
             (437, 72, 100, 34),
-            (20, 130, 520, 72),
+            (20, 130, 520, 110),
             (211, 72, 100, 34),
         ]) {
             SendMessageW(*control, WM_SETFONT, font as usize, 1);
@@ -221,11 +221,15 @@ impl State {
         SetWindowTextW(
             self.controls[5],
             wide(&format!(
-                "{}\r\n蓝牙 Opus {} 包 · 解码 {} 样本 · USB 接收 {} 帧",
+                "{}\r\n蓝牙 Opus {} 包 · 解码 {} 样本 · USB 接收 {} 帧\r\nUSB 欠载 {} 次 · 丢弃 {} ms · 当前缓冲 {}/{} ms",
                 status.message,
                 self.monitor.mic_packets.load(Relaxed),
                 self.monitor.mic_samples.load(Relaxed),
-                self.monitor.mic_usb_frames.load(Relaxed)
+                self.monitor.mic_usb_frames.load(Relaxed),
+                self.monitor.mic_underruns.load(Relaxed),
+                self.monitor.mic_dropped.load(Relaxed) / 48,
+                self.monitor.mic_buffered.load(Relaxed) / 48,
+                self.monitor.microphone_buffer_ms.load(Relaxed)
             ))
             .as_ptr(),
         );

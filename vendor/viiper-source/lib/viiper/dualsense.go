@@ -616,6 +616,34 @@ func SetDualSenseMicrophonePCM(handle C.DSDeviceHandle, data *C.uint8_t, length 
 	return dsDevice.QueueMicrophonePCM(frame)
 }
 
+//export SetDualSenseMicrophoneBufferMs
+func SetDualSenseMicrophoneBufferMs(handle C.DSDeviceHandle, ms C.uint32_t) bool {
+	wrapper, ok := cgo.Handle(handle).Value().(*deviceHandleWrapper)
+	if !ok {
+		return false
+	}
+	ds, ok := wrapper.device.(*dualsense.DualSense)
+	return ok && ds.SetMicrophoneBufferMs(uint32(ms))
+}
+
+//export GetDualSenseMicrophoneBufferStats
+func GetDualSenseMicrophoneBufferStats(handle C.DSDeviceHandle, data *C.uint64_t, length C.size_t) bool {
+	if data == nil || length != 4 {
+		return false
+	}
+	wrapper, ok := cgo.Handle(handle).Value().(*deviceHandleWrapper)
+	if !ok {
+		return false
+	}
+	ds, ok := wrapper.device.(*dualsense.DualSense)
+	if !ok {
+		return false
+	}
+	stats := ds.MicrophoneBufferStats()
+	copy(unsafe.Slice(data, 4), []C.uint64_t{C.uint64_t(stats[0]), C.uint64_t(stats[1]), C.uint64_t(stats[2]), C.uint64_t(stats[3])})
+	return true
+}
+
 // SetDualSenseRawInputReport pipes one exact 64B USB input report 0x01
 // (real controller bytes). While set, interrupt IN and GET_REPORT serve it
 // verbatim; ClearDualSenseRawInputReport restores synthetic reports.

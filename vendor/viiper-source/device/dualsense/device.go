@@ -68,7 +68,9 @@ type DualSense struct {
 
 	// Mic-only jitter buffer, guarded by mtx. Allocated on first ingest,
 	// flushed and released when the host changes the mic alt setting.
-	micBuffer *microphoneBuffer
+	micBuffer                *microphoneBuffer
+	micBufferMs              uint32
+	micUnderruns, micDropped uint64
 
 	// Feeder-driven feature-report overrides (Edge profile proxy, see
 	// feature_override.go), guarded by mtx.
@@ -95,7 +97,7 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
 		return false
 	}
 	if d.micBuffer == nil {
-		d.micBuffer = &microphoneBuffer{}
+		d.micBuffer = &microphoneBuffer{target: int(d.micBufferMs) * micSamplesPerFrame}
 	}
 	d.micBuffer.push(frame)
 	return true
@@ -691,7 +693,7 @@ func (d *DualSense) setAltSetting(iface, alt uint8) {
 			// while closed but leaves queued Opus in place (up to
 			// ~80ms stale on reopen); the virtual device flushes
 			// instead.
-			d.micBuffer = nil
+			d.flushMicrophoneBuffer()
 		}
 	}
 	d.mtx.Unlock()

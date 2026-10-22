@@ -42,6 +42,8 @@ type FnSetOutputCallback = unsafe extern "C" fn(usize, Option<OutputCallback>) -
 type FnSetAudioCallback = unsafe extern "C" fn(usize, Option<AudioCallback>) -> u8;
 type FnSetResetCallback = unsafe extern "C" fn(usize, Option<ResetCallback>) -> u8;
 type FnSetMic = unsafe extern "C" fn(usize, *const u8, usize) -> u8;
+type FnMicBuffer = unsafe extern "C" fn(usize, u32) -> u8;
+type FnMicStats = unsafe extern "C" fn(usize, *mut u64, usize) -> u8;
 pub type ResetCallback = unsafe extern "C" fn(usize);
 
 #[repr(C)]
@@ -145,6 +147,8 @@ struct Api {
     set_haptics_callback: Option<FnSetAudioCallback>,
     set_reset_callback: Option<FnSetResetCallback>,
     set_mic: Option<FnSetMic>,
+    mic_buffer: Option<FnMicBuffer>,
+    mic_stats: Option<FnMicStats>,
 }
 
 #[link(name = "kernel32")]
@@ -223,6 +227,10 @@ unsafe fn load_api() -> Option<Api> {
         set_reset_callback: resolve(module, "SetDualSenseSpeakerResetCallback")
             .map(|p| std::mem::transmute(p)),
         set_mic: resolve(module, "SetDualSenseMicrophonePCM").map(|p| std::mem::transmute(p)),
+        mic_buffer: resolve(module, "SetDualSenseMicrophoneBufferMs")
+            .map(|p| std::mem::transmute(p)),
+        mic_stats: resolve(module, "GetDualSenseMicrophoneBufferStats")
+            .map(|p| std::mem::transmute(p)),
     })
 }
 
@@ -458,6 +466,18 @@ impl Device {
         self.api
             .set_mic
             .is_some_and(|f| unsafe { f(self.handle, frame.as_ptr(), frame.len()) != 0 })
+    }
+    pub fn microphone_buffer(&self, ms: u32) -> bool {
+        self.api
+            .mic_buffer
+            .is_some_and(|f| unsafe { f(self.handle, ms) != 0 })
+    }
+    pub fn microphone_stats(&self) -> Option<[u64; 4]> {
+        let mut stats = [0; 4];
+        self.api
+            .mic_stats
+            .filter(|f| unsafe { f(self.handle, stats.as_mut_ptr(), stats.len()) != 0 })
+            .map(|_| stats)
     }
 }
 

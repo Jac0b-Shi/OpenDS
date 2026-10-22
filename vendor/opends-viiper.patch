@@ -1,6 +1,6 @@
 diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f650157be21165a87ea8151d820cce890f488d51
+index 0000000000000000000000000000000000000000..ab69f12962b8b5a713bf40dbcdb14ebede76ceb9
 --- /dev/null
 +++ b/OPENDS-PATCH.md
 @@ -0,0 +1,93 @@
@@ -89,9 +89,9 @@ index 0000000000000000000000000000000000000000..f650157be21165a87ea8151d820cce89
 +avoid a circular dependency on the DLL hash recorded here.
 +
 +<!-- BUILD-INFO:BEGIN -->
-+DLL SHA-256: `47a47711b21d77917d441a6d231df07ea1f8ce933f5dd2d8f09895446b7e030d`
++DLL SHA-256: `1987f0998b1bc94956373a48b228b4c914b28cf5bb12540c5aa3805f874fd693`
 +
-+Source SHA-256 (rules in build-info.json): `a8f29b970bdea9fb196129b9fb90a94cab4631ef9559f79b70f8f56d226db161`
++Source SHA-256 (rules in build-info.json): `489029507f48b01ff7a708f84f7063bfb1a9e7573d75d04340c9c45a56586717`
 +
 +Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
 +
@@ -183,7 +183,7 @@ index 773ada799b9cbc5e9842eced5d960bca252a5a7f..cbfadd45b0a24e87971c344c95a23e5f
  	assert.Equal(t, third, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
  }
 diff --git a/device/dualsense/device.go b/device/dualsense/device.go
-index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1bd9816f9 100644
+index 37f532ee365ed86e761e816764ac97dd902466ba..8e4697feb26a973ee7f9181349969c27f3fa69ed 100644
 --- a/device/dualsense/device.go
 +++ b/device/dualsense/device.go
 @@ -41,6 +41,8 @@ type DualSense struct {
@@ -195,7 +195,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
  
  	// Synthesized mute LED state echoed in input report b[54] bit 2,
  	// derived from the last host output (AllowMuteLight-gated modes
-@@ -64,10 +66,9 @@ type DualSense struct {
+@@ -64,10 +66,11 @@ type DualSense struct {
  	// buffer. They receive the rear voice-coil pair only (see below).
  	hapticsSubs map[*hapticsSub]struct{}
  
@@ -205,11 +205,13 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
 -	micQueue [][]byte
 +	// Mic-only jitter buffer, guarded by mtx. Allocated on first ingest,
 +	// flushed and released when the host changes the mic alt setting.
-+	micBuffer *microphoneBuffer
++	micBuffer                *microphoneBuffer
++	micBufferMs              uint32
++	micUnderruns, micDropped uint64
  
  	// Feeder-driven feature-report overrides (Edge profile proxy, see
  	// feature_override.go), guarded by mtx.
-@@ -79,13 +80,11 @@ type DualSense struct {
+@@ -79,13 +82,11 @@ type DualSense struct {
  // micFrameSize is one 1ms mic frame: 48 samples of 2ch S16LE.
  const micFrameSize = 192
  
@@ -225,7 +227,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
  func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
  	if len(frame) != micFrameSize {
  		return false
-@@ -95,11 +94,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
+@@ -95,11 +96,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
  	if d.alts[2] == 0 {
  		return false
  	}
@@ -234,13 +236,13 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
 -	for len(d.micQueue) > micQueueDepth {
 -		d.micQueue = d.micQueue[1:]
 +	if d.micBuffer == nil {
-+		d.micBuffer = &microphoneBuffer{}
++		d.micBuffer = &microphoneBuffer{target: int(d.micBufferMs) * micSamplesPerFrame}
  	}
 +	d.micBuffer.push(frame)
  	return true
  }
  
-@@ -107,12 +105,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
+@@ -107,12 +107,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
  func (d *DualSense) popMicrophoneFrame() []byte {
  	d.mtx.Lock()
  	defer d.mtx.Unlock()
@@ -255,7 +257,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
  }
  
  // SpeakerEvent is one speaker-stream item: PCM audio or a generation
-@@ -367,6 +363,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
+@@ -367,6 +365,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
  
  	d.inputState = NewInputState()
  	d.inputCh = make(chan *InputState, 1)
@@ -263,7 +265,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
  	d.inputCh <- d.inputState
  	d.timestampBase = time.Now()
  
-@@ -465,6 +462,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
+@@ -465,6 +464,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
  		case 4:
  			// Raw passthrough wins when a feeder pipes real reports.
  			if raw := d.rawInputReport(); raw != nil {
@@ -278,21 +280,21 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1
  				return raw
  			}
  			select {
-@@ -686,7 +691,7 @@ func (d *DualSense) setAltSetting(iface, alt uint8) {
+@@ -686,7 +693,7 @@ func (d *DualSense) setAltSetting(iface, alt uint8) {
  			// while closed but leaves queued Opus in place (up to
  			// ~80ms stale on reopen); the virtual device flushes
  			// instead.
 -			d.micQueue = nil
-+			d.micBuffer = nil
++			d.flushMicrophoneBuffer()
  		}
  	}
  	d.mtx.Unlock()
 diff --git b/device/dualsense/microphone_buffer.go b/device/dualsense/microphone_buffer.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c13a720555
+index 0000000000000000000000000000000000000000..af5ad2552013df6b22ac462c21dea231b9d64078
 --- /dev/null
 +++ b/device/dualsense/microphone_buffer.go
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,127 @@
 +package dualsense
 +
 +import (
@@ -300,10 +302,48 @@ index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c1
 +	"math"
 +)
 +
++// Caller holds d.mtx. Retain counters across host close/reopen, not PCM.
++func (d *DualSense) flushMicrophoneBuffer() {
++	if d.micBuffer != nil {
++		d.micUnderruns += d.micBuffer.underruns
++		d.micDropped += d.micBuffer.dropped
++		d.micBuffer = nil
++	}
++}
++
++func (d *DualSense) SetMicrophoneBufferMs(ms uint32) bool {
++	if ms < 32 || ms > 256 {
++		return false
++	}
++	d.mtx.Lock()
++	defer d.mtx.Unlock()
++	if d.micBufferMs != ms {
++		d.flushMicrophoneBuffer()
++		d.micBufferMs = ms
++	}
++	return true
++}
++
++// Queued sample frames, underrun events, dropped sample frames, rate in ppm.
++func (d *DualSense) MicrophoneBufferStats() [4]uint64 {
++	d.mtx.Lock()
++	defer d.mtx.Unlock()
++	stats := [4]uint64{0, d.micUnderruns, d.micDropped, 1000000}
++	if b := d.micBuffer; b != nil {
++		stats[0] = uint64(b.count)
++		stats[1] += b.underruns
++		stats[2] += b.dropped
++		if b.ratio != 0 {
++			stats[3] = uint64(math.Round(b.ratio * 1000000))
++		}
++	}
++	return stats
++}
++
 +const (
 +	micSamplesPerFrame = 48
 +	micPreRollFrames   = 128 // milliseconds, independent of speaker/haptics latency
-+	micQueueDepth      = 256
++	micQueueDepth      = 512
 +	micSampleCapacity  = micQueueDepth * micSamplesPerFrame
 +)
 +
@@ -316,6 +356,7 @@ index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c1
 +	head, count           int
 +	position, ratio, mean float64
 +	primed                bool
++	target                int
 +	underruns, dropped    uint64
 +}
 +
@@ -335,7 +376,10 @@ index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c1
 +}
 +
 +func (b *microphoneBuffer) pop() []byte {
-+	const target = float64(micPreRollFrames * micSamplesPerFrame)
++	target := float64(b.target)
++	if target == 0 {
++		target = micPreRollFrames * micSamplesPerFrame
++	}
 +	if !b.primed {
 +		if b.count < int(target) {
 +			return nil
@@ -380,10 +424,10 @@ index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c1
 +}
 diff --git b/device/dualsense/microphone_buffer_test.go b/device/dualsense/microphone_buffer_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d6fa1174394d3c8ad68bb9736419b332edcc8d2
+index 0000000000000000000000000000000000000000..79bac9faae693984c4c3e51e1d345567db445900
 --- /dev/null
 +++ b/device/dualsense/microphone_buffer_test.go
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,116 @@
 +package dualsense
 +
 +import (
@@ -462,6 +506,43 @@ index 0000000000000000000000000000000000000000..5d6fa1174394d3c8ad68bb9736419b33
 +		return "source_fast_3_percent"
 +	}
 +	return "equal_clocks"
++}
++
++func TestMicrophoneBufferConfigurationAndPersistentCounters(t *testing.T) {
++	d, err := new(nil, false)
++	require.NoError(t, err)
++	require.False(t, d.SetMicrophoneBufferMs(31))
++	require.False(t, d.SetMicrophoneBufferMs(257))
++	require.True(t, d.SetMicrophoneBufferMs(160))
++	openMic(t, d)
++	frame := make([]byte, 192)
++	for i := 0; i < 48; i++ {
++		binary.LittleEndian.PutUint16(frame[i*4:], 500)
++		binary.LittleEndian.PutUint16(frame[i*4+2:], 500)
++	}
++	for i := 0; i < 159; i++ {
++		require.True(t, d.QueueMicrophonePCM(frame))
++	}
++	require.Nil(t, d.popMicrophoneFrame())
++	require.True(t, d.QueueMicrophonePCM(frame))
++	require.Equal(t, frame, d.popMicrophoneFrame())
++	for i := 0; i < 400; i++ {
++		d.popMicrophoneFrame()
++	}
++	stats := d.MicrophoneBufferStats()
++	require.Equal(t, uint64(1), stats[1])
++	for i := 0; i < micQueueDepth+8; i++ {
++		require.True(t, d.QueueMicrophonePCM(frame))
++	}
++	require.Positive(t, d.MicrophoneBufferStats()[2])
++	d.setAltSetting(2, 0)
++	closed := d.MicrophoneBufferStats()
++	require.Zero(t, closed[0])
++	require.Equal(t, uint64(1), closed[1])
++	require.Positive(t, closed[2])
++	require.Nil(t, d.micBuffer)
++	require.True(t, d.SetMicrophoneBufferMs(192))
++	require.Equal(t, closed, d.MicrophoneBufferStats())
 +}
 diff --git b/device/dualsense/opends_usb_profile.go b/device/dualsense/opends_usb_profile.go
 new file mode 100644
@@ -904,10 +985,45 @@ index 7e49faf606d6e108a6851592ed1ef14950eb5bcb..b0252dceb70deca7525f782edf411073
  	return out
  }
 diff --git a/lib/viiper/dualsense.go b/lib/viiper/dualsense.go
-index 4c250f56bd42478c8825d5ef3196ee7f40163e60..7863d1a82659732977c3ea50e705a37dedef3d95 100644
+index 4c250f56bd42478c8825d5ef3196ee7f40163e60..bade85ab20415b11951aaff87a74044e5f3aa89f 100644
 --- a/lib/viiper/dualsense.go
 +++ b/lib/viiper/dualsense.go
-@@ -657,6 +657,19 @@ func ClearDualSenseRawInputReport(handle C.DSDeviceHandle) bool {
+@@ -616,6 +616,34 @@ func SetDualSenseMicrophonePCM(handle C.DSDeviceHandle, data *C.uint8_t, length
+ 	return dsDevice.QueueMicrophonePCM(frame)
+ }
+ 
++//export SetDualSenseMicrophoneBufferMs
++func SetDualSenseMicrophoneBufferMs(handle C.DSDeviceHandle, ms C.uint32_t) bool {
++	wrapper, ok := cgo.Handle(handle).Value().(*deviceHandleWrapper)
++	if !ok {
++		return false
++	}
++	ds, ok := wrapper.device.(*dualsense.DualSense)
++	return ok && ds.SetMicrophoneBufferMs(uint32(ms))
++}
++
++//export GetDualSenseMicrophoneBufferStats
++func GetDualSenseMicrophoneBufferStats(handle C.DSDeviceHandle, data *C.uint64_t, length C.size_t) bool {
++	if data == nil || length != 4 {
++		return false
++	}
++	wrapper, ok := cgo.Handle(handle).Value().(*deviceHandleWrapper)
++	if !ok {
++		return false
++	}
++	ds, ok := wrapper.device.(*dualsense.DualSense)
++	if !ok {
++		return false
++	}
++	stats := ds.MicrophoneBufferStats()
++	copy(unsafe.Slice(data, 4), []C.uint64_t{C.uint64_t(stats[0]), C.uint64_t(stats[1]), C.uint64_t(stats[2]), C.uint64_t(stats[3])})
++	return true
++}
++
+ // SetDualSenseRawInputReport pipes one exact 64B USB input report 0x01
+ // (real controller bytes). While set, interrupt IN and GET_REPORT serve it
+ // verbatim; ClearDualSenseRawInputReport restores synthetic reports.
+@@ -657,6 +685,19 @@ func ClearDualSenseRawInputReport(handle C.DSDeviceHandle) bool {
  	return true
  }
  

@@ -77,3 +77,40 @@ func fmtSkew(skew float64) string {
 	}
 	return "equal_clocks"
 }
+
+func TestMicrophoneBufferConfigurationAndPersistentCounters(t *testing.T) {
+	d, err := new(nil, false)
+	require.NoError(t, err)
+	require.False(t, d.SetMicrophoneBufferMs(31))
+	require.False(t, d.SetMicrophoneBufferMs(257))
+	require.True(t, d.SetMicrophoneBufferMs(160))
+	openMic(t, d)
+	frame := make([]byte, 192)
+	for i := 0; i < 48; i++ {
+		binary.LittleEndian.PutUint16(frame[i*4:], 500)
+		binary.LittleEndian.PutUint16(frame[i*4+2:], 500)
+	}
+	for i := 0; i < 159; i++ {
+		require.True(t, d.QueueMicrophonePCM(frame))
+	}
+	require.Nil(t, d.popMicrophoneFrame())
+	require.True(t, d.QueueMicrophonePCM(frame))
+	require.Equal(t, frame, d.popMicrophoneFrame())
+	for i := 0; i < 400; i++ {
+		d.popMicrophoneFrame()
+	}
+	stats := d.MicrophoneBufferStats()
+	require.Equal(t, uint64(1), stats[1])
+	for i := 0; i < micQueueDepth+8; i++ {
+		require.True(t, d.QueueMicrophonePCM(frame))
+	}
+	require.Positive(t, d.MicrophoneBufferStats()[2])
+	d.setAltSetting(2, 0)
+	closed := d.MicrophoneBufferStats()
+	require.Zero(t, closed[0])
+	require.Equal(t, uint64(1), closed[1])
+	require.Positive(t, closed[2])
+	require.Nil(t, d.micBuffer)
+	require.True(t, d.SetMicrophoneBufferMs(192))
+	require.Equal(t, closed, d.MicrophoneBufferStats())
+}
