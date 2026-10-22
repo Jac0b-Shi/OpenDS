@@ -97,7 +97,7 @@ impl Config {
             self.usb_face = 0;
         }
         self.audio_route = self.audio_route.min(2);
-        self.microphone_gain_db = self.microphone_gain_db.min(30);
+        self.microphone_gain_db = self.microphone_gain_db.min(50);
         if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
             self.monitor_sample_hz = 100;
         }
@@ -318,7 +318,7 @@ mod tests {
             Config::parse("microphone_gain_db=255")
                 .unwrap()
                 .microphone_gain_db,
-            30
+            50
         );
         assert!(Config::parse("microphone_gain_db=-1").is_err());
         let path = std::env::temp_dir().join(format!("opends-gain-{}.ini", std::process::id()));

@@ -80,7 +80,7 @@ impl Default for Gain {
 }
 impl Gain {
     fn set(&mut self, db: u8) {
-        let db = db.min(30);
+        let db = db.min(50);
         if self.db != db {
             self.db = db;
             self.scale = 10f32.powf(db as f32 / 20.);
@@ -223,11 +223,13 @@ mod tests {
         gain.apply(&mut bypass);
         assert_eq!(bypass, original);
         gain.set(255);
-        assert_eq!(gain.db, 30);
+        assert_eq!(gain.db, 50);
         let mut plosive = [i16::MAX; 480];
         plosive[0] = i16::MIN;
         gain.apply(&mut plosive);
         assert!(plosive.iter().all(|s| s.unsigned_abs() <= 31128));
+        gain.set(30);
+        gain.apply(&mut plosive);
         let mut quiet = [400; 480];
         gain.apply(&mut quiet);
         let after_plosive = quiet[0];

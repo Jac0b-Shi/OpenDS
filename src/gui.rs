@@ -57,7 +57,7 @@ struct Controls {
     port: nwg::TextInput,
     speaker: nwg::TextInput,
     haptic_gain: nwg::TextInput,
-    mic_gain: nwg::ComboBox<String>,
+    mic_gain: nwg::TrackBar,
     active: nwg::CheckBox,
     whitelist: nwg::ListBox<String>,
     app_path: nwg::TextInput,
@@ -260,20 +260,11 @@ impl App {
             input!(buffer, &cfg.buffer.to_string());
             input!(speaker, &cfg.speaker_volume.to_string());
             input!(haptic_gain, &cfg.haptics_gain.to_string());
-            nwg::ComboBox::builder()
+            nwg::TrackBar::builder()
                 .parent(window)
-                .collection(
-                    (0..=30)
-                        .map(|db| {
-                            if db == 0 {
-                                "0 dB（原始）".into()
-                            } else {
-                                format!("+{db} dB · 限幅")
-                            }
-                        })
-                        .collect(),
-                )
-                .selected_index(Some(cfg.microphone_gain_db as usize))
+                .range(Some(0..50))
+                .pos(Some(cfg.microphone_gain_db as usize))
+                .background_color(Some([255, 255, 255]))
                 .build(&mut ui.mic_gain)?;
             cb!(active, "启用 HidHide 设备隐藏", false);
             nwg::ListBox::builder()
@@ -503,7 +494,7 @@ impl App {
                     cw / 3 - 32,
                     34,
                 );
-                put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 250);
+                put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 34);
                 put(&self.port.handle, x + 24, 464, cw / 2 - 48, 34);
                 put(&self.buffer.handle, x + cw / 2, 464, cw / 2 - 24, 34);
                 put(&self.auto_start.handle, x + 24, 511, cw / 2 - 32, 28);
@@ -661,7 +652,12 @@ impl App {
                     (x + 24, 296, cw - 48, "声音输出"),
                     (x + 24, 364, cw / 3 - 40, "扬声器音量  ·  0–255"),
                     (x + cw / 3 + 8, 364, cw / 3 - 32, "触觉增益  ·  10–20"),
-                    (x + 2 * cw / 3, 364, cw / 3 - 24, "麦克风增益 · 即时生效"),
+                    (
+                        x + 2 * cw / 3,
+                        364,
+                        cw / 3 - 24,
+                        &format!("麦克风 +{} dB · 0–50", self.mic_gain.pos()),
+                    ),
                     (x + 24, 432, cw / 2 - 48, "本机服务端口"),
                     (x + cw / 2, 432, cw / 2 - 24, "音频缓冲上限  ·  1–128 块"),
                 ] {
@@ -847,7 +843,7 @@ impl App {
         c.audio_enabled = checked(&self.audio);
         c.haptics_enabled = checked(&self.haptics);
         c.microphone_enabled = checked(&self.microphone);
-        c.microphone_gain_db = self.mic_gain.selection().unwrap_or(0).min(30) as u8;
+        c.microphone_gain_db = self.mic_gain.pos().min(50) as u8;
         c.audio_route = self.route.selection().unwrap_or(0) as u8;
         c.device_path = self
             .device
@@ -1096,15 +1092,39 @@ impl App {
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
-        if event == E::OnComboxBoxSelection && handle == self.mic_gain {
-            let db = self.mic_gain.selection().unwrap_or(0).min(30) as u8;
+        if event == E::OnHorizontalScroll && handle == self.mic_gain {
+            let db = self.mic_gain.pos().min(50) as u8;
+            self.controller
+                .borrow()
+                .state
+                .monitor
+                .microphone_gain_db
+                .store(db as u32, Ordering::Relaxed);
+            unsafe {
+                InvalidateRect(theme::hwnd(&self.window.handle), std::ptr::null(), 0);
+                if GetKeyState(VK_LBUTTON) < 0 {
+                    return;
+                }
+            }
+        }
+        if matches!(event, E::TrackBarUpdated | E::OnHorizontalScroll) && handle == self.mic_gain {
+            let db = self.mic_gain.pos().min(50) as u8;
+            if self.config.borrow().microphone_gain_db == db {
+                return;
+            }
             let result = Config::load(&self.path).and_then(|mut c| {
                 c.microphone_gain_db = db;
                 c.save(&self.path)
             });
             if let Err(e) = result {
                 self.mic_gain
-                    .set_selection(Some(self.config.borrow().microphone_gain_db as usize));
+                    .set_pos(self.config.borrow().microphone_gain_db as usize);
+                self.controller
+                    .borrow()
+                    .state
+                    .monitor
+                    .microphone_gain_db
+                    .store(self.mic_gain.pos() as u32, Ordering::Relaxed);
                 self.error(e);
             } else {
                 self.config.borrow_mut().microphone_gain_db = db;

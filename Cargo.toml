@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # 可选：静态链接 libopus（需显式启用 --features bundled-opus）
 opusic-sys = { version = "0.3.6", optional = true }
-native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "notice", "listbox", "textbox", "combobox", "cursor", "embed-resource", "tooltip"] }
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "notice", "listbox", "textbox", "combobox", "trackbar", "cursor", "embed-resource", "tooltip"] }
 winapi = { version = "0.3.9", features = ["winuser", "wingdi", "uxtheme", "dwmapi", "d2d1", "dwrite", "libloaderapi", "mmsystem", "mmreg", "mmeapi"] }
 crossbeam-queue = "0.3.12"
 plotters = { version = "0.3", default-features = false, features = ["line_series"] }

@@ -138,6 +138,10 @@ impl Test {
                     }
                     match result {
                         Ok(Some(pcm)) => {
+                            let (zero_frames, longest, interior) = zero_runs(&pcm);
+                            crate::logging::record(&format!(
+                                "麦克风测试：采集 {} 帧；双声道全零 {} 帧，最长 {} 帧，内部至少 1ms 的零段 {} 个",
+                                pcm.len() / 2, zero_frames, longest, interior));
                             let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                             let seconds = pcm.len() as f32 / (RATE * 2) as f32;
                             if let Ok(mut s) = shared.lock() {
@@ -171,6 +175,27 @@ impl Test {
         );
         Ok(())
     }
+}
+fn zero_runs(pcm: &[i16]) -> (usize, usize, usize) {
+    let mut total = 0;
+    let mut longest = 0;
+    let mut run = 0;
+    let mut interior = 0;
+    let mut started = false;
+    for pair in pcm.chunks_exact(2) {
+        if pair == [0, 0] {
+            total += 1;
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            if started && run >= 48 {
+                interior += 1;
+            }
+            started = true;
+            run = 0;
+        }
+    }
+    (total, longest, interior)
 }
 impl Drop for Test {
     fn drop(&mut self) {
