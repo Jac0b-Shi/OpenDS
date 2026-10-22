@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source-ref:
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -15,6 +21,9 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+          persist-credentials: false
       - name: Check formatting
         run: cargo fmt --check
       - name: Exercise driver downloader on Windows PowerShell and PowerShell 7
@@ -38,6 +47,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+          persist-credentials: false
+      - name: Test release signature gate with isolated fixture keys
+        run: python scripts/tests/test_release_tag.py
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: vendor/viiper-source/go.mod
@@ -50,7 +64,6 @@ jobs:
           repository: DualSenseClient/VIIPER
           ref: 25515e1ef405f189b73d5e2707a4fbb0798e9110
           path: target/viiper-upstream
+          persist-credentials: false
       - name: Verify upstream patch applies and reproduces bundled source
-        run: |
-          python scripts/Make-VIIPERPatch.py --upstream target/viiper-upstream
-          git diff --exit-code -- vendor/opends-viiper.patch
+        run: python scripts/Make-VIIPERPatch.py --upstream target/viiper-upstream --check
