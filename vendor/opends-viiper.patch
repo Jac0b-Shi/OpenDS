@@ -1,9 +1,9 @@
 diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
 new file mode 100644
-index 0000000..05ce23b
+index 0000000000000000000000000000000000000000..d8fdaa3d15c4c3a517c5c2721415c5f5d9e3069e
 --- /dev/null
 +++ b/OPENDS-PATCH.md
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,93 @@
 +# OpenDS USB profile patch
 +
 +Upstream: DualSenseClient/VIIPER v1.0.1, commit
@@ -67,6 +67,10 @@ index 0000000..05ce23b
 +python scripts/Make-VIIPERPatch.py --upstream /path/to/VIIPER-v1.0.1
 +```
 +
++Add `--check` to verify the bundled patch without regenerating it. CI uses
++this mode: it requires successful application and matching source contents,
++not identical diff formatting across Git versions or operating systems.
++
 +## Bundled DLL build record
 +
 +From the OpenDS repository root, use `scripts/Build-VIIPER.ps1 -Compiler
@@ -94,7 +98,7 @@ index 0000000..05ce23b
 +Independent forced rebuild matched: True.
 +<!-- BUILD-INFO:END -->
 diff --git a/device/dualsense/device.go b/device/dualsense/device.go
-index 37f532e..4b470f5 100644
+index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba9faa3c5f 100644
 --- a/device/dualsense/device.go
 +++ b/device/dualsense/device.go
 @@ -41,6 +41,8 @@ type DualSense struct {
@@ -131,7 +135,7 @@ index 37f532e..4b470f5 100644
  			select {
 diff --git b/device/dualsense/opends_usb_profile.go b/device/dualsense/opends_usb_profile.go
 new file mode 100644
-index 0000000..462380e
+index 0000000000000000000000000000000000000000..462380e2348546d0e55328c8bc6fc3e0360e52f5
 --- /dev/null
 +++ b/device/dualsense/opends_usb_profile.go
 @@ -0,0 +1,23 @@
@@ -160,7 +164,7 @@ index 0000000..462380e
 +}
 diff --git b/device/dualsense/opends_usb_profile_test.go b/device/dualsense/opends_usb_profile_test.go
 new file mode 100644
-index 0000000..7cf3cc6
+index 0000000000000000000000000000000000000000..7cf3cc6e3ab45d516a7efb813b343091f4253817
 --- /dev/null
 +++ b/device/dualsense/opends_usb_profile_test.go
 @@ -0,0 +1,73 @@
@@ -238,7 +242,7 @@ index 0000000..7cf3cc6
 +	}
 +}
 diff --git a/device/dualsense/raw.go b/device/dualsense/raw.go
-index e7c2576..4fc2df8 100644
+index e7c2576c3a03775f55cd4426af3d9ed6139a68dc..4fc2df8f2062790cc5175ee4de3032d5257ee430 100644
 --- a/device/dualsense/raw.go
 +++ b/device/dualsense/raw.go
 @@ -31,12 +31,20 @@ func (d *DualSense) SetRawInputReport(raw []byte) bool {
@@ -263,7 +267,7 @@ index e7c2576..4fc2df8 100644
  
  // rawInputReport returns the published snapshot, or nil when passthrough is
 diff --git a/go.mod b/go.mod
-index 4a9bad2..146af92 100644
+index 4a9bad22c05354bd29a5382a064fd67484943ef9..146af925ec48cb730fe25307cd51379627aa07d1 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -1,6 +1,6 @@
@@ -275,7 +279,7 @@ index 4a9bad2..146af92 100644
  require (
  	fyne.io/systray v1.12.2
 diff --git a/lib/viiper/dualsense.go b/lib/viiper/dualsense.go
-index 4c250f5..7863d1a 100644
+index 4c250f56bd42478c8825d5ef3196ee7f40163e60..7863d1a82659732977c3ea50e705a37dedef3d95 100644
 --- a/lib/viiper/dualsense.go
 +++ b/lib/viiper/dualsense.go
 @@ -657,6 +657,19 @@ func ClearDualSenseRawInputReport(handle C.DSDeviceHandle) bool {

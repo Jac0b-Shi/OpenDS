@@ -39,6 +39,7 @@ def tree(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", required=True, type=Path)
+    parser.add_argument("--check", action="store_true", help="Verify the bundled patch without regenerating its text")
     args = parser.parse_args()
     upstream = args.upstream.resolve()
     commit = run("git", "rev-parse", "HEAD", cwd=upstream).decode().strip()
@@ -52,15 +53,21 @@ def main():
         with tarfile.open(fileobj=io.BytesIO(archive)) as source:
             source.extractall(baseline, filter="data")
         shutil.copytree(ROOT / "vendor/viiper-source", modified)
-        result = subprocess.run(
-            ["git", "-c", "core.autocrlf=false", "diff", "--no-index",
-             "--ignore-space-at-eol", "--src-prefix=", "--dst-prefix=", "a", "b"],
-            cwd=temp, stdout=subprocess.PIPE,
-        )
-        if result.returncode != 1:
-            raise SystemExit(f"Expected a nonempty diff, exit code {result.returncode}")
+        output = ROOT / "vendor/opends-viiper.patch"
+        if args.check:
+            patch_bytes = output.read_bytes()
+        else:
+            result = subprocess.run(
+                ["git", "-c", "core.autocrlf=false", "diff", "--no-index",
+                 "--no-color", "--no-ext-diff", "--no-textconv", "--full-index",
+                 "--ignore-space-at-eol", "--src-prefix=", "--dst-prefix=", "a", "b"],
+                cwd=temp, stdout=subprocess.PIPE,
+            )
+            if result.returncode != 1:
+                raise SystemExit(f"Expected a nonempty diff, exit code {result.returncode}")
+            patch_bytes = result.stdout
         patch = temp / "opends-viiper.patch"
-        patch.write_bytes(result.stdout)
+        patch.write_bytes(patch_bytes)
         shutil.copytree(baseline, applied)
         # Isolate from OpenDS's parent repository so git apply cannot skip paths.
         run("git", "init", "--quiet", cwd=applied)
@@ -71,8 +78,8 @@ def main():
                              if expected.get(n) != actual.get(n))
         if differences:
             raise SystemExit("Patched tree differs: " + ", ".join(differences))
-        output = ROOT / "vendor/opends-viiper.patch"
-        output.write_bytes(result.stdout)
+        if not args.check:
+            output.write_bytes(patch_bytes)
         print(f"Verified patch: {len(actual)} files match (UTF-8 CRLF/LF normalized).")
         print(f"Upstream commit: {commit}; patch bytes: {output.stat().st_size}")
 

@@ -61,6 +61,10 @@ official v1.0.1 checkout (download through an explicit proxy if needed):
 python scripts/Make-VIIPERPatch.py --upstream /path/to/VIIPER-v1.0.1
 ```
 
+Add `--check` to verify the bundled patch without regenerating it. CI uses
+this mode: it requires successful application and matching source contents,
+not identical diff formatting across Git versions or operating systems.
+
 ## Bundled DLL build record
 
 From the OpenDS repository root, use `scripts/Build-VIIPER.ps1 -Compiler

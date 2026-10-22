@@ -1,0 +1,100 @@
+name: Signed tag release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-tag:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      prerelease: ${{ steps.verify.outputs.prerelease }}
+      commit: ${{ steps.verify.outputs.commit }}
+      tag_object: ${{ steps.verify.outputs.tag_object }}
+      fingerprint: ${{ steps.verify.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download published public keys
+        shell: bash
+        run: curl --fail --silent --show-error --location --max-time 30 https://github.com/Jac0b-Shi.gpg --output "$RUNNER_TEMP/owner-public-keys.gpg"
+      - name: Verify owner signature, event identity, main ancestry and version
+        id: verify
+        shell: bash
+        run: |
+          python scripts/verify_release_tag.py \
+            --tag "$GITHUB_REF_NAME" \
+            --event-sha "$GITHUB_SHA" \
+            --event-file "$GITHUB_EVENT_PATH" \
+            --key-file "$RUNNER_TEMP/owner-public-keys.gpg"
+
+  build:
+    needs: verify-tag
+    uses: ./.github/workflows/ci.yml
+    with:
+      source-ref: ${{ needs.verify-tag.outputs.commit }}
+
+  publish:
+    needs: [verify-tag, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # No repository code is executed in this job with the release write token.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: OpenDS-windows-x64
+          path: dist
+      - name: Prepare paired archives and verified tag receipt
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          COMMIT: ${{ needs.verify-tag.outputs.commit }}
+          TAG_OBJECT: ${{ needs.verify-tag.outputs.tag_object }}
+          FINGERPRINT: ${{ needs.verify-tag.outputs.fingerprint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          binaries=() sources=()
+          for file in dist/*.zip; do
+            if [[ "$file" == *-source.zip ]]; then sources+=("$file"); else binaries+=("$file"); fi
+          done
+          [[ ${#binaries[@]} == 1 && ${#sources[@]} == 1 ]] || { echo 'Expected exactly one binary/source ZIP pair.' >&2; exit 1; }
+          mv "${binaries[0]}" "dist/OpenDS-${VERSION}-windows-x64.zip"
+          mv "${sources[0]}" "dist/OpenDS-${VERSION}-source.zip"
+          jq -n --arg tag "$GITHUB_REF_NAME" --arg commit "$COMMIT" --arg object "$TAG_OBJECT" --arg signer "$FINGERPRINT" \
+            '{tag:$tag,commit:$commit,tag_object:$object,authorized_primary_fingerprint:$signer}' > dist/TAG-SIGNATURE.json
+          (cd dist && sha256sum ./*.zip TAG-SIGNATURE.json > SHA256SUMS.txt)
+      - name: Create release only while the remote tag still matches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_OBJECT: ${{ needs.verify-tag.outputs.tag_object }}
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          PRERELEASE: ${{ needs.verify-tag.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
+          [[ "$remote_object" == "$TAG_OBJECT" ]] || { echo 'Remote tag changed after verification.' >&2; exit 1; }
+          args=("$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt dist/TAG-SIGNATURE.json --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "OpenDS ${VERSION}" --generate-notes)
+          if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
+          # Existing releases are never silently overwritten. If asset upload
+          # fails, the draft remains unpublished for inspection and recovery.
+          gh release create "${args[@]}"
+          remote_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
+          [[ "$remote_object" == "$TAG_OBJECT" ]] || { echo 'Remote tag changed during upload; keeping draft.' >&2; exit 1; }
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
