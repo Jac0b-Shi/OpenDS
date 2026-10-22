@@ -1,6 +1,6 @@
 diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..3b28d020c75ee9ee0fb337d0b26dbcc2d9e8e114
+index 0000000000000000000000000000000000000000..f650157be21165a87ea8151d820cce890f488d51
 --- /dev/null
 +++ b/OPENDS-PATCH.md
 @@ -0,0 +1,93 @@
@@ -89,9 +89,9 @@ index 0000000000000000000000000000000000000000..3b28d020c75ee9ee0fb337d0b26dbcc2
 +avoid a circular dependency on the DLL hash recorded here.
 +
 +<!-- BUILD-INFO:BEGIN -->
-+DLL SHA-256: `0b4a8fde017726e802bf65554db8ad863291959112b1105085a218e615efff02`
++DLL SHA-256: `47a47711b21d77917d441a6d231df07ea1f8ce933f5dd2d8f09895446b7e030d`
 +
-+Source SHA-256 (rules in build-info.json): `7a5ff91723358e520d0d4cb6d69ea4bae086e1257fba58bfa07ceab95e23c5bb`
++Source SHA-256 (rules in build-info.json): `a8f29b970bdea9fb196129b9fb90a94cab4631ef9559f79b70f8f56d226db161`
 +
 +Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
 +
@@ -122,8 +122,68 @@ index 85a98bb10bf3d0fc03d95ce5173f4715a3cc832d..69cea3fb79186378bcf8fb1dadc9ae02
  		})
  	}
  	return out
+diff --git a/device/dualsense/audio_test.go b/device/dualsense/audio_test.go
+index 773ada799b9cbc5e9842eced5d960bca252a5a7f..cbfadd45b0a24e87971c344c95a23e5f87e00efc 100644
+--- a/device/dualsense/audio_test.go
++++ b/device/dualsense/audio_test.go
+@@ -336,7 +336,11 @@ func TestMicrophoneQueueExactSize(t *testing.T) {
+ 		frame[i] = byte(i)
+ 	}
+ 	assert.True(t, d.QueueMicrophonePCM(frame))
+-	frame[0] = 0xFF // caller scratch: queue copied
++	frame[0] = 0xFF                       // caller scratch: queue copied
++	assert.Nil(t, d.popMicrophoneFrame()) // Independent mic pre-roll, no early drain.
++	for i := 1; i < micPreRollFrames; i++ {
++		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
++	}
+ 	assert.Equal(t, byte(0), d.popMicrophoneFrame()[0])
+ }
+ 
+@@ -368,11 +372,17 @@ func TestMicrophoneServeOrderAndUnderrun(t *testing.T) {
+ 	}
+ 	require.True(t, d.QueueMicrophonePCM(first))
+ 	require.True(t, d.QueueMicrophonePCM(second))
++	for i := 2; i < micPreRollFrames; i++ {
++		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
++	}
+ 
+ 	assert.Equal(t, first, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
+ 	assert.Equal(t, second, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
+ 
+-	// Drained queue is silence again.
++	// The tail drains or re-primes on underrun, never repeats stale audio.
++	for i := 0; i < micQueueDepth*2; i++ {
++		d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
++	}
+ 	got = d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
+ 	for _, b := range got {
+ 		assert.Zero(t, b)
+@@ -385,12 +395,12 @@ func TestMicrophoneQueueDropsOldest(t *testing.T) {
+ 	ctx := context.Background()
+ 	openMic(t, d)
+ 
+-	for i := 0; i < 40; i++ {
++	for i := 0; i < micQueueDepth+8; i++ {
+ 		frame := make([]byte, 192)
+ 		frame[0] = byte(i)
+ 		require.True(t, d.QueueMicrophonePCM(frame))
+ 	}
+-	// 32 newest survive: first served is frame 8.
++	// Bounded storage keeps the newest frames: first served is frame 8.
+ 	got := d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
+ 	assert.Equal(t, byte(8), got[0])
+ }
+@@ -432,5 +442,8 @@ func TestMicrophoneFlushOnAltChange(t *testing.T) {
+ 	third := make([]byte, 192)
+ 	third[0] = 0x33
+ 	require.True(t, d.QueueMicrophonePCM(third))
++	for i := 1; i < micPreRollFrames; i++ {
++		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
++	}
+ 	assert.Equal(t, third, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
+ }
 diff --git a/device/dualsense/device.go b/device/dualsense/device.go
-index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba9faa3c5f 100644
+index 37f532ee365ed86e761e816764ac97dd902466ba..22710442da50e120ab330f4a7ad6c3c1bd9816f9 100644
 --- a/device/dualsense/device.go
 +++ b/device/dualsense/device.go
 @@ -41,6 +41,8 @@ type DualSense struct {
@@ -135,7 +195,67 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba
  
  	// Synthesized mute LED state echoed in input report b[54] bit 2,
  	// derived from the last host output (AllowMuteLight-gated modes
-@@ -367,6 +369,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
+@@ -64,10 +66,9 @@ type DualSense struct {
+ 	// buffer. They receive the rear voice-coil pair only (see below).
+ 	hapticsSubs map[*hapticsSub]struct{}
+ 
+-	// Microphone frame queue (2ch S16LE @48kHz, exact 192B frames),
+-	// guarded by mtx. Fed by the feeder, drained by EP2 IN; silence on
+-	// underrun mirrors the DS5Dongle underrun guard.
+-	micQueue [][]byte
++	// Mic-only jitter buffer, guarded by mtx. Allocated on first ingest,
++	// flushed and released when the host changes the mic alt setting.
++	micBuffer *microphoneBuffer
+ 
+ 	// Feeder-driven feature-report overrides (Edge profile proxy, see
+ 	// feature_override.go), guarded by mtx.
+@@ -79,13 +80,11 @@ type DualSense struct {
+ // micFrameSize is one 1ms mic frame: 48 samples of 2ch S16LE.
+ const micFrameSize = 192
+ 
+-const micQueueDepth = 32
+-
+ // QueueMicrophonePCM enqueues one feeder mic frame for EP2 IN. Only exact
+ // 192B frames are accepted, and only while the host has opened the mic
+ // interface (IF2 alt != 0); frames arriving while closed are dropped,
+-// mirroring DS5Dongle mic_add_queue gating on mic_active. A full queue
+-// drops oldest first.
++// mirroring DS5Dongle mic_add_queue gating on mic_active. A full buffer
++// drops oldest first; EP2 drains it after a mic-only 128ms pre-roll.
+ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
+ 	if len(frame) != micFrameSize {
+ 		return false
+@@ -95,11 +94,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
+ 	if d.alts[2] == 0 {
+ 		return false
+ 	}
+-	cp := append([]byte(nil), frame...)
+-	d.micQueue = append(d.micQueue, cp)
+-	for len(d.micQueue) > micQueueDepth {
+-		d.micQueue = d.micQueue[1:]
++	if d.micBuffer == nil {
++		d.micBuffer = &microphoneBuffer{}
+ 	}
++	d.micBuffer.push(frame)
+ 	return true
+ }
+ 
+@@ -107,12 +105,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
+ func (d *DualSense) popMicrophoneFrame() []byte {
+ 	d.mtx.Lock()
+ 	defer d.mtx.Unlock()
+-	if len(d.micQueue) == 0 {
++	if d.micBuffer == nil {
+ 		return nil
+ 	}
+-	frame := d.micQueue[0]
+-	d.micQueue = d.micQueue[1:]
+-	return frame
++	return d.micBuffer.pop()
+ }
+ 
+ // SpeakerEvent is one speaker-stream item: PCM audio or a generation
+@@ -367,6 +363,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
  
  	d.inputState = NewInputState()
  	d.inputCh = make(chan *InputState, 1)
@@ -143,7 +263,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba
  	d.inputCh <- d.inputState
  	d.timestampBase = time.Now()
  
-@@ -465,6 +468,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
+@@ -465,6 +462,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
  		case 4:
  			// Raw passthrough wins when a feeder pipes real reports.
  			if raw := d.rawInputReport(); raw != nil {
@@ -158,6 +278,191 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..4b470f538c5a6f54c9cb169b6d4b06ba
  				return raw
  			}
  			select {
+@@ -686,7 +691,7 @@ func (d *DualSense) setAltSetting(iface, alt uint8) {
+ 			// while closed but leaves queued Opus in place (up to
+ 			// ~80ms stale on reopen); the virtual device flushes
+ 			// instead.
+-			d.micQueue = nil
++			d.micBuffer = nil
+ 		}
+ 	}
+ 	d.mtx.Unlock()
+diff --git b/device/dualsense/microphone_buffer.go b/device/dualsense/microphone_buffer.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4cdeb146a91ea1236c1b093406cd9c13a720555
+--- /dev/null
++++ b/device/dualsense/microphone_buffer.go
+@@ -0,0 +1,85 @@
++package dualsense
++
++import (
++	"encoding/binary"
++	"math"
++)
++
++const (
++	micSamplesPerFrame = 48
++	micPreRollFrames   = 128 // milliseconds, independent of speaker/haptics latency
++	micQueueDepth      = 256
++	micSampleCapacity  = micQueueDepth * micSamplesPerFrame
++)
++
++// microphoneBuffer bridges a bursty BT source clock to the USB frame clock.
++// Protected by DualSense.mtx; never sleeps or waits for the producer. Fixed
++// storage bounds latency and avoids per-enqueue allocations. The two channels
++// retain independent samples, sharing only the fractional read position.
++type microphoneBuffer struct {
++	samples               [micSampleCapacity][2]int16
++	head, count           int
++	position, ratio, mean float64
++	primed                bool
++	underruns, dropped    uint64
++}
++
++func (b *microphoneBuffer) push(frame []byte) {
++	if b.count+micSamplesPerFrame > micSampleCapacity {
++		b.head = (b.head + micSamplesPerFrame) % micSampleCapacity
++		b.count -= micSamplesPerFrame
++		b.position = 0
++		b.dropped += micSamplesPerFrame
++	}
++	for i := 0; i < micSamplesPerFrame; i++ {
++		at := (b.head + b.count) % micSampleCapacity
++		b.samples[at][0] = int16(binary.LittleEndian.Uint16(frame[i*4:]))
++		b.samples[at][1] = int16(binary.LittleEndian.Uint16(frame[i*4+2:]))
++		b.count++
++	}
++}
++
++func (b *microphoneBuffer) pop() []byte {
++	const target = float64(micPreRollFrames * micSamplesPerFrame)
++	if !b.primed {
++		if b.count < int(target) {
++			return nil
++		}
++		b.primed, b.ratio, b.mean = true, 1, target
++	}
++	// Occupancy feedback handles independent clock rates, rather than
++	// periodically inserting zero frames when a slightly slower source drains
++	// even a large fixed FIFO. Smooth both the 10ms packet staircase and the
++	// correction; bound time scaling to +/-5%, with no sample block splices.
++	b.mean += (float64(b.count) - b.mean) * 0.02
++	error := b.mean - target
++	if math.Abs(error) < micSamplesPerFrame {
++		error = 0
++	}
++	wanted := max(0.95, min(1.05, 1+error/(48000*0.5)))
++	b.ratio += max(-0.00005, min(0.00005, wanted-b.ratio))
++	need := int(math.Ceil(b.position+micSamplesPerFrame*b.ratio)) + 1
++	if b.count < need {
++		b.primed = false
++		b.position = 0
++		b.underruns++
++		return nil // Re-prime once, instead of alternating tiny PCM/zero bursts.
++	}
++	frame := make([]byte, micFrameSize)
++	for i := 0; i < micSamplesPerFrame; i++ {
++		index := int(b.position)
++		fraction := b.position - float64(index)
++		a := b.samples[(b.head+index)%micSampleCapacity]
++		z := b.samples[(b.head+index+1)%micSampleCapacity]
++		for ch := 0; ch < 2; ch++ {
++			value := math.Round(float64(a[ch]) + (float64(z[ch])-float64(a[ch]))*fraction)
++			binary.LittleEndian.PutUint16(frame[i*4+ch*2:], uint16(int16(value)))
++		}
++		b.position += b.ratio
++	}
++	consumed := int(b.position)
++	b.position -= float64(consumed)
++	b.head = (b.head + consumed) % micSampleCapacity
++	b.count -= consumed
++	return frame
++}
+diff --git b/device/dualsense/microphone_buffer_test.go b/device/dualsense/microphone_buffer_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d6fa1174394d3c8ad68bb9736419b332edcc8d2
+--- /dev/null
++++ b/device/dualsense/microphone_buffer_test.go
+@@ -0,0 +1,79 @@
++package dualsense
++
++import (
++	"context"
++	"encoding/binary"
++	"math"
++	"testing"
++
++	"github.com/DualSenseClient/VIIPER/usbip"
++	"github.com/stretchr/testify/require"
++)
++
++// Simulate source and USB clocks without sleeping or depending on OS timers.
++// A clear continuous source must not acquire silent 1ms holes at the USB end.
++func TestMicrophoneBurstJitterAndClockSkew(t *testing.T) {
++	for _, skew := range []float64{0.97, 1, 1.03} {
++		t.Run(fmtSkew(skew), func(t *testing.T) {
++			d, err := new(nil, false)
++			require.NoError(t, err)
++			openMic(t, d)
++			var next float64
++			var sample int
++			var previous int16
++			maxJump, silence := 0, 0
++			for ms := 0; ms < 30000; ms++ {
++				// 10ms decoded packets; every half second, hold one packet
++				// for 70ms then deliver the backlog, as a BT scheduler can.
++				held := ms%500 >= 400 && ms%500 < 470
++				if !held {
++					for float64(ms) >= next {
++						for frame := 0; frame < 10; frame++ {
++							pcm := make([]byte, 192)
++							for s := 0; s < 48; s++ {
++								v := int16(12000 * math.Sin(2*math.Pi*1000*float64(sample)/48000))
++								binary.LittleEndian.PutUint16(pcm[s*4:], uint16(v))
++								binary.LittleEndian.PutUint16(pcm[s*4+2:], uint16(-v))
++								sample++
++							}
++							require.True(t, d.QueueMicrophonePCM(pcm))
++						}
++						next += 10 / skew
++					}
++				}
++				got := d.HandleTransfer(context.Background(), 2, usbip.DirIn, nil)
++				require.Len(t, got, 192)
++				if ms < 250 {
++					continue
++				} // Initial pre-roll is intentionally silent.
++				nonzero := false
++				for s := 0; s < 48; s++ {
++					v := int16(binary.LittleEndian.Uint16(got[s*4:]))
++					r := int16(binary.LittleEndian.Uint16(got[s*4+2:]))
++					require.InDelta(t, -int(v), int(r), 1)
++					nonzero = nonzero || v != 0
++					if ms > 250 {
++						jump := int(math.Abs(float64(int(v) - int(previous))))
++						maxJump = max(maxJump, jump)
++					}
++					previous = v
++				}
++				if !nonzero {
++					silence++
++				}
++			}
++			require.Zero(t, silence, "continuous source acquired silent USB frames")
++			require.Less(t, maxJump, 2000, "discontinuous splice in a 1kHz tone")
++		})
++	}
++}
++
++func fmtSkew(skew float64) string {
++	if skew < 1 {
++		return "source_slow_3_percent"
++	}
++	if skew > 1 {
++		return "source_fast_3_percent"
++	}
++	return "equal_clocks"
++}
 diff --git b/device/dualsense/opends_usb_profile.go b/device/dualsense/opends_usb_profile.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..462380e2348546d0e55328c8bc6fc3e0360e52f5
@@ -292,7 +597,7 @@ index e7c2576c3a03775f55cd4426af3d9ed6139a68dc..4fc2df8f2062790cc5175ee4de3032d5
  
  // rawInputReport returns the published snapshot, or nil when passthrough is
 diff --git a/device/isoc_framing_test.go b/device/isoc_framing_test.go
-index 9fb036964ad2a380789bc28e78be12c4961b1256..e2bf75fb9756d308c9b00a53b5542d92cbe2424c 100644
+index 9fb036964ad2a380789bc28e78be12c4961b1256..261921df69e2fda2bc17004c7630643dd226a3ce 100644
 --- a/device/isoc_framing_test.go
 +++ b/device/isoc_framing_test.go
 @@ -2,6 +2,7 @@ package device_test
@@ -303,7 +608,7 @@ index 9fb036964ad2a380789bc28e78be12c4961b1256..e2bf75fb9756d308c9b00a53b5542d92
  	"testing"
  	"time"
  
-@@ -127,6 +128,80 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
+@@ -127,6 +128,83 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
  		assert.Equal(t, uint32(192), d.ActualLength, "packet %d must carry a full frame", i)
  	}
  
@@ -340,7 +645,8 @@ index 9fb036964ad2a380789bc28e78be12c4961b1256..e2bf75fb9756d308c9b00a53b5542d92
 +	require.True(t, ok)
 +	const pipelineURBs = 4
 +	const packetsPerURB = 4
-+	for i := 0; i < pipelineURBs*packetsPerURB; i++ {
++	// Fill the mic's independent 128ms pre-roll before issuing the URBs.
++	for i := 0; i < 128; i++ {
 +		frame := make([]byte, 192)
 +		for j := range frame {
 +			frame[j] = byte(i + 1)
@@ -372,7 +678,9 @@ index 9fb036964ad2a380789bc28e78be12c4961b1256..e2bf75fb9756d308c9b00a53b5542d92
 +		payload := make([]byte, packetsPerURB*192)
 +		require.NoError(t, usbip.ReadExactly(imp.Conn, payload))
 +		for j := 0; j < packetsPerURB; j++ {
-+			for _, sample := range payload[j*192 : (j+1)*192] {
++			// Interior samples identify frame order independently of the mic's
++			// fractional interpolation across adjacent frame boundaries.
++			for _, sample := range payload[j*192+32 : (j+1)*192-32] {
 +				require.Equal(t, byte(i*packetsPerURB+j+1), sample, "URB %d packet %d", i, j)
 +			}
 +		}

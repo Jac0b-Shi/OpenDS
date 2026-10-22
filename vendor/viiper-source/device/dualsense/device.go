@@ -66,10 +66,9 @@ type DualSense struct {
 	// buffer. They receive the rear voice-coil pair only (see below).
 	hapticsSubs map[*hapticsSub]struct{}
 
-	// Microphone frame queue (2ch S16LE @48kHz, exact 192B frames),
-	// guarded by mtx. Fed by the feeder, drained by EP2 IN; silence on
-	// underrun mirrors the DS5Dongle underrun guard.
-	micQueue [][]byte
+	// Mic-only jitter buffer, guarded by mtx. Allocated on first ingest,
+	// flushed and released when the host changes the mic alt setting.
+	micBuffer *microphoneBuffer
 
 	// Feeder-driven feature-report overrides (Edge profile proxy, see
 	// feature_override.go), guarded by mtx.
@@ -81,13 +80,11 @@ type DualSense struct {
 // micFrameSize is one 1ms mic frame: 48 samples of 2ch S16LE.
 const micFrameSize = 192
 
-const micQueueDepth = 32
-
 // QueueMicrophonePCM enqueues one feeder mic frame for EP2 IN. Only exact
 // 192B frames are accepted, and only while the host has opened the mic
 // interface (IF2 alt != 0); frames arriving while closed are dropped,
-// mirroring DS5Dongle mic_add_queue gating on mic_active. A full queue
-// drops oldest first.
+// mirroring DS5Dongle mic_add_queue gating on mic_active. A full buffer
+// drops oldest first; EP2 drains it after a mic-only 128ms pre-roll.
 func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
 	if len(frame) != micFrameSize {
 		return false
@@ -97,11 +94,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
 	if d.alts[2] == 0 {
 		return false
 	}
-	cp := append([]byte(nil), frame...)
-	d.micQueue = append(d.micQueue, cp)
-	for len(d.micQueue) > micQueueDepth {
-		d.micQueue = d.micQueue[1:]
+	if d.micBuffer == nil {
+		d.micBuffer = &microphoneBuffer{}
 	}
+	d.micBuffer.push(frame)
 	return true
 }
 
@@ -109,12 +105,10 @@ func (d *DualSense) QueueMicrophonePCM(frame []byte) bool {
 func (d *DualSense) popMicrophoneFrame() []byte {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
-	if len(d.micQueue) == 0 {
+	if d.micBuffer == nil {
 		return nil
 	}
-	frame := d.micQueue[0]
-	d.micQueue = d.micQueue[1:]
-	return frame
+	return d.micBuffer.pop()
 }
 
 // SpeakerEvent is one speaker-stream item: PCM audio or a generation
@@ -697,7 +691,7 @@ func (d *DualSense) setAltSetting(iface, alt uint8) {
 			// while closed but leaves queued Opus in place (up to
 			// ~80ms stale on reopen); the virtual device flushes
 			// instead.
-			d.micQueue = nil
+			d.micBuffer = nil
 		}
 	}
 	d.mtx.Unlock()

@@ -335,6 +335,10 @@ fn capture(
             std::thread::sleep(Duration::from_millis(20));
         }
         check(waveInReset(handle), "结束录音")?;
+        crate::logging::record(&format!(
+            "麦克风录音耗时：{:.3}s",
+            started.elapsed().as_secs_f64()
+        ));
         let count = (device.header.dwBytesRecorded as usize / 2).min(device.buffer.len());
         device.finish()?;
         let mut pcm = Vec::new();

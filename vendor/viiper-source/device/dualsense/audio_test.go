@@ -336,7 +336,11 @@ func TestMicrophoneQueueExactSize(t *testing.T) {
 		frame[i] = byte(i)
 	}
 	assert.True(t, d.QueueMicrophonePCM(frame))
-	frame[0] = 0xFF // caller scratch: queue copied
+	frame[0] = 0xFF                       // caller scratch: queue copied
+	assert.Nil(t, d.popMicrophoneFrame()) // Independent mic pre-roll, no early drain.
+	for i := 1; i < micPreRollFrames; i++ {
+		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
+	}
 	assert.Equal(t, byte(0), d.popMicrophoneFrame()[0])
 }
 
@@ -368,11 +372,17 @@ func TestMicrophoneServeOrderAndUnderrun(t *testing.T) {
 	}
 	require.True(t, d.QueueMicrophonePCM(first))
 	require.True(t, d.QueueMicrophonePCM(second))
+	for i := 2; i < micPreRollFrames; i++ {
+		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
+	}
 
 	assert.Equal(t, first, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
 	assert.Equal(t, second, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
 
-	// Drained queue is silence again.
+	// The tail drains or re-primes on underrun, never repeats stale audio.
+	for i := 0; i < micQueueDepth*2; i++ {
+		d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
+	}
 	got = d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
 	for _, b := range got {
 		assert.Zero(t, b)
@@ -385,12 +395,12 @@ func TestMicrophoneQueueDropsOldest(t *testing.T) {
 	ctx := context.Background()
 	openMic(t, d)
 
-	for i := 0; i < 40; i++ {
+	for i := 0; i < micQueueDepth+8; i++ {
 		frame := make([]byte, 192)
 		frame[0] = byte(i)
 		require.True(t, d.QueueMicrophonePCM(frame))
 	}
-	// 32 newest survive: first served is frame 8.
+	// Bounded storage keeps the newest frames: first served is frame 8.
 	got := d.HandleTransfer(ctx, 2, usbip.DirIn, nil)
 	assert.Equal(t, byte(8), got[0])
 }
@@ -432,5 +442,8 @@ func TestMicrophoneFlushOnAltChange(t *testing.T) {
 	third := make([]byte, 192)
 	third[0] = 0x33
 	require.True(t, d.QueueMicrophonePCM(third))
+	for i := 1; i < micPreRollFrames; i++ {
+		require.True(t, d.QueueMicrophonePCM(make([]byte, 192)))
+	}
 	assert.Equal(t, third, d.HandleTransfer(ctx, 2, usbip.DirIn, nil))
 }

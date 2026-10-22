@@ -161,7 +161,8 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
 	require.True(t, ok)
 	const pipelineURBs = 4
 	const packetsPerURB = 4
-	for i := 0; i < pipelineURBs*packetsPerURB; i++ {
+	// Fill the mic's independent 128ms pre-roll before issuing the URBs.
+	for i := 0; i < 128; i++ {
 		frame := make([]byte, 192)
 		for j := range frame {
 			frame[j] = byte(i + 1)
@@ -193,7 +194,9 @@ func TestIsocFramingKeepsStreamInSync(t *testing.T) {
 		payload := make([]byte, packetsPerURB*192)
 		require.NoError(t, usbip.ReadExactly(imp.Conn, payload))
 		for j := 0; j < packetsPerURB; j++ {
-			for _, sample := range payload[j*192 : (j+1)*192] {
+			// Interior samples identify frame order independently of the mic's
+			// fractional interpolation across adjacent frame boundaries.
+			for _, sample := range payload[j*192+32 : (j+1)*192-32] {
 				require.Equal(t, byte(i*packetsPerURB+j+1), sample, "URB %d packet %d", i, j)
 			}
 		}
