@@ -1,0 +1,58 @@
+site_name: VIIPER Documentation
+site_description: Virtual Input over IP EmulatoR - Documentation
+site_author: Peter Repukat
+repo_name: DualSenseClient/VIIPER
+repo_url: https://github.com/DualSenseClient/VIIPER
+
+theme:
+  name: material
+  logo: viiper.svg
+  palette:
+    - scheme: slate
+      primary: blue
+      accent: light blue
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+- pymdownx.highlight:
+    anchor_linenums: true
+- pymdownx.superfences
+- pymdownx.tabbed:
+    alternate_style: true
+- admonition
+- pymdownx.details
+- attr_list
+- md_in_html
+- tables
+
+nav:
+- Home: index.md
+- Getting Started:
+  - Installation: getting-started/installation.md
+  - Quick Start: getting-started/quickstart.md
+  - USBIP Setup: getting-started/usbip.md
+- VIIPER Server:
+  - Client Libraries: server/client-libraries.md
+- libVIIPER:
+  - Overview: libviiper/overview.md
+  - C# Bindings: libviiper/csharp.md
+  - Devices:
+    - Xbox 360 Controller: devices/xbox360.md
+    - DualShock 4: devices/dualshock4.md
+    - DualSense: devices/dualsense.md
+    - Switch 2 Pro Controller: devices/ns2pro.md
+    - Keyboard: devices/keyboard.md
+    - Mouse: devices/mouse.md
+- Community & Support: misc/support.md
+- Changelog: changelog/

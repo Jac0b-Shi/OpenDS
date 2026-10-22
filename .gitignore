@@ -1,0 +1,40 @@
+# ---- 工作区临时产物 ----
+.workbuddy/
+*.pdb
+*.ilk
+*.exp
+
+# ---- Rust 构建产物 ----
+/target/
+**/target/
+*.rs.bk
+__pycache__/
+*.pyc
+
+# ---- 二进制与归档 ----
+*.exe
+*.dll
+*.sys
+*.zip
+*.crate
+*.nupkg
+*.7z
+
+# 例外：随项目分发的第三方运行时（配套源码与许可证一同入库）
+!vendor/opus/libopus-0.dll
+!vendor/viiper/libVIIPER.dll
+
+# 解压中间产物
+vendor/opus-pkg/
+vendor/*.zst
+vendor/*.tar
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 本地配置 ----
+opends.ini
