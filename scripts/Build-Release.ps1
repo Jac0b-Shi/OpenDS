@@ -30,7 +30,7 @@ try {
     Copy-Item licenses $stage -Recurse
     $packageScripts = Join-Path $stage 'scripts'
     New-Item -ItemType Directory -Path $packageScripts | Out-Null
-    foreach ($file in @('Install-OpenDS.ps1','Install-Drivers.ps1','Restore-Visibility.ps1','Check-AudioIdentity.ps1','Measure-Resident.ps1','drivers.json')) {
+    foreach ($file in @('Install-OpenDS.ps1','Install-Drivers.ps1','Driver-Download.ps1','Restore-Visibility.ps1','Check-AudioIdentity.ps1','Measure-Resident.ps1','drivers.json')) {
         Copy-Item (Join-Path scripts $file) $packageScripts
     }
     $packageDocs = Join-Path $stage 'docs'
