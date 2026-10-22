@@ -7,7 +7,11 @@ Turns a Bluetooth DualSense into a local virtual USB DualSense, so games treat i
 ## Quick Start
 
 1. Extract `OpenDS-…-windows-x64.zip` to a local disk and keep every file. For a fixed install, run `scripts/Install-OpenDS.ps1` in PowerShell.
-2. Pair the DualSense in Windows Bluetooth settings and close any other tool that claims it.
+2. Pair the DualSense in Windows Bluetooth settings and close any other tool that claims it. If the controller was paired to another device before, put it in pairing mode first:
+
+   > Make sure the player indicator is off — hold the PS button until it goes dark — and unplug any USB cable. Hold the **Create** button and press the **PS** button until the light bar starts blinking. Then pick the controller in Windows Bluetooth settings.
+
+   These steps come from Sony's [official pairing guide](https://www.playstation.com/en-hk/support/hardware/pair-dualsense-controller-bluetooth/). [Apple's support page](https://support.apple.com/en-euro/HT211813) shows where the Create button sits; the button combination is the same.
 3. Double-click `opends.exe`. If drivers are missing, follow the prompt to install USB/IP Win2 and HidHide, then reboot.
 4. Select the controller under **Connection & Feedback**, save, then click **Start Bridge** on the overview.
 5. Launch the game. Start the bridge first — the controller is only seen as a full device if it is present when the game starts.
@@ -140,3 +144,9 @@ When distributing binaries, include `vendor/viiper-source`; the release script p
 - [Developer guide](docs/guides/developer-guide.md)
 - [Protocol notes](docs/guides/protocol.md)
 - [Resident mode](docs/guides/resident.md)
+
+## Legal Notice
+
+DualSense and PlayStation are registered trademarks of Sony Interactive Entertainment Inc. (SIE).
+
+This is an unofficial third-party project. It is not affiliated with, authorized, sponsored, or endorsed by SIE. Other trademarks are the property of their respective owners.

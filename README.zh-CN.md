@@ -7,7 +7,11 @@
 ## 快速开始
 
 1. 解压 `OpenDS-…-windows-x64.zip` 到本地磁盘，保留全部文件。需要固定安装时，用 PowerShell 运行 `scripts/Install-OpenDS.ps1`。
-2. 在 Windows 蓝牙设置里配对 DualSense，退出其他占用该手柄的工具。
+2. 在 Windows 蓝牙设置里配对 DualSense，退出其他占用该手柄的工具。手柄之前连过别的设备时，先进入配对模式：
+
+   > 确认玩家指示灯已熄灭。如果亮着，长按 PS 键直到熄灭，并断开 USB 线。按住**创建键**，同时按住 **PS 键**，直到光条开始闪烁。然后在 Windows 蓝牙设置里选择手柄。
+
+   步骤摘自 [PlayStation 官方配对教程](https://www.playstation.com/zh-hans-cn/support/hardware/pair-dualsense-controller-bluetooth/)。[Apple 支持文档](https://support.apple.com/zh-cn/HT211813) 对创建键的位置有更清楚的示意，配对按键相同。
 3. 双击 `opends.exe`。缺少驱动时按提示安装 USB/IP Win2 和 HidHide，并重启系统。
 4. 在「连接与反馈」选中手柄并保存，回到概览点击「启动桥接」。
 5. 进入游戏。桥接启动后再开游戏，手柄才会被识别为完整设备。
@@ -140,3 +144,9 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 - [开发者指南](docs/guides/developer-guide.md)
 - [协议说明](docs/guides/protocol.md)
 - [常驻运行](docs/guides/resident.md)
+
+## 法律声明
+
+DualSense、PlayStation 是索尼互动娱乐（Sony Interactive Entertainment Inc.，SIE）的注册商标。
+
+本项目是非官方第三方工具，与 SIE 无任何关联，未获其授权、赞助或认可。文中出现的其他商标归各自所有者所有。
