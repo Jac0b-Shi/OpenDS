@@ -18,7 +18,7 @@ Windows 上的轻量 DualSense 蓝牙桥接工具。将真实蓝牙手柄映射�
 
 安装按钮使用 `scripts/Install-Drivers.ps1`：只从固定官方发布地址下载，先校验 SHA-256 和 Authenticode 发布者，再运行安装向导。USB/IP 选择 compact 安装，避免额外安装 GUI、SDK 和调试符号。
 
-下载优先使用 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` 或 Windows 系统代理；**没有检测到代理就停止并显示手动下载地址**。支持显式指定代理：
+代理按 `-Proxy` 参数、`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` 环境变量、Windows 系统代理（含 PAC 自动配置）的顺序探测。**探测不到代理不影响下载**：先尝试代理，再尝试直连，两者都失败才提示手动下载地址。支持显式指定代理：
 
 ```powershell
 .\scripts\Install-Drivers.ps1 -Proxy http://127.0.0.1:7890
