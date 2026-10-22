@@ -34,3 +34,5 @@ LICENSE        text eol=lf
 
 # 保留随附第三方源码的原始排版，不对上游历史空白做无关改写。
 vendor/viiper-source/** -whitespace
+# Unified diffs contain context lines beginning with a space before Go tabs.
+vendor/opends-viiper.patch text eol=lf -whitespace

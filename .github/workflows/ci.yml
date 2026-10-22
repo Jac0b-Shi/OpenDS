@@ -43,3 +43,12 @@ jobs:
       - name: Check USB profile, protocol and concurrency
         working-directory: vendor/viiper-source
         run: go test -race ./device/dualsense ./internal/server/usb ./usb ./usbip
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: DualSenseClient/VIIPER
+          ref: 25515e1ef405f189b73d5e2707a4fbb0798e9110
+          path: target/viiper-upstream
+      - name: Verify upstream patch applies and reproduces bundled source
+        run: |
+          python scripts/Make-VIIPERPatch.py --upstream target/viiper-upstream
+          git diff --exit-code -- vendor/opends-viiper.patch

@@ -1,6 +1,6 @@
 module github.com/DualSenseClient/VIIPER
 
-go 1.27.1
+go 1.27.3
 
 require (
 	fyne.io/systray v1.12.2

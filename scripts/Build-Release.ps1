@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Push-Location $root
 try {
+    & (Join-Path $PSScriptRoot 'Test-VIIPERBuildInfo.ps1')
     if (!$SkipTests) {
         & cargo test --locked --offline
         if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
@@ -23,6 +24,7 @@ try {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     Copy-Item target/release/opends.exe $stage
     Copy-Item vendor/viiper/libVIIPER.dll $stage
+    Copy-Item vendor/viiper/build-info.json (Join-Path $stage 'viiper-build-info.json')
     Copy-Item vendor/opus/libopus-0.dll $stage
     Copy-Item README.md,README.zh-CN.md,LICENSE,THIRD-PARTY.md $stage
     Copy-Item licenses $stage -Recurse

@@ -15,8 +15,12 @@ VIIPER's Go dependency notices are included in licenses/VIIPER-dependencies.txt.
 Rust crate license files are collected by the release script. The matching source
 archive contains OpenDS sources, Cargo.lock, and the VIIPER v1.0.1 source archive.
 The modified runtime's complete source is included in `vendor/viiper-source`,
-with changes documented in `OPENDS-PATCH.md`; `scripts/Build-VIIPER.ps1`
-reproduces the DLL with an explicit proxy or cached offline dependencies.
+with changes documented in `OPENDS-PATCH.md` and an applicable upstream diff in
+`vendor/opends-viiper.patch`. `vendor/viiper/build-info.json` records the DLL and
+source hashes, toolchains and build arguments. `scripts/Build-VIIPER.ps1`
+rebuilds the DLL with an explicit proxy or cached offline dependencies; its
+`-VerifyReproducible` option checks a separate forced rebuild. Packaging verifies
+the recorded source and DLL hashes before creating the release archives.
 Rust dependency source packages are identified by Cargo.lock checksums and official
 registry URLs. `cargo fetch --locked` retrieves them for rebuilding.
 

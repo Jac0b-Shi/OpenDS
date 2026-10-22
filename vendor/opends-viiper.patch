@@ -1,0 +1,300 @@
+diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
+new file mode 100644
+index 0000000..05ce23b
+--- /dev/null
++++ b/OPENDS-PATCH.md
+@@ -0,0 +1,89 @@
++# OpenDS USB profile patch
++
++Upstream: DualSenseClient/VIIPER v1.0.1, commit
++`25515e1ef405f189b73d5e2707a4fbb0798e9110` (GPL-3.0-or-later).
++
++This source is included to reproduce the modified OpenDS runtime. Upstream
++reference checkouts and the original runtime are preserved separately.
++
++The new C API `UseDualSensePhysicalUSBProfile(handle)` must be called before
++USB attachment. It opts a standard DualSense into the wired profile observed
++in a real USB startup capture: no USB serial-number index, a 289-byte HID
++report descriptor without unsupported F6-F9 entries, and a 4ms full-speed HID
++interval. USB/IP Win2 translates that interval to high-speed bInterval 6.
++Default upstream profiles and Edge remain unchanged.
++
++The new Go regression test compares the complete HID descriptor against the
++captured wired descriptor. OpenDS separately validates and removes the A3
++Bluetooth feature CRC before preloading USB feature reports 05, 09 and 20.
++No capture containing controller input or audio is included in this source.
++
++Build the library from this folder with Go 1.27.3 and a Windows C compiler:
++
++```powershell
++$env:CGO_ENABLED='1'
++go build -buildmode=c-shared -trimpath -buildvcs=false -ldflags '-s -w -buildid= -extldflags=-Wl,--no-insert-timestamp' -o ../../target/viiper-build/libVIIPER.dll ./lib/viiper
++go test ./device/dualsense
++```
++
++Use an explicit proxy for dependency/toolchain downloads as required by the
++user. The runtime API addition is resolved by name; an older DLL is rejected
++for the standard DualSense profile rather than silently serving the old
++descriptors.
++
++The OpenDS source requires Go 1.27.3 so rebuilt runtimes include the October
++2026 standard-library security fixes (including GO-2026-6809). The module-level
++GO-2026-5932 notice concerns the deprecated x/crypto/openpgp packages; these
++packages are not imported by lib/viiper. No USB descriptor or controller report
++format changes are made by the toolchain update.
++
++The same opt-in profile now paces raw interrupt IN completions using a
++capacity-one notification channel. A request waits for a fresh feeder report
++or cancellation rather than returning the same atomic snapshot in a busy
++loop. GET_REPORT remains an immediate snapshot query. USB descriptors and
++input bytes are unchanged. Tests cover pending-read cancellation, fresh
++publication wakeup, and a simultaneous GET_REPORT. Standard upstream and
++Edge profiles retain their prior scheduling. The host-facing USB server may
++still return its cached frame after the endpoint interval expires.
++
++## Auditable patch
++
++`vendor/opends-viiper.patch` applies to the upstream commit above. From an
++unmodified v1.0.1 checkout, run `git apply /path/to/vendor/opends-viiper.patch`.
++The patch excludes differences consisting only of CRLF/LF line endings.
++The patched tree is verified against all bundled source files after that
++normalization; no controller capture is needed or included.
++
++To regenerate and verify it from the OpenDS repository root, using a local
++official v1.0.1 checkout (download through an explicit proxy if needed):
++
++```powershell
++python scripts/Make-VIIPERPatch.py --upstream /path/to/VIIPER-v1.0.1
++```
++
++## Bundled DLL build record
++
++From the OpenDS repository root, use `scripts/Build-VIIPER.ps1 -Compiler
++<gcc.exe> -Offline -VerifyReproducible` with cached dependencies, or replace
++`-Offline` with `-Proxy <url>`. This generates `vendor/viiper/build-info.json`
++with the exact build arguments, toolchain versions and source fingerprint.
++It also updates the record below. Regenerate the patch after each rebuild.
++`scripts/Test-VIIPERBuildInfo.ps1` checks both the source and bundled DLL;
++release packaging runs this check automatically.
++
++The forced rebuild check recompiles with `-a` to a separate output path.
++Matching hashes demonstrate repeatability with the recorded local toolchain;
++they do not promise byte identity across different Go or C compiler versions.
++The hash is an integrity check, not an independent attestation of provenance.
++The build record excludes this notes file from the source fingerprint to
++avoid a circular dependency on the DLL hash recorded here.
++
++<!-- BUILD-INFO:BEGIN -->
++DLL SHA-256: `28481ea329a98e80ff1e159c91ed5d30847e48213c7bb567cba172239cd00094`
++
++Source SHA-256 (rules in build-info.json): `5cb73d8cba5d763769ea6584ea3a3265553cac75fff8fd1315cfde4160c8a57c`
++
++Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
++
++Independent forced rebuild matched: True.
++<!-- BUILD-INFO:END -->
+diff --git a/device/dualsense/device.go b/device/dualsense/device.go
+index 37f532e..4b470f5 100644
+--- a/device/dualsense/device.go
++++ b/device/dualsense/device.go
+@@ -41,6 +41,8 @@ type DualSense struct {
+ 	// verbatim while set; nil means synthesize. Immutable snapshots, so
+ 	// the interrupt path reads without locking.
+ 	rawReport atomic.Pointer[rawSnapshot]
++	rawReady  chan struct{}
++	paceRaw   bool // opted in before attachment; one completion per published input
+ 
+ 	// Synthesized mute LED state echoed in input report b[54] bit 2,
+ 	// derived from the last host output (AllowMuteLight-gated modes
+@@ -367,6 +369,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
+ 
+ 	d.inputState = NewInputState()
+ 	d.inputCh = make(chan *InputState, 1)
++	d.rawReady = make(chan struct{}, 1)
+ 	d.inputCh <- d.inputState
+ 	d.timestampBase = time.Now()
+ 
+@@ -465,6 +468,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
+ 		case 4:
+ 			// Raw passthrough wins when a feeder pipes real reports.
+ 			if raw := d.rawInputReport(); raw != nil {
++				if d.paceRaw {
++					select {
++					case <-ctx.Done():
++						return nil
++					case <-d.rawReady:
++						return d.rawInputReport()
++					}
++				}
+ 				return raw
+ 			}
+ 			select {
+diff --git b/device/dualsense/opends_usb_profile.go b/device/dualsense/opends_usb_profile.go
+new file mode 100644
+index 0000000..462380e
+--- /dev/null
++++ b/device/dualsense/opends_usb_profile.go
+@@ -0,0 +1,23 @@
++package dualsense
++
++// UsePhysicalUSBProfile selects the observed standard DualSense USB profile.
++// Must be called before attaching the device; Edge keeps its upstream profile.
++// usbip-win2 maps the 4ms full-speed interrupt interval to HS bInterval=6.
++func (d *DualSense) UsePhysicalUSBProfile() bool {
++	if d.edge {
++		return false
++	}
++	d.descriptor.Device.ISerialNumber = 0
++	d.paceRaw = true
++	for i := range d.descriptor.Interfaces {
++		iface := &d.descriptor.Interfaces[i]
++		if iface.HID == nil {
++			continue
++		}
++		iface.HID.ReportDescriptor = reportDescriptor(47, 15, nil)
++		for j := range iface.Endpoints {
++			iface.Endpoints[j].BInterval = 4
++		}
++	}
++	return true
++}
+diff --git b/device/dualsense/opends_usb_profile_test.go b/device/dualsense/opends_usb_profile_test.go
+new file mode 100644
+index 0000000..7cf3cc6
+--- /dev/null
++++ b/device/dualsense/opends_usb_profile_test.go
+@@ -0,0 +1,73 @@
++package dualsense
++
++import (
++	"context"
++	"encoding/hex"
++	"github.com/DualSenseClient/VIIPER/usbip"
++	"github.com/stretchr/testify/require"
++	"testing"
++	"time"
++)
++
++func TestOpenDSPhysicalUSBProfileMatchesWiredCapture(t *testing.T) {
++	d, err := new(nil, false)
++	require.NoError(t, err)
++	require.True(t, d.UsePhysicalUSBProfile())
++	expected, err := hex.DecodeString("05010905a1018501093009310932093509330934150026ff007508950681020600ff09209501810205010939150025073500463b016514750495018142650005091901290f150025017501950f81020600ff0921950d81020600ff0922150026ff0075089534810285020923952f9102850509339528b10285080934952fb102850909249513b102850a0925951ab102850b09419529b102850c09429529b10285200926953fb102852109279504b10285220940953fb10285800928953fb10285810929953fb1028582092a9509b1028583092b953fb1028584092c953fb1028585092d9502b10285a0092e9501b10285e0092f953fb10285f00930953fb10285f10931953fb10285f20932950fb10285f40935953fb10285f509369503b102c0")
++	require.NoError(t, err)
++	for _, iface := range d.GetDescriptor().Interfaces {
++		if iface.HID == nil {
++			continue
++		}
++		actual, err := iface.HID.ReportBytes()
++		require.NoError(t, err)
++		require.Equal(t, expected, []byte(actual), "wired HID descriptor must match captured device")
++		for _, ep := range iface.Endpoints {
++			require.Equal(t, uint8(4), ep.BInterval)
++		}
++	}
++	require.Equal(t, uint8(0), d.GetDescriptor().Device.ISerialNumber)
++	edge, err := new(nil, true)
++	require.NoError(t, err)
++	require.False(t, edge.UsePhysicalUSBProfile())
++	require.Equal(t, uint8(3), edge.GetDescriptor().Device.ISerialNumber)
++}
++
++func TestOpenDSPacedInputWaitsForFreshFrameAndCancels(t *testing.T) {
++	d, err := new(nil, false)
++	require.NoError(t, err)
++	require.True(t, d.UsePhysicalUSBProfile())
++	raw := make([]byte, InputReportSize)
++	raw[0] = ReportIDInput
++	require.True(t, d.SetRawInputReport(raw))
++	require.Equal(t, raw, d.HandleTransfer(context.Background(), 4, usbip.DirIn, nil))
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	result := make(chan []byte, 1)
++	go func() { result <- d.HandleTransfer(ctx, 4, usbip.DirIn, nil) }()
++	select {
++	case <-result:
++		t.Fatal("duplicate input completed without a fresh publication")
++	case <-time.After(20 * time.Millisecond):
++	}
++	// GET_REPORT must remain immediate while an interrupt read waits.
++	got, handled := d.HandleControl(0xa1, 1, 0x0101, 3, 64, nil)
++	require.True(t, handled)
++	require.Equal(t, raw, got)
++	raw[7] = 42
++	require.True(t, d.SetRawInputReport(raw))
++	select {
++	case got = <-result:
++		require.Equal(t, raw, got)
++	case <-time.After(2 * time.Second):
++		t.Fatal("new frame did not wake interrupt read")
++	}
++	go func() { result <- d.HandleTransfer(ctx, 4, usbip.DirIn, nil) }()
++	cancel()
++	select {
++	case got = <-result:
++		require.Nil(t, got)
++	case <-time.After(2 * time.Second):
++		t.Fatal("cancel did not release pending interrupt read")
++	}
++}
+diff --git a/device/dualsense/raw.go b/device/dualsense/raw.go
+index e7c2576..4fc2df8 100644
+--- a/device/dualsense/raw.go
++++ b/device/dualsense/raw.go
+@@ -31,12 +31,20 @@ func (d *DualSense) SetRawInputReport(raw []byte) bool {
+ 	snap := &rawSnapshot{}
+ 	copy(snap[:], raw)
+ 	d.rawReport.Store(snap)
++	select {
++	case d.rawReady <- struct{}{}:
++	default:
++	}
+ 	return true
+ }
+ 
+ // ClearRawInputReport drops the passthrough and restores synthetic reports.
+ func (d *DualSense) ClearRawInputReport() {
+ 	d.rawReport.Store(nil)
++	select {
++	case d.rawReady <- struct{}{}:
++	default:
++	}
+ }
+ 
+ // rawInputReport returns the published snapshot, or nil when passthrough is
+diff --git a/go.mod b/go.mod
+index 4a9bad2..146af92 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,6 +1,6 @@
+ module github.com/DualSenseClient/VIIPER
+ 
+-go 1.27.1
++go 1.27.3
+ 
+ require (
+ 	fyne.io/systray v1.12.2
+diff --git a/lib/viiper/dualsense.go b/lib/viiper/dualsense.go
+index 4c250f5..7863d1a 100644
+--- a/lib/viiper/dualsense.go
++++ b/lib/viiper/dualsense.go
+@@ -657,6 +657,19 @@ func ClearDualSenseRawInputReport(handle C.DSDeviceHandle) bool {
+ 	return true
+ }
+ 
++// UseDualSensePhysicalUSBProfile selects the standard wired descriptor profile.
++// Call before USB attachment. Edge is unchanged and returns false.
++//
++//export UseDualSensePhysicalUSBProfile
++func UseDualSensePhysicalUSBProfile(handle C.DSDeviceHandle) bool {
++	dhw, ok := cgo.Handle(handle).Value().(*deviceHandleWrapper)
++	if !ok {
++		return false
++	}
++	ds, ok := dhw.device.(*dualsense.DualSense)
++	return ok && ds.UsePhysicalUSBProfile()
++}
++
+ // SetDualSenseFeatureReport stores a verbatim GET_REPORT response for one
+ // feature ID (report ID at data[0], exact descriptor length), e.g. Edge
+ // profile snapshots 0x70-0x7B pushed from a physical controller.
