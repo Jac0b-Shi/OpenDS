@@ -73,7 +73,7 @@ cargo test --locked --offline
 
 Building requires the Rust MSVC toolchain, the Windows SDK (including the resource compiler) and Git. Fetching Rust dependencies for the first time needs a working proxy; run `cargo fetch --locked` first. The default build uses the dynamic Opus that ships with the package. The optional `bundled-opus` backend compiles a static Opus with CMake — CMake 4 needs `$env:CMAKE_POLICY_VERSION_MINIMUM='3.5'`. Both backends apply the complexity setting.
 
-Sources for the bundled VIIPER, including local modifications, live in `vendor/viiper-source`. Rebuilding the DLL additionally needs Go 1.27.1 and a Windows C compiler; use `scripts/Build-VIIPER.ps1 -Compiler <path-to-gcc.exe> -Proxy <proxy-url>`, or `-Offline` when dependencies are already cached. Then run the release script so the new DLL is packaged together with OpenDS. These build tools are development-only and are not runtime dependencies.
+Sources for the bundled VIIPER, including local modifications, live in `vendor/viiper-source`. Rebuilding the DLL additionally needs Go 1.27.3 and a Windows C compiler; use `scripts/Build-VIIPER.ps1 -Compiler <path-to-gcc.exe> -Proxy <proxy-url>`, or `-Offline` when dependencies are already cached. Then run the release script so the new DLL is packaged together with OpenDS. These build tools are development-only and are not runtime dependencies.
 
 This is a local test release; the OpenDS executable is not Authenticode-signed. Driver installers carry their upstream vendor signatures. The license is GPL-3.0-or-later; the full license text, third-party notices and corresponding source archive ship with the release artifacts. There is no auto-update and no telemetry.
 

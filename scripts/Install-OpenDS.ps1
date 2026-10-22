@@ -8,7 +8,7 @@ if (Get-Process opends -ErrorAction SilentlyContinue | Where-Object { $_.Path -a
     throw 'Exit the installed OpenDS before updating.'
 }
 New-Item -ItemType Directory -Force -Path $destinationPath | Out-Null
-foreach ($file in @('opends.exe','libVIIPER.dll','libopus-0.dll','README.md','README.zh-CN.md','LICENSE','THIRD-PARTY.md','SHA256SUMS.txt')) {
+foreach ($file in @('opends.exe','libVIIPER.dll','libopus-0.dll','viiper-build-info.json','README.md','README.zh-CN.md','LICENSE','THIRD-PARTY.md','SHA256SUMS.txt')) {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination $destinationPath -Force
 }
 foreach ($folder in @('scripts','licenses','docs')) {

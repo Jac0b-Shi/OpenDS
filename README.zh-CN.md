@@ -73,7 +73,7 @@ cargo test --locked --offline
 
 构建需要 Rust MSVC 工具链、Windows SDK（含资源编译器）、Git。首次获取 Rust 依赖须先设置可用代理，再运行 `cargo fetch --locked`。默认构建使用随包的动态 Opus。可选 `bundled-opus` 后端使用 CMake 编译静态 Opus，CMake 4 需设置 `$env:CMAKE_POLICY_VERSION_MINIMUM='3.5'`；两种后端都应用复杂度设置。
 
-配套 VIIPER 的修改源码在 `vendor/viiper-source`。重编 DLL 另需 Go 1.27.1 和 Windows C 编译器，使用 `scripts/Build-VIIPER.ps1 -Compiler <gcc.exe路径> -Proxy <代理地址>`；依赖已经缓存时可改用 `-Offline`。随后运行发布脚本，确保新 DLL 与 OpenDS 一同打包。构建工具仅用于开发，不是运行时依赖。
+配套 VIIPER 的修改源码在 `vendor/viiper-source`。重编 DLL 另需 Go 1.27.3 和 Windows C 编译器，使用 `scripts/Build-VIIPER.ps1 -Compiler <gcc.exe路径> -Proxy <代理地址>`；依赖已经缓存时可改用 `-Offline`。随后运行发布脚本，确保新 DLL 与 OpenDS 一同打包。构建工具仅用于开发，不是运行时依赖。
 
 此版本为本地测试发布，OpenDS EXE 未做 Authenticode 签名。驱动安装器使用上游官方签名。许可证为 GPL-3.0-or-later；完整许可证、第三方声明与配套源码归档随发布产物提供。没有自动更新或遥测。
 
