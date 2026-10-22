@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "upstream_commit": "25515e1ef405f189b73d5e2707a4fbb0798e9110",
-  "source_sha256": "489029507f48b01ff7a708f84f7063bfb1a9e7573d75d04340c9c45a56586717",
+  "source_sha256": "64e6b3854b57c15712189a295e2dec7f02e8182fd61d9a898c053839987533c4",
   "source_hash_rules": "SHA256 of sorted UTF-8 lines: file SHA256, two spaces, relative path, LF. UTF-8 text without NUL has CRLF normalized to LF; OPENDS-PATCH.md is excluded to avoid a hash cycle.",
   "go_version": "go version go1.27.3 windows/amd64",
   "c_compiler": "gcc.exe (GCC) 16.2.0",
@@ -19,6 +19,6 @@
     "libVIIPER.dll",
     "./lib/viiper"
   ],
-  "dll_sha256": "1987f0998b1bc94956373a48b228b4c914b28cf5bb12540c5aa3805f874fd693",
+  "dll_sha256": "4ed67ddf8a09d7c26cd8d8cda3161622130eacb76b672e5edff2eaa4b1a421e4",
   "independent_rebuild_matched": true
 }

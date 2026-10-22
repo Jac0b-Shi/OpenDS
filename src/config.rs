@@ -100,7 +100,7 @@ impl Config {
         }
         self.audio_route = self.audio_route.min(2);
         self.microphone_gain_db = self.microphone_gain_db.min(50);
-        self.microphone_buffer_ms = self.microphone_buffer_ms.clamp(32, 256);
+        self.microphone_buffer_ms = self.microphone_buffer_ms.clamp(16, 512);
         if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
             self.monitor_sample_hz = 100;
         }
@@ -323,13 +323,13 @@ mod tests {
             Config::parse("microphone_buffer_ms=0")
                 .unwrap()
                 .microphone_buffer_ms,
-            32
+            16
         );
         assert_eq!(
             Config::parse("microphone_buffer_ms=999")
                 .unwrap()
                 .microphone_buffer_ms,
-            256
+            512
         );
         let c = Config::parse("microphone_buffer_ms=160\nbuffer=4").unwrap();
         let path =

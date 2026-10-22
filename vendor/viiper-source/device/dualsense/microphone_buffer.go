@@ -15,7 +15,7 @@ func (d *DualSense) flushMicrophoneBuffer() {
 }
 
 func (d *DualSense) SetMicrophoneBufferMs(ms uint32) bool {
-	if ms < 32 || ms > 256 {
+	if ms < 16 || ms > 512 {
 		return false
 	}
 	d.mtx.Lock()
@@ -46,7 +46,7 @@ func (d *DualSense) MicrophoneBufferStats() [4]uint64 {
 const (
 	micSamplesPerFrame = 48
 	micPreRollFrames   = 128 // milliseconds, independent of speaker/haptics latency
-	micQueueDepth      = 512
+	micQueueDepth      = 1024
 	micSampleCapacity  = micQueueDepth * micSamplesPerFrame
 )
 

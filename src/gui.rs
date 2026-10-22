@@ -111,6 +111,16 @@ fn check(v: bool) -> nwg::CheckBoxState {
 fn checked(c: &nwg::CheckBox) -> bool {
     c.check_state() == nwg::CheckBoxState::Checked
 }
+fn mic_buffer_label(ms: u16) -> String {
+    format!("{ms} ms · {} 样本", ms as u32 * 48)
+}
+fn selected_mic_buffer(combo: &nwg::ComboBox<String>) -> u16 {
+    combo
+        .selection_string()
+        .and_then(|s| s.split_whitespace().next()?.parse::<u16>().ok())
+        .unwrap_or(128)
+        .clamp(16, 512)
+}
 impl App {
     fn build(
         cfg: Config,
@@ -261,7 +271,29 @@ impl App {
             input!(buffer, &cfg.buffer.to_string());
             input!(speaker, &cfg.speaker_volume.to_string());
             input!(haptic_gain, &cfg.haptics_gain.to_string());
-            let mut mic_buffers = vec![64u16, 96, 128, 160, 192, 256, cfg.microphone_buffer_ms];
+            let mut mic_buffers = vec![
+                16u16,
+                24,
+                32,
+                48,
+                64,
+                80,
+                96,
+                112,
+                128,
+                144,
+                160,
+                176,
+                192,
+                208,
+                224,
+                240,
+                256,
+                320,
+                384,
+                512,
+                cfg.microphone_buffer_ms,
+            ];
             mic_buffers.sort_unstable();
             mic_buffers.dedup();
             nwg::ComboBox::builder()
@@ -271,7 +303,7 @@ impl App {
                         .iter()
                         .position(|ms| *ms == cfg.microphone_buffer_ms),
                 )
-                .collection(mic_buffers.iter().map(|ms| ms.to_string()).collect())
+                .collection(mic_buffers.iter().map(|ms| mic_buffer_label(*ms)).collect())
                 .build(&mut ui.mic_buffer)?;
             nwg::TrackBar::builder()
                 .parent(window)
@@ -866,11 +898,7 @@ impl App {
         c.haptics_enabled = checked(&self.haptics);
         c.microphone_enabled = checked(&self.microphone);
         c.microphone_gain_db = self.mic_gain.pos().min(50) as u8;
-        c.microphone_buffer_ms = self
-            .mic_buffer
-            .selection_string()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(128);
+        c.microphone_buffer_ms = selected_mic_buffer(&self.mic_buffer);
         c.audio_route = self.route.selection().unwrap_or(0) as u8;
         c.device_path = self
             .device
@@ -1120,18 +1148,15 @@ impl App {
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
         if event == E::OnComboxBoxSelection && handle == self.mic_buffer {
-            let ms = self
-                .mic_buffer
-                .selection_string()
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(128);
+            let ms = selected_mic_buffer(&self.mic_buffer);
             let result = Config::load(&self.path).and_then(|mut c| {
                 c.microphone_buffer_ms = ms;
                 c.save(&self.path)
             });
             if let Err(e) = result {
-                self.mic_buffer
-                    .set_selection_string(&self.config.borrow().microphone_buffer_ms.to_string());
+                self.mic_buffer.set_selection_string(&mic_buffer_label(
+                    self.config.borrow().microphone_buffer_ms,
+                ));
                 self.error(e);
             } else {
                 self.config.borrow_mut().microphone_buffer_ms = ms;

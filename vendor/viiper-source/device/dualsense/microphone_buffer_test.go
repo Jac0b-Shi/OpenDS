@@ -81,8 +81,8 @@ func fmtSkew(skew float64) string {
 func TestMicrophoneBufferConfigurationAndPersistentCounters(t *testing.T) {
 	d, err := new(nil, false)
 	require.NoError(t, err)
-	require.False(t, d.SetMicrophoneBufferMs(31))
-	require.False(t, d.SetMicrophoneBufferMs(257))
+	require.False(t, d.SetMicrophoneBufferMs(15))
+	require.False(t, d.SetMicrophoneBufferMs(513))
 	require.True(t, d.SetMicrophoneBufferMs(160))
 	openMic(t, d)
 	frame := make([]byte, 192)
@@ -113,4 +113,12 @@ func TestMicrophoneBufferConfigurationAndPersistentCounters(t *testing.T) {
 	require.Nil(t, d.micBuffer)
 	require.True(t, d.SetMicrophoneBufferMs(192))
 	require.Equal(t, closed, d.MicrophoneBufferStats())
+	openMic(t, d)
+	require.True(t, d.SetMicrophoneBufferMs(512))
+	for i := 0; i < 511; i++ {
+		require.True(t, d.QueueMicrophonePCM(frame))
+	}
+	require.Nil(t, d.popMicrophoneFrame())
+	require.True(t, d.QueueMicrophonePCM(frame))
+	require.Equal(t, frame, d.popMicrophoneFrame())
 }

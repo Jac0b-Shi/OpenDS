@@ -1,6 +1,6 @@
 diff --git b/OPENDS-PATCH.md b/OPENDS-PATCH.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab69f12962b8b5a713bf40dbcdb14ebede76ceb9
+index 0000000000000000000000000000000000000000..df26f38619d96b778e5a20582cb36f993dac9035
 --- /dev/null
 +++ b/OPENDS-PATCH.md
 @@ -0,0 +1,93 @@
@@ -89,9 +89,9 @@ index 0000000000000000000000000000000000000000..ab69f12962b8b5a713bf40dbcdb14ebe
 +avoid a circular dependency on the DLL hash recorded here.
 +
 +<!-- BUILD-INFO:BEGIN -->
-+DLL SHA-256: `1987f0998b1bc94956373a48b228b4c914b28cf5bb12540c5aa3805f874fd693`
++DLL SHA-256: `4ed67ddf8a09d7c26cd8d8cda3161622130eacb76b672e5edff2eaa4b1a421e4`
 +
-+Source SHA-256 (rules in build-info.json): `489029507f48b01ff7a708f84f7063bfb1a9e7573d75d04340c9c45a56586717`
++Source SHA-256 (rules in build-info.json): `64e6b3854b57c15712189a295e2dec7f02e8182fd61d9a898c053839987533c4`
 +
 +Toolchain: go version go1.27.3 windows/amd64; gcc.exe (GCC) 16.2.0.
 +
@@ -291,7 +291,7 @@ index 37f532ee365ed86e761e816764ac97dd902466ba..8e4697feb26a973ee7f9181349969c27
  	d.mtx.Unlock()
 diff --git b/device/dualsense/microphone_buffer.go b/device/dualsense/microphone_buffer.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..af5ad2552013df6b22ac462c21dea231b9d64078
+index 0000000000000000000000000000000000000000..39703027057043d09b42727a2059564adfc741c2
 --- /dev/null
 +++ b/device/dualsense/microphone_buffer.go
 @@ -0,0 +1,127 @@
@@ -312,7 +312,7 @@ index 0000000000000000000000000000000000000000..af5ad2552013df6b22ac462c21dea231
 +}
 +
 +func (d *DualSense) SetMicrophoneBufferMs(ms uint32) bool {
-+	if ms < 32 || ms > 256 {
++	if ms < 16 || ms > 512 {
 +		return false
 +	}
 +	d.mtx.Lock()
@@ -343,7 +343,7 @@ index 0000000000000000000000000000000000000000..af5ad2552013df6b22ac462c21dea231
 +const (
 +	micSamplesPerFrame = 48
 +	micPreRollFrames   = 128 // milliseconds, independent of speaker/haptics latency
-+	micQueueDepth      = 512
++	micQueueDepth      = 1024
 +	micSampleCapacity  = micQueueDepth * micSamplesPerFrame
 +)
 +
@@ -424,10 +424,10 @@ index 0000000000000000000000000000000000000000..af5ad2552013df6b22ac462c21dea231
 +}
 diff --git b/device/dualsense/microphone_buffer_test.go b/device/dualsense/microphone_buffer_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..79bac9faae693984c4c3e51e1d345567db445900
+index 0000000000000000000000000000000000000000..02464102f077235b5701282a905b9eea6c7e7504
 --- /dev/null
 +++ b/device/dualsense/microphone_buffer_test.go
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,124 @@
 +package dualsense
 +
 +import (
@@ -511,8 +511,8 @@ index 0000000000000000000000000000000000000000..79bac9faae693984c4c3e51e1d345567
 +func TestMicrophoneBufferConfigurationAndPersistentCounters(t *testing.T) {
 +	d, err := new(nil, false)
 +	require.NoError(t, err)
-+	require.False(t, d.SetMicrophoneBufferMs(31))
-+	require.False(t, d.SetMicrophoneBufferMs(257))
++	require.False(t, d.SetMicrophoneBufferMs(15))
++	require.False(t, d.SetMicrophoneBufferMs(513))
 +	require.True(t, d.SetMicrophoneBufferMs(160))
 +	openMic(t, d)
 +	frame := make([]byte, 192)
@@ -543,6 +543,14 @@ index 0000000000000000000000000000000000000000..79bac9faae693984c4c3e51e1d345567
 +	require.Nil(t, d.micBuffer)
 +	require.True(t, d.SetMicrophoneBufferMs(192))
 +	require.Equal(t, closed, d.MicrophoneBufferStats())
++	openMic(t, d)
++	require.True(t, d.SetMicrophoneBufferMs(512))
++	for i := 0; i < 511; i++ {
++		require.True(t, d.QueueMicrophonePCM(frame))
++	}
++	require.Nil(t, d.popMicrophoneFrame())
++	require.True(t, d.QueueMicrophonePCM(frame))
++	require.Equal(t, frame, d.popMicrophoneFrame())
 +}
 diff --git b/device/dualsense/opends_usb_profile.go b/device/dualsense/opends_usb_profile.go
 new file mode 100644
