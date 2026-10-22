@@ -634,7 +634,15 @@ impl App {
             &f.small,
             theme::MUTED,
         );
-        text(28, h - 116, 154, 22, "v0.1.0", &f.small, theme::MUTED);
+        text(
+            28,
+            h - 116,
+            154,
+            22,
+            concat!("v", env!("CARGO_PKG_VERSION")),
+            &f.small,
+            theme::MUTED,
+        );
         let titles = ["概览", "实时监视", "连接与反馈", "设备隐藏", "诊断与日志"];
         let descriptions = [
             "连接状态与反馈数据，尽在此处。",
