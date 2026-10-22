@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           ref: ${{ inputs.source-ref || github.sha }}
           persist-credentials: false
@@ -36,30 +36,31 @@ jobs:
         shell: pwsh
         run: ./scripts/Build-Release.ps1 -SkipTests
       - name: Keep binary and matching source archives together
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (node24)
         with:
           name: OpenDS-windows-x64
           path: target/dist/*.zip
           if-no-files-found: error
           retention-days: 7
+          archive: true
   viiper:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           ref: ${{ inputs.source-ref || github.sha }}
           persist-credentials: false
       - name: Test release signature gate with isolated fixture keys
         run: python scripts/tests/test_release_tag.py
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 (node24)
         with:
           go-version-file: vendor/viiper-source/go.mod
           cache-dependency-path: vendor/viiper-source/go.sum
       - name: Check USB profile, protocol and concurrency
         working-directory: vendor/viiper-source
         run: go test -race ./device/dualsense ./internal/server/usb ./usb ./usbip
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           repository: DualSenseClient/VIIPER
           ref: 25515e1ef405f189b73d5e2707a4fbb0798e9110
@@ -67,3 +68,33 @@ jobs:
           persist-credentials: false
       - name: Verify upstream patch applies and reproduces bundled source
         run: python scripts/Make-VIIPERPatch.py --upstream target/viiper-upstream --check
+
+  artifacts:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (node24)
+        with:
+          name: OpenDS-windows-x64
+          path: dist
+          digest-mismatch: error
+      - name: Verify Windows upload and Linux download preserve the release ZIP pair
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          import zipfile
+
+          paths = list(Path('dist').glob('*.zip'))
+          sources = [p for p in paths if p.name.endswith('-source.zip')]
+          binaries = [p for p in paths if not p.name.endswith('-source.zip')]
+          assert len(paths) == 2 and len(sources) == len(binaries) == 1
+          with zipfile.ZipFile(binaries[0]) as binary, zipfile.ZipFile(sources[0]) as source:
+              assert binary.testzip() is None and source.testzip() is None
+              for line in binary.read('SHA256SUMS.txt').decode('ascii').splitlines():
+                  digest, name = line.split(maxsplit=1)
+                  assert hashlib.sha256(binary.read(name.replace('\\', '/'))).hexdigest() == digest
+              assert binary.read('libVIIPER.dll') == source.read('vendor/viiper/libVIIPER.dll')
+              assert binary.read('scripts/Driver-Download.ps1') == source.read('scripts/Driver-Download.ps1')
+              assert 'Cargo.lock' in source.namelist() and 'vendor/opends-viiper.patch' in source.namelist()
