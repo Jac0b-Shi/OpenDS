@@ -18,7 +18,7 @@ Closing the settings window keeps OpenDS in the tray. Stopping the bridge or exi
 
 The install button drives `scripts/Install-Drivers.ps1`. It downloads only from pinned official release URLs, verifies SHA-256 and the Authenticode publisher, and then runs the vendor installer. USB/IP is installed in compact mode, skipping the GUI, SDK and debug symbols.
 
-A proxy is discovered from the `-Proxy` argument, the `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables, or the Windows system proxy (including PAC auto-config). **Not finding one never blocks the download**: the script tries the proxy first, then a direct connection, and only prints manual download URLs after both fail. A proxy can also be passed explicitly:
+Downloads first try `-Proxy` or the `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables, then Windows network settings (including PAC/WPAD and bypass rules evaluated for each destination), then a direct connection. **A proxy is not required**; manual download URLs appear only after all attempts fail. A proxy can also be passed explicitly:
 
 ```powershell
 .\scripts\Install-Drivers.ps1 -Proxy http://127.0.0.1:7890

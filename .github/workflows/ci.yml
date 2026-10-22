@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check formatting
         run: cargo fmt --check
+      - name: Exercise driver downloader on Windows PowerShell and PowerShell 7
+        run: python scripts/tests/test_driver_download.py
       - name: Fetch locked dependencies, including optional source notices
         run: cargo fetch --locked
       - name: Run Rust regression tests

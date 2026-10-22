@@ -8,55 +8,14 @@ param(
     [string]$ManualDirectory
 )
 $ErrorActionPreference = 'Stop'
+# Use this host's built-ins even when a parent PS7 process passes its module path
+# to Windows PowerShell 5.1 (the runtime used by the GUI).
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1')
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$assets = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'drivers.json') -Raw | ConvertFrom-Json)
-
-# Best-effort PAC parsing: pull the first usable PROXY/HTTPS directive out of a
-# PAC file. Real PAC scripts can branch per URL, which this cannot evaluate; the
-# download path always falls back to a direct attempt, so a miss is harmless.
-function Resolve-PacProxy([string]$ConfigUrl) {
-    try {
-        $text = if ($ConfigUrl -like 'file://*') {
-            Get-Content -LiteralPath ([uri]$ConfigUrl).LocalPath -Raw -ErrorAction Stop
-        } else {
-            (Invoke-WebRequest -UseBasicParsing -Uri $ConfigUrl -TimeoutSec 15).Content
-        }
-        if (-not $text) { return $null }
-        $found = [regex]::Matches($text, '(?i)\b(?:PROXY|HTTPS)\s+([A-Za-z0-9\.\-]+:\d+)')
-        foreach ($m in $found) {
-            $candidate = $m.Groups[1].Value
-            if ($candidate) { return 'http://' + $candidate }
-        }
-    } catch { }
-    return $null
-}
-
-# Discover a proxy when the caller did not pass one. A missing proxy is NOT an
-# error: many networks reach the release hosts directly, so detection only
-# decides which attempt runs first.
-if ([string]::IsNullOrWhiteSpace($Proxy)) {
-    foreach ($key in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) {
-        $candidate = [Environment]::GetEnvironmentVariable($key)
-        if ($candidate) { $Proxy = $candidate; break }
-    }
-}
-if ([string]::IsNullOrWhiteSpace($Proxy)) {
-    $settings = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
-    if ($settings.ProxyEnable -and $settings.ProxyServer) {
-        $server = [string]$settings.ProxyServer
-        if ($server.Contains('=')) {
-            $entry = @($server.Split(';') | Where-Object { $_ -like 'https=*' } | Select-Object -First 1)
-            if (!$entry.Count) { $entry = @($server.Split(';') | Where-Object { $_ -like 'http=*' } | Select-Object -First 1) }
-            $server = if ($entry.Count) { $entry[0].Split('=',2)[1] } else { '' }
-        }
-        if ($server) { $Proxy = $server }
-    } elseif ($settings.AutoConfigURL) {
-        $Proxy = Resolve-PacProxy ([string]$settings.AutoConfigURL)
-    }
-}
-# Normalize once, so -Proxy 127.0.0.1:7890 and environment variables behave the
-# same as the registry value. Invoke-WebRequest requires a scheme.
-if ($Proxy -and $Proxy -notmatch '^\w+://') { $Proxy = 'http://' + $Proxy }
+# PS5 writes a JSON array as one pipeline object; wrapping it in @() nests it.
+$assets = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'drivers.json') -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'Driver-Download.ps1')
 
 function Test-Asset($Item, [string]$Path) {
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Item.sha256) {
@@ -68,37 +27,6 @@ function Test-Asset($Item, [string]$Path) {
     }
 }
 
-# Try the configured proxy first, then a direct connection. Only when every
-# attempt fails does the script ask the user to download by hand.
-function Save-Asset($Item, [string]$Destination) {
-    $attempts = @()
-    if ($Proxy) { $attempts += @{ Label = "proxy $Proxy"; Proxy = $Proxy } }
-    $attempts += @{ Label = 'direct connection'; Proxy = $null }
-
-    $partial = $Destination + '.partial-' + [guid]::NewGuid().ToString('N')
-    $failures = @()
-    foreach ($attempt in $attempts) {
-        Write-Host "Downloading $($Item.file) via $($attempt.Label)..."
-        $saved = [Net.WebRequest]::DefaultWebProxy
-        try {
-            [Net.WebRequest]::DefaultWebProxy = if ($attempt.Proxy) { New-Object Net.WebProxy($attempt.Proxy) } else { $null }
-            Invoke-WebRequest -UseBasicParsing -Uri $Item.url -OutFile $partial -TimeoutSec 180
-            Test-Asset $Item $partial
-            Move-Item -LiteralPath $partial -Destination $Destination
-            return
-        } catch {
-            $failures += "  $($attempt.Label): $($_.Exception.Message)"
-        } finally {
-            [Net.WebRequest]::DefaultWebProxy = $saved
-            if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
-        }
-    }
-
-    throw ("Could not download $($Item.file).`n" + ($failures -join "`n") +
-        "`n`nDownload it manually: $($Item.url)`nSave as: $Destination`n" +
-        "Then rerun with -ManualDirectory <folder>, or pass -Proxy http://127.0.0.1:PORT.")
-}
-
 New-Item -ItemType Directory -Force -Path $Cache | Out-Null
 foreach ($asset in $assets) {
     if ($Component -ne 'all' -and $Component -ne $asset.id) { continue }
@@ -107,7 +35,7 @@ foreach ($asset in $assets) {
         $destination = Join-Path (Resolve-Path -LiteralPath $ManualDirectory).Path $asset.file
         if (!(Test-Path -LiteralPath $destination -PathType Leaf)) { throw "Download manually: $($asset.url)`nSave as: $destination" }
     } elseif (!(Test-Path -LiteralPath $destination -PathType Leaf)) {
-        Save-Asset $asset $destination
+        Save-DriverAsset $asset $destination $Proxy
     }
     Test-Asset $asset $destination
     Write-Host "Verified SHA256 and publisher: $($asset.file)"
