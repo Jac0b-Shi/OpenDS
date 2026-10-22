@@ -1,0 +1,29 @@
+[package]
+name = "opends"
+version = "0.1.0"
+edition = "2021"
+description = "DualSense input virtualization and forwarding for Windows"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "opends"
+path = "src/main.rs"
+
+[dependencies]
+# 可选：静态链接 libopus（需显式启用 --features bundled-opus）
+opusic-sys = { version = "0.3.6", optional = true }
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "notice", "listbox", "textbox", "combobox", "cursor", "embed-resource", "tooltip"] }
+winapi = { version = "0.3.9", features = ["winuser", "wingdi", "uxtheme", "dwmapi"] }
+
+[features]
+default = []
+# 把 libopus 编译进二进制，运行时不再需要 libopus-0.dll。
+# 代价：构建期需要 C 编译器与 CMake。
+bundled-opus = ["dep:opusic-sys"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
+panic = "unwind"

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "usbip",
+    "file": "USBip-0.9.8.1-x64.exe",
+    "url": "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.8.1/USBip-0.9.8.1-x64.exe",
+    "sha256": "38cad6d4432b52d5bb9409d9ad03b72fdffc4ada4cd3a48fbeca1a2752a8518a",
+    "publisher": "Cloudyne Systems (Scheibling Consulting AB)",
+    "arguments": "/TYPE=compact"
+  },
+  {
+    "id": "hidhide",
+    "file": "HidHide_1.5.230_x64.exe",
+    "url": "https://github.com/nefarius/HidHide/releases/download/v1.5.230.0/HidHide_1.5.230_x64.exe",
+    "sha256": "f4bbbcb82e6258641b887c74bc81c4c5f66e4aa811808dfc304347687b7605f6",
+    "publisher": "Nefarius Software Solutions",
+    "arguments": ""
+  }
+]
