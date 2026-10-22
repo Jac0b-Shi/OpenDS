@@ -30,7 +30,7 @@ vendor/*.zst
 vendor/*.tar
 
 # ---- 编辑器与系统 ----
-.vscode/
+/.vscode/
 .idea/
 .DS_Store
 Thumbs.db
