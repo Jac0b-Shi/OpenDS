@@ -72,9 +72,14 @@ haptics_gain=10
 | Key | Meaning |
 | --- | --- |
 | `port` | virtual device port |
-| `buffer` | audio buffer blocks, 16–128. Smaller is lower latency, larger survives stalls |
+| `buffer` | audio buffer blocks, 16–128. About 10.7 ms each: 64 blocks ≈ 683 ms, 128 ≈ 1.37 s when full. Larger survives stalls, at the cost of sound lagging the picture |
 | `audio` | speaker audio toggle |
 | `haptics_gain` | haptic intensity, 10–20 |
+| `microphone_gain_db` | microphone gain, 0–50 dB, peak-limited |
+| `microphone_buffer_ms` | microphone jitter buffer, 16–512 ms |
+| `monitor_sample_hz` | monitor sample rate, 20 / 50 / 100 / 200 |
+| `monitor_fps` | monitor refresh rate, 15 / 30 / 60 |
+| `monitor_seconds` | monitor time span, 30–900 s |
 
 Restart the bridge after changing anything.
 
@@ -94,16 +99,13 @@ Or pass `-Startup` to `scripts/Install-OpenDS.ps1` during install. Startup uses 
 HidHide is hiding it. Exiting OpenDS restores it; after a crash, run `opends.exe restore`.
 
 **No rumble in game**
-Start OpenDS before launching the game. Most games probe the controller only at startup and will not enable full feedback if it appears later.
+Start OpenDS before launching the game. Games usually probe the controller type and its capabilities at startup. A controller connected later is still recognized as an input device, but the capability probe does not run again — rumble, adaptive triggers and lighting may stay inactive.
 
 **Rumble but no sound**
-The controller speaker has its own volume, adjusted with the PS button plus the D-pad. Make sure `audio=1`.
+The controller speaker has its own volume, set by the game through the output report. Without a game-side option it keeps its previous level. Make sure `audio=1`.
 
 **Audio stutters**
 Raise `buffer`, for example to 96 or 128.
-
-**Lightbar looks dim**
-The blue channel of the DualSense lightbar is physically dimmer than red and green. Mixing in some green makes colors appear brighter.
 
 **Steam games misbehave**
 Disable Steam Input. It takes over the controller and bypasses the virtual device.
@@ -112,7 +114,9 @@ Disable Steam Input. It takes over the controller and bypasses the virtual devic
 
 Supports DualSense and DualSense Edge. Edge uses the Edge PID by default; set `edge_as_ds=true` to present it as a standard DualSense. One controller at a time.
 
-The microphone is experimental and off by default.
+The microphone is experimental and off by default, with adjustable gain and jitter buffering — see [Microphone](docs/guides/microphone.md).
+
+The **Live monitor** page shows controller input alongside speaker, haptic and microphone waveforms — see [Live monitor](docs/guides/monitor.md).
 
 ## Build
 
@@ -141,6 +145,8 @@ When distributing binaries, include `vendor/viiper-source`; the release script p
 ## Documentation
 
 - [User guide](docs/guides/user-guide.md)
+- [Live monitor](docs/guides/monitor.md)
+- [Microphone](docs/guides/microphone.md)
 - [Developer guide](docs/guides/developer-guide.md)
 - [Protocol notes](docs/guides/protocol.md)
 - [Resident mode](docs/guides/resident.md)

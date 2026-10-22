@@ -72,9 +72,14 @@ haptics_gain=10
 | 键 | 说明 |
 | --- | --- |
 | `port` | 虚拟设备端口 |
-| `buffer` | 音频缓冲块数，16–128。偏小延迟低，偏大更抗卡顿 |
+| `buffer` | 音频缓冲块数，16–128。每块约 10.7 ms，队列满时 64 块约 683 ms、128 块约 1.37 s。调大更抗卡顿，代价是游戏声音落后画面 |
 | `audio` | 扬声器音频开关 |
 | `haptics_gain` | 触觉强度，10–20 |
+| `microphone_gain_db` | 麦克风增益，0–50 dB，带峰值限幅 |
+| `microphone_buffer_ms` | 麦克风抖动缓冲，16–512 毫秒 |
+| `monitor_sample_hz` | 监视采样率，20 / 50 / 100 / 200 |
+| `monitor_fps` | 监视刷新率，15 / 30 / 60 |
+| `monitor_seconds` | 监视时间跨度，30–900 秒 |
 
 修改后重启桥接生效。
 
@@ -94,16 +99,13 @@ haptics_gain=10
 物理手柄被 HidHide 隐藏了。退出 OpenDS 会自动恢复；异常退出后运行 `opends.exe restore`。
 
 **游戏里没有震动**
-先启动 OpenDS 再开游戏。多数游戏只在启动时探测手柄，中途接入不会启用完整反馈。
+先启动 OpenDS 再开游戏。游戏通常在启动时探测手柄类型和支持的能力。中途接入的手柄会被识别成输入设备，但能力探测不会重跑，震动、自适应扳机和灯效可能都不生效。
 
 **有震动但没声音**
-手柄扬声器音量独立于系统音量，用 PS 键加方向键调节。确认配置里 `audio=1`。
+手柄扬声器的音量独立于系统音量，由游戏通过输出报告设置；游戏没有提供相关选项时保持上一次的值。确认配置里 `audio=1`。
 
 **音频断续**
 把 `buffer` 调大，例如 96 或 128。
-
-**灯条偏暗**
-DualSense 灯条的蓝色通道亮度天然低于红绿。颜色里掺一点绿色会更亮。
 
 **Steam 游戏识别异常**
 关闭 Steam Input。它会接管手柄，绕过本工具的虚拟设备。
@@ -112,7 +114,9 @@ DualSense 灯条的蓝色通道亮度天然低于红绿。颜色里掺一点绿�
 
 支持普通 DualSense 和 DualSense Edge。Edge 默认使用 Edge 的 PID，可在配置里设 `edge_as_ds=true` 改为呈现为普通 DualSense。同时只支持一只手柄。
 
-麦克风是实验功能，默认关闭。
+麦克风是实验功能，默认关闭，支持增益和抖动缓冲调整，详见[麦克风](docs/guides/microphone.md)。
+
+「实时监视」页面可观察手柄输入与扬声器、触觉、麦克风三组波形，详见[实时监视](docs/guides/monitor.md)。
 
 ## 构建
 
@@ -141,6 +145,8 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 ## 文档
 
 - [使用指南](docs/guides/user-guide.md)
+- [实时监视](docs/guides/monitor.md)
+- [麦克风](docs/guides/microphone.md)
 - [开发者指南](docs/guides/developer-guide.md)
 - [协议说明](docs/guides/protocol.md)
 - [常驻运行](docs/guides/resident.md)
