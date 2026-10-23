@@ -139,6 +139,21 @@ cargo test --locked --offline
 .\scripts\Build-VIIPER.ps1 -Compiler <gcc.exe路径>
 ```
 
+## 发布包
+
+每个版本提供四个附件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `OpenDS-<版本>-windows-x64.zip` | 可执行文件、DLL 和脚本 |
+| `OpenDS-<版本>-source.zip` | 完整源码：Rust 源码、`vendor/viiper-source`、依赖许可证清单 |
+| `SHA256SUMS.txt` | 全部附件的校验和 |
+| `TAG-SIGNATURE.json` | 签名标签的回执 |
+
+GitHub 页面上的 "Source code (zip)" 和 "Source code (tar.gz)" 是平台自动生成的，只含 Git 跟踪的文件，缺少依赖许可证清单和 VIIPER 源码归档。**需要源码请下载 `source.zip`**。
+
+发布流程会校验 `source.zip` 里的 VIIPER 源码与二进制包中的 DLL 是否对应。
+
 ## 许可证
 
 GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIRD-PARTY.md](THIRD-PARTY.md)。
