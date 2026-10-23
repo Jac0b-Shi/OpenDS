@@ -54,21 +54,34 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
 
 /// 所有修改驱动状态的入口共用此进程锁；第二实例不得执行恢复。
 pub struct InstanceGuard(*mut c_void);
+#[derive(Debug)]
+pub enum InstanceError {
+    AlreadyRunning,
+    System(io::Error),
+}
+impl std::fmt::Display for InstanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning => f.write_str("OpenDS 已在运行；请从现有托盘实例操作。"),
+            Self::System(e) => write!(f, "无法创建进程锁：{e}"),
+        }
+    }
+}
 impl InstanceGuard {
-    pub fn acquire() -> Result<Self, String> {
+    pub fn acquire() -> Result<Self, InstanceError> {
         Self::acquire_named("Global\\OpenDS.Controller.v1")
     }
-    fn acquire_named(name: &str) -> Result<Self, String> {
+    fn acquire_named(name: &str) -> Result<Self, InstanceError> {
         let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         let h = unsafe { CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr()) };
         if h.is_null() {
-            return Err(format!("无法创建进程锁：{}", io::Error::last_os_error()));
+            return Err(InstanceError::System(io::Error::last_os_error()));
         }
         if unsafe { GetLastError() } == 183 {
             unsafe {
                 CloseHandle(h);
             }
-            return Err("OpenDS 已在运行；请从现有托盘实例操作。".into());
+            return Err(InstanceError::AlreadyRunning);
         }
         Ok(Self(h))
     }
@@ -133,7 +146,10 @@ mod tests {
                 .as_nanos()
         );
         let first = InstanceGuard::acquire_named(&name).unwrap();
-        assert!(InstanceGuard::acquire_named(&name).is_err());
+        assert!(matches!(
+            InstanceGuard::acquire_named(&name),
+            Err(InstanceError::AlreadyRunning)
+        ));
         drop(first);
         assert!(InstanceGuard::acquire_named(&name).is_ok());
     }

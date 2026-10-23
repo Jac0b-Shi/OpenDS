@@ -1,0 +1,27 @@
+meta-language-code = zh-CN
+meta-language-name = 简体中文
+meta-schema-version = 1
+
+language-auto = 跟随系统语言
+language-builtin = 内置
+language-local = 本地文件
+language-settings-title = 常规设置
+language-label = 语言
+language-import = 导入语言文件…
+language-open-folder = 打开语言文件夹
+language-pending = 语言设置将在重启 OpenDS 后生效。
+language-restart-title = 应用语言
+language-restart-message = 重启 OpenDS 后将使用{ $language }。
+language-restart-bridge = 重启会短暂断开虚拟手柄，并停止正在进行的录音或文件记录。
+language-restart-later = 稍后重启(&L)
+language-restart-now = 现在重启(&R)
+language-restart-error = 无法重启 OpenDS：{ $error }
+language-import-error = 无法导入语言文件：{ $error }
+language-import-title = 导入语言文件
+language-import-filter = Fluent 语言文件 (*.ftl)
+language-replace-title = 替换语言文件？
+language-replace-message = { $language }已有翻译，是否使用这个本地文件替换？
+language-import-done = 已导入{ $language }。选择该语言并重启 OpenDS 后生效。
+language-check-result = { $language }：已翻译 { $translated } / { $total } 条（{ $percent }%）。
+language-check-missing = 缺少条目：{ $id }
+language-check-error = 无效的语言文件：{ $error }

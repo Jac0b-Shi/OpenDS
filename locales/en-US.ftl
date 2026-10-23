@@ -1,0 +1,27 @@
+meta-language-code = en-US
+meta-language-name = English
+meta-schema-version = 1
+
+language-auto = Follow system language
+language-builtin = Built-in
+language-local = Local file
+language-settings-title = General settings
+language-label = Language
+language-import = Import language file…
+language-open-folder = Open language folder
+language-pending = Language changes take effect after restarting OpenDS.
+language-restart-title = Apply language
+language-restart-message = Restart OpenDS to use { $language }.
+language-restart-bridge = Restarting will briefly disconnect the virtual controller and stop any recording.
+language-restart-later = Restart &later
+language-restart-now = &Restart now
+language-restart-error = Could not restart OpenDS: { $error }
+language-import-error = Could not import the language file: { $error }
+language-import-title = Import language file
+language-import-filter = Fluent language files (*.ftl)
+language-replace-title = Replace language file?
+language-replace-message = A translation for { $language } already exists. Replace it with this local file?
+language-import-done = Imported { $language }. Select it and restart OpenDS to apply it.
+language-check-result = { $language }: { $translated } / { $total } messages translated ({ $percent }%).
+language-check-missing = Missing message: { $id }
+language-check-error = Invalid language file: { $error }

@@ -51,6 +51,7 @@ pub struct Config {
     /// USB 外观：0 = DualSense，1 = Xbox One，2 = PS4。
     pub usb_face: u8,
     pub auto_start: bool,
+    pub language: String,
     pub close_action: CloseAction,
     pub reconnect: bool,
     pub hide_device: bool,
@@ -85,6 +86,7 @@ impl Default for Config {
             edge_as_ds: false,
             usb_face: 0,
             auto_start: false,
+            language: "auto".into(),
             close_action: CloseAction::Ask,
             reconnect: true,
             hide_device: true,
@@ -203,6 +205,7 @@ impl Config {
                 "edge_as_ds" => boolean!(edge_as_ds),
                 "usb_face" => number!(usb_face),
                 "auto_start" => boolean!(auto_start),
+                "language" => cfg.language = value.to_owned(),
                 "close_action" => {
                     cfg.close_action = match value {
                         "tray" => CloseAction::Tray,
@@ -247,6 +250,7 @@ impl Config {
             edge_as_ds,
             usb_face,
             auto_start,
+            language,
             close_action,
             reconnect,
             hide_device,
@@ -263,7 +267,7 @@ impl Config {
             monitor_fps,
             monitor_seconds
         );
-        if self.device_path.contains(['\r', '\n']) {
+        if self.device_path.contains(['\r', '\n']) || self.language.contains(['\r', '\n']) {
             return Err("设备路径含换行符".into());
         }
         crate::persistence::atomic_write(path, s.as_bytes())

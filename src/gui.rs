@@ -83,6 +83,7 @@ struct App {
     config: RefCell<Config>,
     path: PathBuf,
     devices: RefCell<Vec<String>>,
+    mic_buffers: Vec<u16>,
     exiting: Cell<bool>,
     close_prompt_open: Cell<bool>,
     page: Cell<u8>,
@@ -121,10 +122,10 @@ fn checked(c: &nwg::CheckBox) -> bool {
 fn mic_buffer_label(ms: u16) -> String {
     format!("{ms} ms · {} 样本", ms as u32 * 48)
 }
-fn selected_mic_buffer(combo: &nwg::ComboBox<String>) -> u16 {
+fn selected_mic_buffer(combo: &nwg::ComboBox<String>, values: &[u16]) -> u16 {
     combo
-        .selection_string()
-        .and_then(|s| s.split_whitespace().next()?.parse::<u16>().ok())
+        .selection()
+        .and_then(|i| values.get(i).copied())
         .unwrap_or(128)
         .clamp(16, 512)
 }
@@ -144,6 +145,7 @@ impl App {
             config: RefCell::new(cfg.clone()),
             path,
             devices: RefCell::new(vec![]),
+            mic_buffers: vec![],
             exiting: Cell::new(false),
             close_prompt_open: Cell::new(false),
             page: Cell::new(0),
@@ -319,6 +321,7 @@ impl App {
             ];
             mic_buffers.sort_unstable();
             mic_buffers.dedup();
+            a.mic_buffers = mic_buffers.clone();
             nwg::ComboBox::builder()
                 .parent(window)
                 .selected_index(
@@ -942,7 +945,7 @@ impl App {
         c.haptics_enabled = checked(&self.haptics);
         c.microphone_enabled = checked(&self.microphone);
         c.microphone_gain_db = self.mic_gain.pos().min(50) as u8;
-        c.microphone_buffer_ms = selected_mic_buffer(&self.mic_buffer);
+        c.microphone_buffer_ms = selected_mic_buffer(&self.mic_buffer, &self.mic_buffers);
         c.audio_route = self.route.selection().unwrap_or(0) as u8;
         c.device_path = self
             .device
@@ -1293,15 +1296,17 @@ impl App {
             return;
         }
         if event == E::OnComboxBoxSelection && handle == self.mic_buffer {
-            let ms = selected_mic_buffer(&self.mic_buffer);
+            let ms = selected_mic_buffer(&self.mic_buffer, &self.mic_buffers);
             let result = Config::load(&self.path).and_then(|mut c| {
                 c.microphone_buffer_ms = ms;
                 c.save(&self.path)
             });
             if let Err(e) = result {
-                self.mic_buffer.set_selection_string(&mic_buffer_label(
-                    self.config.borrow().microphone_buffer_ms,
-                ));
+                self.mic_buffer.set_selection(
+                    self.mic_buffers
+                        .iter()
+                        .position(|ms| *ms == self.config.borrow().microphone_buffer_ms),
+                );
                 self.error(e);
             } else {
                 self.config.borrow_mut().microphone_buffer_ms = ms;

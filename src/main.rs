@@ -17,6 +17,8 @@ mod gui_close;
 mod gui_theme;
 mod hid;
 mod hidhide;
+mod i18n;
+mod language_pack;
 mod logging;
 mod microphone;
 mod monitor;
@@ -133,8 +135,8 @@ fn cli() -> Result<(), String> {
         _ => return Err(format!("未知命令：{command}；使用 opends --help")),
     }
     let _instance = match persistence::InstanceGuard::acquire() {
-        Err(e) if command == "tray" && e.starts_with("OpenDS 已在运行") => return Ok(()),
-        result => result?,
+        Err(persistence::InstanceError::AlreadyRunning) if command == "tray" => return Ok(()),
+        result => result.map_err(|e| e.to_string())?,
     };
     let recovery = hidhide::recover_if_needed();
     if command == "restore" {

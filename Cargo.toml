@@ -17,6 +17,9 @@ winapi = { version = "0.3.9", features = ["winuser", "wingdi", "uxtheme", "dwmap
 crossbeam-queue = "0.3.12"
 plotters = { version = "0.3", default-features = false, features = ["line_series"] }
 plotters-backend = "0.3"
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = "0.9"
 
 [features]
 default = []
@@ -30,3 +33,6 @@ codegen-units = 1
 opt-level = "s"
 strip = true
 panic = "unwind"
+
+[build-dependencies]
+fluent-syntax = "0.12"
