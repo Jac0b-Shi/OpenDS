@@ -25,7 +25,10 @@ pub fn choose_file(parent: HWND) -> Result<Option<PathBuf>, String> {
         return if error == 0 {
             Ok(None)
         } else {
-            Err(format!("File dialog failed: 0x{error:08X}"))
+            Err(crate::tr!(
+                language_file_dialog_error,
+                code = format!("0x{error:08X}")
+            ))
         };
     }
     use std::os::windows::ffi::OsStringExt;
@@ -109,7 +112,10 @@ fn restart_dialog(
     let mut selected = 0;
     let result = unsafe { TaskDialogIndirect(&c, &mut selected, null_mut(), null_mut()) };
     if result < 0 {
-        return Err(format!("Task dialog failed: 0x{:08X}", result as u32));
+        return Err(crate::tr!(
+            language_restart_dialog_error,
+            code = format!("0x{:08X}", result as u32)
+        ));
     }
     Ok(selected == 100)
 }

@@ -10,6 +10,40 @@ pub const RESTART_MESSAGES: &[&str] = &[
     "language-restart-later",
     "language-restart-now",
 ];
+#[derive(Debug, Clone, Copy)]
+pub enum ErrorCode {
+    File,
+    Depth,
+    Syntax,
+    Cycle,
+    Reference,
+    Duplicate,
+    MissingMeta,
+    LiteralMeta,
+    Schema,
+    Parameters,
+    Restart,
+    Name,
+}
+#[derive(Debug)]
+pub struct Error {
+    pub code: ErrorCode,
+    pub detail: String,
+}
+impl Error {
+    fn new(code: ErrorCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.detail)
+    }
+}
+impl std::error::Error for Error {}
 #[derive(Debug, Clone)]
 pub struct Catalog {
     pub code: String,
@@ -84,16 +118,16 @@ fn variables(
     defs: &BTreeMap<String, Definition>,
     stack: &mut Vec<String>,
     cache: &mut BTreeMap<String, BTreeSet<String>>,
-) -> Result<BTreeSet<String>, String> {
+) -> Result<BTreeSet<String>, Error> {
     if let Some(value) = cache.get(key) {
         return Ok(value.clone());
     }
     if stack.len() >= 64 || stack.iter().any(|s| s == key) {
-        return Err(format!("Cyclic or excessively nested reference: {key}"));
+        return Err(Error::new(ErrorCode::Cycle, key));
     }
     let d = defs
         .get(key)
-        .ok_or_else(|| format!("Unknown reference: {key}"))?;
+        .ok_or_else(|| Error::new(ErrorCode::Reference, key))?;
     stack.push(key.into());
     let mut vars = d.variables.clone();
     for (reference, bound) in &d.references {
@@ -107,9 +141,9 @@ fn variables(
     cache.insert(key.to_owned(), vars.clone());
     Ok(vars)
 }
-pub fn parse(text: &str) -> Result<Catalog, String> {
+pub fn parse(text: &str) -> Result<Catalog, Error> {
     if text.len() > MAX_BYTES || text.contains('\0') {
-        return Err("Language file exceeds 2 MiB or contains NUL".into());
+        return Err(Error::new(ErrorCode::File, ""));
     }
     let mut depth = 0usize;
     for c in text.chars() {
@@ -120,11 +154,11 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
             depth = depth.saturating_sub(1);
         }
         if depth > 64 {
-            return Err("Language file nesting exceeds 64".into());
+            return Err(Error::new(ErrorCode::Depth, ""));
         }
     }
     let resource = parser::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|(_, e)| format!("Invalid Fluent syntax: {e:?}"))?;
+        .map_err(|(_, e)| Error::new(ErrorCode::Syntax, format!("{e:?}")))?;
     let mut defs = BTreeMap::new();
     let mut ids = BTreeSet::new();
     let mut meta = BTreeMap::new();
@@ -135,16 +169,16 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
             _ => continue,
         };
         if !ids.insert(id.clone()) {
-            return Err(format!("Duplicate Fluent ID: {id}"));
+            return Err(Error::new(ErrorCode::Duplicate, id));
         }
         if id.starts_with("meta-") {
-            let p = value.ok_or_else(|| format!("Missing metadata: {id}"))?;
+            let p = value.ok_or_else(|| Error::new(ErrorCode::MissingMeta, &id))?;
             let mut s = String::new();
             for e in &p.elements {
                 if let PatternElement::TextElement { value } = e {
                     s.push_str(value);
                 } else {
-                    return Err(format!("Metadata must be literal text: {id}"));
+                    return Err(Error::new(ErrorCode::LiteralMeta, id));
                 }
             }
             meta.insert(id.clone(), s);
@@ -164,12 +198,15 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
         meta.get(id)
             .filter(|s| !s.is_empty())
             .cloned()
-            .ok_or_else(|| format!("Missing metadata: {id}"))
+            .ok_or_else(|| Error::new(ErrorCode::MissingMeta, id))
     };
     let code = required("meta-language-code")?;
     let name = required("meta-language-name")?;
+    if name.chars().count() > 128 || name.contains(['\r', '\n']) {
+        return Err(Error::new(ErrorCode::Name, ""));
+    }
     if required("meta-schema-version")? != "1" {
-        return Err("Unsupported language schema version".into());
+        return Err(Error::new(ErrorCode::Schema, ""));
     }
     let mut all = BTreeMap::new();
     let mut cache = BTreeMap::new();
@@ -185,13 +222,14 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
         variables: all,
     })
 }
-pub fn compare(c: &Catalog, english: &Catalog) -> Result<usize, String> {
+pub fn compare(c: &Catalog, english: &Catalog) -> Result<usize, Error> {
     let mut found = 0;
     for (key, vars) in &c.variables {
         if let Some(expected) = english.variables.get(key) {
             if vars != expected {
-                return Err(format!(
-                    "Parameter mismatch for {key}: expected {expected:?}, found {vars:?}"
+                return Err(Error::new(
+                    ErrorCode::Parameters,
+                    format!("{key}: {expected:?} / {vars:?}"),
                 ));
             }
             found += 1;
@@ -199,10 +237,10 @@ pub fn compare(c: &Catalog, english: &Catalog) -> Result<usize, String> {
     }
     Ok(found)
 }
-pub fn require_restart_messages(c: &Catalog) -> Result<(), String> {
+pub fn require_restart_messages(c: &Catalog) -> Result<(), Error> {
     for key in RESTART_MESSAGES {
         if !c.variables.contains_key(*key) {
-            return Err(format!("Missing required restart message: {key}"));
+            return Err(Error::new(ErrorCode::Restart, *key));
         }
     }
     Ok(())

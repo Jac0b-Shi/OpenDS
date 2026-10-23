@@ -146,6 +146,7 @@ impl App {
         path: PathBuf,
         error: Option<String>,
         background: bool,
+        smoke: bool,
     ) -> Result<Rc<Self>, String> {
         nwg::init().map_err(|e| e.to_string())?;
         let dpi = unsafe { crate::gui_theme::system_dpi() }.max(96);
@@ -186,7 +187,7 @@ impl App {
             nwg::Window::builder()
                 .size((theme::px(980, dpi), theme::px(720, dpi)))
                 .position((theme::px(80, dpi), theme::px(60, dpi)))
-                .title("OpenDS")
+                .title(if smoke { "OpenDS · UI test" } else { "OpenDS" })
                 .flags(
                     nwg::WindowFlags::WINDOW
                         | if background {
@@ -483,7 +484,9 @@ impl App {
         a.layout();
         if let Some(e) = error {
             a.controller.borrow().state.error(e);
-        } else if crate::restart::startup_override().unwrap_or(cfg.auto_start || background) {
+        } else if !smoke
+            && crate::restart::startup_override().unwrap_or(cfg.auto_start || background)
+        {
             a.start_bridge();
         }
         Ok(a)
@@ -1146,7 +1149,7 @@ impl App {
             return Ok(());
         };
         let (catalog, text) = crate::i18n::read_pack(&path)
-            .map_err(|e| crate::tr!(language_import_error, error = e))?;
+            .map_err(|e| crate::tr!(language_import_error, error = e.localized()))?;
         if crate::i18n::languages_in(&crate::i18n::directory())
             .iter()
             .any(|l| l.code == catalog.code)
@@ -1155,7 +1158,7 @@ impl App {
             return Ok(());
         }
         let imported = crate::i18n::install_text(catalog, &text, &crate::i18n::directory())
-            .map_err(|e| crate::tr!(language_import_error, error = e))?;
+            .map_err(|e| crate::tr!(language_import_error, error = e.localized()))?;
         let requested = self.config.borrow().language.clone();
         let resolved = crate::i18n::resolve(
             &requested,
@@ -1873,7 +1876,7 @@ fn run_inner(
     smoke: bool,
     background: bool,
 ) -> Result<(), String> {
-    let app = App::build(cfg, path, error, background)?;
+    let app = App::build(cfg, path, error, background, smoke)?;
     #[cfg(debug_assertions)]
     let demo = if smoke && std::env::var_os("OPENDS_UI_SMOKE_DEMO").is_some() {
         app.window
@@ -1930,8 +1933,10 @@ fn run_inner(
         if unsafe { IsIconic(hwnd) != 0 || IsWindowVisible(hwnd) == 0 } {
             return Err(crate::tr!(gui_restoring_from_tray_did_not_restore_the).into());
         }
-        crate::gui_close::smoke_test(hwnd)?;
-        crate::gui_language::smoke(hwnd)?;
+        if std::env::var_os("OPENDS_UI_SMOKE_SKIP_DIALOGS").is_none() {
+            crate::gui_close::smoke_test(hwnd)?;
+            crate::gui_language::smoke(hwnd)?;
+        }
         app.apply_close_choice(crate::gui_close::Choice::Cancel);
         if app.exiting.get() || unsafe { IsWindowVisible(hwnd) } == 0 {
             return Err(crate::tr!(gui_cancelling_close_changed_the_window_or_exit).into());
@@ -1954,7 +1959,17 @@ fn run_inner(
             return Err(crate::tr!(gui_could_not_restore_the_close_confirmation).into());
         }
         app.window.set_visible(true);
-        app.page.set(1);
+        for page in 0..6 {
+            app.page.set(page);
+            app.layout();
+        }
+        app.page.set(
+            std::env::var("OPENDS_UI_SMOKE_PAGE")
+                .ok()
+                .and_then(|s| s.parse::<u8>().ok())
+                .filter(|&p| p < 6)
+                .unwrap_or(1),
+        );
         app.layout();
         if let Some(v) = app.monitor_view.borrow_mut().as_mut() {
             v.smoke();
@@ -1967,6 +1982,9 @@ fn run_inner(
         }
         // The deadline follows the saved exit path through confirm_close.
         app.set_close_action(CloseAction::Exit)?;
+        if std::env::args().any(|a| a == "--smoke-restart") {
+            crate::restart::request(crate::restart::startup_override().unwrap_or(false));
+        }
         app.smoke_deadline.set(Some(
             std::time::Instant::now()
                 + std::time::Duration::from_secs(

@@ -1,6 +1,6 @@
 [package]
 name = "opends"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 description = "DualSense input virtualization and forwarding for Windows"
 license = "GPL-3.0-or-later"

@@ -19,15 +19,39 @@ pub fn launch_pending() -> Result<(), String> {
     let requested = REQUEST.lock().map_err(|e| e.to_string())?.take();
     if let Some(running) = requested {
         use std::os::windows::process::CommandExt;
-        std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+        let testing = std::env::args().nth(1).as_deref() == Some("ui-smoke-test");
+        let mut command =
+            std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+        if testing {
+            command.env(
+                "OPENDS_UI_SMOKE_RESTART_PARENT",
+                std::process::id().to_string(),
+            );
+        }
+        command
             .args([
-                "gui",
+                if testing { "ui-smoke-test" } else { "gui" },
                 "--restart-state",
                 if running { "running" } else { "stopped" },
             ])
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+pub fn finish_smoke() -> Result<(), String> {
+    let parent = std::env::var("OPENDS_UI_SMOKE_RESTART_PARENT")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok());
+    if let Some(parent) = parent {
+        let path = std::env::temp_dir().join(format!("opends-restart-smoke-{parent}.done"));
+        let data = format!(
+            "{}:{}",
+            std::process::id(),
+            startup_override().unwrap_or(false)
+        );
+        crate::persistence::atomic_write(&path, data.as_bytes()).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

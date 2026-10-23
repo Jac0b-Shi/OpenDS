@@ -1,6 +1,8 @@
 meta-language-code = zh-CN
 meta-language-name = 简体中文
 meta-schema-version = 1
+language-file-dialog-error = 无法打开语言文件选择窗口（{ $code }）。
+language-restart-dialog-error = 无法打开重启提示窗口（{ $code }）。
 
 language-auto = 跟随系统语言
 language-builtin = 内置
@@ -29,6 +31,21 @@ language-check-result = { $language }：已翻译 { $translated } / { $total } �
 language-check-missing = 缺少条目：{ $id }
 language-check-error = 无效的语言文件：{ $error }
 language-check-usage = 使用 opends language check FILE.ftl
+language-error-io = 无法读写语言文件：{ $error }
+language-error-utf8 = 语言文件必须采用 UTF-8 编码。
+language-error-code = 请使用规范的 BCP 47 语言代码（例如 de-DE）：{ $code }
+language-error-file = 语言文件超过 2 MiB，或含有空字符。
+language-error-depth = 语言文件嵌套超过支持的上限。
+language-error-syntax = Fluent 语法无效：{ $detail }
+language-error-cycle = 引用循环或嵌套过深：{ $detail }
+language-error-reference = 引用的条目不存在：{ $detail }
+language-error-duplicate = 消息 ID 重复：{ $detail }
+language-error-missing-meta = 缺少必需的语言信息：{ $detail }
+language-error-literal-meta = 语言信息必须使用纯文本：{ $detail }
+language-error-schema = 不支持此语言文件的格式版本。
+language-error-parameters = 消息参数与英文基准不一致：{ $detail }
+language-error-restart = 请先翻译重启提示：{ $detail }
+language-error-name = 语言名称须为单行，且不超过 128 个字符。
 
 ## attach
 

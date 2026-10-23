@@ -1,6 +1,8 @@
 meta-language-code = en-US
 meta-language-name = English
 meta-schema-version = 1
+language-file-dialog-error = Unable to open the language file dialog ({ $code }).
+language-restart-dialog-error = Unable to open the restart dialog ({ $code }).
 
 language-auto = Follow system language
 language-builtin = Built-in
@@ -29,6 +31,21 @@ language-check-result = { $language }: { $translated } / { $total } messages tra
 language-check-missing = Missing message: { $id }
 language-check-error = Invalid language file: { $error }
 language-check-usage = Use opends language check FILE.ftl
+language-error-io = Could not read or write the language file: { $error }
+language-error-utf8 = The language file must use UTF-8 encoding.
+language-error-code = Use a canonical BCP 47 language code, such as de-DE: { $code }
+language-error-file = The language file exceeds 2 MiB or contains NUL characters.
+language-error-depth = Language file nesting exceeds the supported limit.
+language-error-syntax = Invalid Fluent syntax: { $detail }
+language-error-cycle = Cyclic or excessively nested reference: { $detail }
+language-error-reference = Unknown reference: { $detail }
+language-error-duplicate = Duplicate message ID: { $detail }
+language-error-missing-meta = Required metadata is missing: { $detail }
+language-error-literal-meta = Metadata must be literal text: { $detail }
+language-error-schema = This language file format version is not supported.
+language-error-parameters = Message parameters do not match the English catalog: { $detail }
+language-error-restart = The restart prompt must be translated: { $detail }
+language-error-name = The language name must be a single line of at most 128 characters.
 
 ## attach
 

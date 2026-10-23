@@ -9,6 +9,57 @@ use unic_langid::LanguageIdentifier;
 
 include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 type Bundle = FluentBundle<FluentResource>;
+#[derive(Debug)]
+pub enum LoadError {
+    Catalog(language_pack::Error),
+    Io(std::io::Error),
+    Utf8,
+    Code(String),
+    Canonical(String),
+    Oversize,
+}
+impl From<language_pack::Error> for LoadError {
+    fn from(e: language_pack::Error) -> Self {
+        Self::Catalog(e)
+    }
+}
+impl From<std::io::Error> for LoadError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl LoadError {
+    pub fn localized(&self) -> String {
+        use language_pack::ErrorCode as E;
+        match self {
+            Self::Io(e) => crate::tr!(language_error_io, error = e.to_string()),
+            Self::Utf8 => crate::tr!(language_error_utf8).into(),
+            Self::Code(code) | Self::Canonical(code) => {
+                crate::tr!(language_error_code, code = code.as_str())
+            }
+            Self::Oversize => crate::tr!(language_error_file).into(),
+            Self::Catalog(error) => {
+                let key = match error.code {
+                    E::File => MessageId::language_error_file,
+                    E::Depth => MessageId::language_error_depth,
+                    E::Syntax => MessageId::language_error_syntax,
+                    E::Cycle => MessageId::language_error_cycle,
+                    E::Reference => MessageId::language_error_reference,
+                    E::Duplicate => MessageId::language_error_duplicate,
+                    E::MissingMeta => MessageId::language_error_missing_meta,
+                    E::LiteralMeta => MessageId::language_error_literal_meta,
+                    E::Schema => MessageId::language_error_schema,
+                    E::Parameters => MessageId::language_error_parameters,
+                    E::Restart => MessageId::language_error_restart,
+                    E::Name => MessageId::language_error_name,
+                };
+                let mut args = FluentArgs::new();
+                args.set("detail", error.detail.as_str());
+                current().format_key(key.key(), Some(&args))
+            }
+        }
+    }
+}
 static CURRENT: OnceLock<Localizer> = OnceLock::new();
 
 #[derive(Clone, Debug)]
@@ -44,24 +95,22 @@ fn bundle(code: &str, text: &str) -> Result<Bundle, String> {
 pub fn english_catalog() -> Catalog {
     language_pack::parse(include_str!("../locales/en-US.ftl")).expect("validated English catalog")
 }
-pub fn read_pack(path: &Path) -> Result<(Catalog, String), String> {
+pub fn read_pack(path: &Path) -> Result<(Catalog, String), LoadError> {
     use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
-    file.take(MAX_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > MAX_BYTES {
-        return Err("Language file exceeds 2 MiB".into());
+        return Err(LoadError::Oversize);
     }
-    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(bytes).map_err(|_| LoadError::Utf8)?;
     let c = language_pack::parse(&text)?;
     let id = c
         .code
         .parse::<LanguageIdentifier>()
-        .map_err(|e| format!("Invalid language code: {e}"))?;
+        .map_err(|_| LoadError::Code(c.code.clone()))?;
     if id.to_string() != c.code {
-        return Err("Language code must be canonical BCP 47 (for example, de-DE)".into());
+        return Err(LoadError::Canonical(id.to_string()));
     }
     language_pack::compare(&c, &english_catalog())?;
     language_pack::require_restart_messages(&c)?;
@@ -291,14 +340,13 @@ macro_rules! numeric_argument {
     })* };
 }
 numeric_argument!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64);
-pub fn import(path: &Path, dir: &Path) -> Result<Language, String> {
+pub fn import(path: &Path, dir: &Path) -> Result<Language, LoadError> {
     let (c, text) = read_pack(path)?;
     install_text(c, &text, dir)
 }
-pub fn install_text(c: Catalog, text: &str, dir: &Path) -> Result<Language, String> {
+pub fn install_text(c: Catalog, text: &str, dir: &Path) -> Result<Language, LoadError> {
     let count = language_pack::compare(&c, &english_catalog())?;
-    crate::persistence::atomic_write(&dir.join(format!("{}.ftl", c.code)), text.as_bytes())
-        .map_err(|e| e.to_string())?;
+    crate::persistence::atomic_write(&dir.join(format!("{}.ftl", c.code)), text.as_bytes())?;
     Ok(Language {
         code: c.code,
         name: c.name,

@@ -81,9 +81,10 @@ fn cli() -> Result<(), String> {
                 return Err(crate::tr!(language_check_usage).into());
             }
             let (catalog, _) = i18n::read_pack(std::path::Path::new(&args[3]))
-                .map_err(|e| crate::tr!(language_check_error, error = e))?;
+                .map_err(|e| crate::tr!(language_check_error, error = e.localized()))?;
             let english = i18n::english_catalog();
-            let count = language_pack::compare(&catalog, &english)?;
+            let count = language_pack::compare(&catalog, &english)
+                .map_err(|e| i18n::LoadError::Catalog(e).localized())?;
             println!(
                 "{}",
                 crate::tr!(
@@ -136,6 +137,7 @@ fn cli() -> Result<(), String> {
         }
         "ui-smoke-test" => {
             gui::smoke_test()?;
+            restart::finish_smoke()?;
             println!(
                 "{}",
                 crate::tr!(main_gui_creation_icons_event_loop_and_clean)
