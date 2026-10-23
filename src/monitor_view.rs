@@ -33,7 +33,10 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 unsafe fn choose_recording_path(owner: HWND) -> Result<Option<PathBuf>, String> {
-    let filter = wide("CSV 文件 (*.csv)\0*.csv\0");
+    let filter = wide(&format!(
+        "{}\0*.csv\0",
+        crate::tr!(monitor_view_csv_files_csv_u0000_csv_u0000)
+    ));
     let mut path = vec![0u16; 32768];
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -47,7 +50,9 @@ unsafe fn choose_recording_path(owner: HWND) -> Result<Option<PathBuf>, String> 
     dialog.lpstrFilter = filter.as_ptr();
     dialog.lpstrFile = path.as_mut_ptr();
     dialog.nMaxFile = path.len() as u32;
-    let title = wide("选择 CSV 记录文件保存位置");
+    let title = wide(crate::tr!(
+        monitor_view_choose_where_to_save_the_csv_recording
+    ));
     let extension = wide("csv");
     dialog.lpstrTitle = title.as_ptr();
     dialog.lpstrDefExt = extension.as_ptr();
@@ -60,7 +65,10 @@ unsafe fn choose_recording_path(owner: HWND) -> Result<Option<PathBuf>, String> 
         if error == 0 {
             Ok(None)
         } else {
-            Err(format!("无法选择保存位置：0x{error:08X}"))
+            Err(crate::tr!(
+                monitor_view_could_not_choose_save_location_0x,
+                code = format!("{:08X}", error)
+            ))
         }
     }
 }
@@ -87,7 +95,10 @@ impl<T> Drop for Com<T> {
 }
 fn hr(v: i32) -> Result<(), String> {
     if v < 0 {
-        Err(format!("绘制失败 0x{:08X}", v as u32))
+        Err(crate::tr!(
+            monitor_view_drawing_failed_0x,
+            code = format!("{:08X}", v as u32)
+        ))
     } else {
         Ok(())
     }
@@ -423,7 +434,15 @@ impl Renderer {
                 color(0.32, 0.38, 0.45)
             },
         );
-        self.text(202., 207., 50., 20., "静音", 0, MUTED);
+        self.text(
+            202.,
+            207.,
+            50.,
+            20.,
+            crate::tr!(monitor_view_muted),
+            0,
+            MUTED,
+        );
         button(137., 83., "C", b1 & 16 != 0, 9.);
         button(301., 75., "≡", b1 & 32 != 0, 9.);
         for (xx, label, val, mask) in [(66., "L", s.l2, 1u8), (301., "R", s.r2, 2u8)] {
@@ -463,9 +482,14 @@ impl Renderer {
             (*self.target.0).SetTransform(&mat);
         }
         if edge {
-            for (i, (label, mask)) in [("Fn L", 16), ("Fn R", 32), ("背键 L", 64), ("背键 R", 128)]
-                .iter()
-                .enumerate()
+            for (i, (label, mask)) in [
+                ("Fn L", 16),
+                ("Fn R", 32),
+                (crate::tr!(monitor_view_touch_l), 64),
+                (crate::tr!(monitor_view_touch_r), 128),
+            ]
+            .iter()
+            .enumerate()
             {
                 self.rect(
                     40. + i as f32 * 95.,
@@ -677,24 +701,59 @@ impl MonitorView {
                 null_mut(),
             );
             if state_ref.root.is_null() {
-                return Err("创建监视窗口失败".into());
+                return Err(crate::tr!(monitor_view_could_not_create_monitor_window).into());
             }
             SetWindowLongPtrW(state_ref.root, GWLP_USERDATA, ptr as isize);
             for (id, cls, text, style) in [
-                (1, "BUTTON", "开始采集", BS_PUSHBUTTON),
-                (2, "BUTTON", "清空", BS_PUSHBUTTON),
-                (3, "BUTTON", "源信号", BS_AUTOCHECKBOX),
-                (4, "BUTTON", "转发信号", BS_AUTOCHECKBOX),
-                (5, "BUTTON", "独立窗口", BS_PUSHBUTTON),
-                (6, "BUTTON", "置顶", BS_AUTOCHECKBOX),
+                (
+                    1,
+                    "BUTTON",
+                    crate::tr!(monitor_view_start_capture),
+                    BS_PUSHBUTTON,
+                ),
+                (2, "BUTTON", crate::tr!(monitor_view_clear), BS_PUSHBUTTON),
+                (
+                    3,
+                    "BUTTON",
+                    crate::tr!(monitor_view_source),
+                    BS_AUTOCHECKBOX,
+                ),
+                (
+                    4,
+                    "BUTTON",
+                    crate::tr!(monitor_view_forwarded),
+                    BS_AUTOCHECKBOX,
+                ),
+                (
+                    5,
+                    "BUTTON",
+                    crate::tr!(monitor_view_separate_window),
+                    BS_PUSHBUTTON,
+                ),
+                (
+                    6,
+                    "BUTTON",
+                    crate::tr!(monitor_view_always_on_top),
+                    BS_AUTOCHECKBOX,
+                ),
                 (7, "COMBOBOX", "", CBS_DROPDOWNLIST),
                 (8, "COMBOBOX", "", CBS_DROPDOWNLIST),
                 (9, "COMBOBOX", "", CBS_DROPDOWNLIST),
-                (10, "STATIC", "采样", SS_LEFT),
-                (11, "STATIC", "刷新", SS_LEFT),
-                (12, "STATIC", "跨度", SS_LEFT),
-                (13, "STATIC", "等待手动开启", SS_LEFT),
-                (14, "BUTTON", "开始记录文件", BS_PUSHBUTTON),
+                (10, "STATIC", crate::tr!(monitor_view_sample), SS_LEFT),
+                (11, "STATIC", crate::tr!(monitor_view_refresh), SS_LEFT),
+                (12, "STATIC", crate::tr!(monitor_view_history), SS_LEFT),
+                (
+                    13,
+                    "STATIC",
+                    crate::tr!(monitor_view_waiting_for_manual_start),
+                    SS_LEFT,
+                ),
+                (
+                    14,
+                    "BUTTON",
+                    crate::tr!(monitor_view_start_file_recording),
+                    BS_PUSHBUTTON,
+                ),
             ] {
                 let hwnd = CreateWindowExW(
                     0,
@@ -721,7 +780,7 @@ impl MonitorView {
             ] {
                 for v in &options {
                     let text = if idx == 8 {
-                        format!("{v} 秒")
+                        crate::tr!(monitor_view_seconds, seconds = format!("{}", v))
                     } else if idx == 7 {
                         format!("{v} FPS")
                     } else {
@@ -757,7 +816,7 @@ impl MonitorView {
             );
             if state_ref.canvas.is_null() {
                 DestroyWindow(state_ref.root);
-                return Err("创建绘制区域失败".into());
+                return Err(crate::tr!(monitor_view_could_not_create_drawing_canvas).into());
             }
             SetWindowLongPtrW(state_ref.canvas, GWLP_USERDATA, ptr as isize);
             state_ref.layout();
@@ -967,7 +1026,13 @@ impl ViewState {
             c.monitor_fps = self.fps;
             c.monitor_seconds = self.seconds;
             if let Err(e) = c.save(&self.path) {
-                crate::logging::record(&format!("监视设置保存失败：{e}"));
+                crate::logging::record_message(
+                    crate::i18n::MessageId::monitor_view_could_not_save_monitor_preferences,
+                    &crate::tr!(
+                        monitor_view_could_not_save_monitor_preferences,
+                        error = format!("{}", e)
+                    ),
+                );
             }
         }
     }
@@ -985,7 +1050,7 @@ impl ViewState {
                     0
                 },
             wide("OpenDSMonitorPopup").as_ptr(),
-            wide("OpenDS · 实时监视").as_ptr(),
+            wide(crate::tr!(monitor_view_opends_live_monitor)).as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -997,7 +1062,7 @@ impl ViewState {
             null_mut(),
         );
         if self.popup.is_null() {
-            self.error = "独立窗口创建失败".into();
+            self.error = crate::tr!(monitor_view_could_not_create_separate_window).into();
             return;
         }
         SetWindowLongPtrW(
@@ -1019,7 +1084,10 @@ impl ViewState {
         MoveWindow(self.root, 0, 0, r.right, r.bottom, 1);
         ShowWindow(self.root, SW_SHOWNA);
         ShowWindow(self.popup, SW_SHOWNOACTIVATE);
-        SetWindowTextW(self.controls[4], wide("收回窗口").as_ptr());
+        SetWindowTextW(
+            self.controls[4],
+            wide(crate::tr!(monitor_view_dock_window)).as_ptr(),
+        );
         self.layout();
         self.timer();
     }
@@ -1043,7 +1111,10 @@ impl ViewState {
         );
         SetWindowLongPtrW(popup, GWLP_USERDATA, 0);
         DestroyWindow(popup);
-        SetWindowTextW(self.controls[4], wide("独立窗口").as_ptr());
+        SetWindowTextW(
+            self.controls[4],
+            wide(crate::tr!(monitor_view_separate_window)).as_ptr(),
+        );
         self.layout();
         self.timer();
     }
@@ -1058,9 +1129,9 @@ impl ViewState {
                 SetWindowTextW(
                     self.controls[0],
                     wide(if self.hub.active.load(Acquire) {
-                        "停止采集"
+                        crate::tr!(monitor_view_stop_capture)
                     } else {
-                        "开始采集"
+                        crate::tr!(monitor_view_start_capture)
                     })
                     .as_ptr(),
                 );
@@ -1128,13 +1199,13 @@ impl ViewState {
         SetWindowTextW(
             self.controls[13],
             wide(if recording.starting {
-                "正在检查…"
+                crate::tr!(monitor_view_checking)
             } else if recording.active {
-                "停止记录文件"
+                crate::tr!(monitor_view_stop_file_recording)
             } else if recording.finishing {
-                "正在保存…"
+                crate::tr!(monitor_view_saving)
             } else {
-                "开始记录文件"
+                crate::tr!(monitor_view_start_file_recording)
             })
             .as_ptr(),
         );
@@ -1148,22 +1219,25 @@ impl ViewState {
             }
         }
         let record_status = if recording.error.is_some() {
-            " · CSV 记录失败".into()
+            crate::tr!(monitor_view_csv_recording_failed).into()
         } else if recording.starting {
-            " · 正在检查保存位置…".into()
+            crate::tr!(monitor_view_checking_save_location).into()
         } else if recording.path.is_some() {
             format!(
                 " · CSV {} {:.2} MiB{}",
                 if recording.active {
-                    "记录中"
+                    crate::tr!(monitor_view_recording)
                 } else if recording.finishing {
-                    "保存中"
+                    crate::tr!(monitor_view_saving_2)
                 } else {
-                    "已保存"
+                    crate::tr!(monitor_view_saved)
                 },
                 recording.bytes as f64 / 1048576.,
                 if recording.dropped > 0 {
-                    format!(" / 丢弃 {}", recording.dropped)
+                    crate::tr!(
+                        monitor_view_dropped,
+                        count = format!("{}", recording.dropped)
+                    )
                 } else {
                     String::new()
                 }
@@ -1174,25 +1248,31 @@ impl ViewState {
         let status = if !self.error.is_empty() {
             self.error.clone()
         } else {
-            format!(
-                "{} · {}{} · 丢弃 {} · 解码失败 {} · 流重置 {} · 缓存 {:.1} MiB",
-                if self.hub.active.load(Relaxed) {
-                    "采集中"
-                } else if !self.has_collected {
-                    "等待手动开启"
-                } else {
-                    "已停止 / 历史冻结"
-                },
-                if self.hub.connected.load(Relaxed) {
-                    "已连接"
-                } else {
-                    "等待手柄"
-                },
-                record_status,
-                self.hub.dropped(),
-                self.hub.decode_failures.load(Relaxed),
-                self.hub.resets.load(Relaxed),
-                self.hub.allocated_bytes() as f32 / 1048576.
+            crate::tr!(
+                monitor_view_dropped_decode_errors_stream_resets_cache_mib,
+                capture = format!(
+                    "{}",
+                    if self.hub.active.load(Relaxed) {
+                        crate::tr!(monitor_view_capturing)
+                    } else if !self.has_collected {
+                        crate::tr!(monitor_view_waiting_for_manual_start)
+                    } else {
+                        crate::tr!(monitor_view_stopped_history_retained)
+                    }
+                ),
+                connection = format!(
+                    "{}",
+                    if self.hub.connected.load(Relaxed) {
+                        crate::tr!(monitor_view_connected)
+                    } else {
+                        crate::tr!(monitor_view_waiting_for_controller)
+                    }
+                ),
+                recording = format!("{}", record_status),
+                drops = format!("{}", self.hub.dropped()),
+                errors = format!("{}", self.hub.decode_failures.load(Relaxed)),
+                resets = format!("{}", self.hub.resets.load(Relaxed)),
+                cache = format!("{:.1}", self.hub.allocated_bytes() as f32 / 1048576.)
             )
         };
         SetWindowTextW(self.controls[12], wide(&status).as_ptr());
@@ -1294,13 +1374,13 @@ impl ViewState {
                 left - 32.,
                 24.,
                 if !self.hub.active.load(Relaxed) {
-                    "采集已停止 · 输入保持最后一帧"
+                    crate::tr!(monitor_view_capture_stopped_last_input_retained)
                 } else if !self.hub.connected.load(Relaxed) {
-                    "未连接 · 等待输入"
+                    crate::tr!(monitor_view_disconnected_waiting_to_reconnect)
                 } else if now.saturating_sub(self.input_time) > 500_000_000 {
-                    "等待新的输入报告"
+                    crate::tr!(monitor_view_waiting_for_new_input_reports)
                 } else {
-                    "实时输入 · 按键、摇杆与触摸板"
+                    crate::tr!(monitor_view_live_input_buttons_sticks_and_touchpad)
                 },
                 0,
                 MUTED,
@@ -1319,9 +1399,12 @@ impl ViewState {
                     bottom + 8. - offset,
                     left - 30.,
                     42.,
-                    &format!(
-                        "左摇杆  X {:3}   Y {:3}\n右摇杆  X {:3}   Y {:3}",
-                        self.input.lx, self.input.ly, self.input.rx, self.input.ry
+                    &crate::tr!(
+                        monitor_view_left_stick_x_y_right_stick_x,
+                        lx = format!("{:3}", self.input.lx),
+                        ly = format!("{:3}", self.input.ly),
+                        rx = format!("{:3}", self.input.rx),
+                        ry = format!("{:3}", self.input.ry)
                     ),
                     0,
                     MUTED,
@@ -1331,7 +1414,7 @@ impl ViewState {
                     bottom + 54. - offset,
                     left - 30.,
                     24.,
-                    "蓝色源信号  /  橙色虚线转发信号",
+                    crate::tr!(monitor_view_blue_source_orange_dots_forwarded),
                     0,
                     MUTED,
                 );
@@ -1362,9 +1445,9 @@ impl ViewState {
             w - 28.,
             25.,
             [
-                "扬声器 · 前置 L / R",
-                "触觉 · 后置 L / R",
-                "麦克风 · 单声道",
+                crate::tr!(monitor_view_speaker_front_l_r),
+                crate::tr!(monitor_view_haptics_rear_l_r),
+                crate::tr!(monitor_view_microphone_mono),
             ][group],
             1,
             INK,
@@ -1375,37 +1458,43 @@ impl ViewState {
         let forwarded = self.hub.forwarded.load(Relaxed);
         let activity = wave_state(group, [source, forwarded], &self.last, &self.nonzero, now);
         let status = if group == 2 && !self.hub.microphone.load(Relaxed) {
-            "麦克风未启用".into()
+            crate::tr!(monitor_view_microphone_disabled).into()
         } else if activity == WaveState::NoSignal {
-            "未选择音频信号".into()
+            crate::tr!(monitor_view_no_audio_signal_selected).into()
         } else if activity == WaveState::Waiting {
-            "尚未收到数据".into()
+            crate::tr!(monitor_view_no_data_received_yet).into()
         } else if activity == WaveState::Interrupted {
-            "数据中断 > 500 ms".into()
+            crate::tr!(monitor_view_data_interrupted_500_ms).into()
         } else if activity == WaveState::Silent {
-            "静音 · 已收到有效的零振幅 PCM".into()
+            crate::tr!(monitor_view_silent_valid_zero_amplitude_pcm_received).into()
         } else if group == 0 {
-            format!(
-                "{} · 音量 {}",
-                if self.hub.route.load(Relaxed) == 0x96 {
-                    "耳机路由"
-                } else {
-                    "手柄扬声器"
-                },
-                self.hub.volume.load(Relaxed)
+            crate::tr!(
+                monitor_view_volume,
+                route = format!(
+                    "{}",
+                    if self.hub.route.load(Relaxed) == 0x96 {
+                        crate::tr!(monitor_view_headphone_route)
+                    } else {
+                        crate::tr!(gui_controller_speaker)
+                    }
+                ),
+                volume = format!("{}", self.hub.volume.load(Relaxed))
             )
         } else if group == 2 {
-            format!(
-                "源：原始电平 · 转发：+{} dB{}",
-                self.hub.microphone_gain_db.load(Relaxed),
-                if self.hub.microphone_gain_db.load(Relaxed) > 0 {
-                    " / 限幅"
-                } else {
-                    ""
-                }
+            crate::tr!(
+                monitor_view_source_original_level_forwarded_db,
+                gain = format!("{}", self.hub.microphone_gain_db.load(Relaxed)),
+                limiter = format!(
+                    "{}",
+                    if self.hub.microphone_gain_db.load(Relaxed) > 0 {
+                        crate::tr!(monitor_view_limited)
+                    } else {
+                        ""
+                    }
+                )
             )
         } else {
-            "蓝色源信号 / 橙色转发 · 固定 ±100%".into()
+            crate::tr!(monitor_view_blue_source_orange_forwarded_fixed_100).into()
         };
         r.text(x + 14., y + 34., w - 28., 20., &status, 0, MUTED);
         let track = (h - 60.) / channels as f32;
@@ -1473,7 +1562,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             MessageBoxW(
                 GetAncestor(hwnd, GA_ROOT),
                 wide(&error).as_ptr(),
-                wide("OpenDS · 文件记录已停止").as_ptr(),
+                wide(crate::tr!(monitor_view_opends_file_recording_stopped)).as_ptr(),
                 MB_OK | MB_ICONWARNING,
             );
         }

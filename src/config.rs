@@ -160,7 +160,10 @@ impl Config {
         match std::fs::read_to_string(path) {
             Ok(s) => Self::parse(&s),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(format!("读取配置失败：{e}")),
+            Err(e) => Err(crate::tr!(
+                config_could_not_read_configuration,
+                error = format!("{}", e)
+            )),
         }
     }
 
@@ -180,18 +183,38 @@ impl Config {
             if !section_ok {
                 continue;
             }
-            let (key, value) = line
-                .split_once('=')
-                .ok_or_else(|| format!("配置第 {} 行缺少 =", i + 1))?;
+            let (key, value) = line.split_once('=').ok_or_else(|| {
+                crate::tr!(
+                    config_configuration_line_is_missing,
+                    line = format!("{}", i + 1)
+                )
+            })?;
             let value = value.trim();
             macro_rules! number {
                 ($field:ident) => {
-                    cfg.$field = value
-                        .parse()
-                        .map_err(|_| format!("配置 {} 无效：{}", key.trim(), value))?
+                    cfg.$field = value.parse().map_err(|_| {
+                        crate::tr!(
+                            config_invalid_configuration,
+                            key = format!("{}", key.trim()),
+                            value = format!("{}", value)
+                        )
+                    })?
                 };
             }
-            macro_rules! boolean { ($field:ident) => { cfg.$field = match value { "1" | "true" => true, "0" | "false" => false, _ => return Err(format!("配置 {} 必须为 0/1 或 true/false", key.trim())) } }; }
+            macro_rules! boolean {
+                ($field:ident) => {
+                    cfg.$field = match value {
+                        "1" | "true" => true,
+                        "0" | "false" => false,
+                        _ => {
+                            return Err(crate::tr!(
+                                config_configuration_must_be_0_1_or_true,
+                                key = format!("{}", key.trim())
+                            ))
+                        }
+                    }
+                };
+            }
             match key.trim() {
                 "port" => number!(port),
                 "buffer" => number!(buffer),
@@ -268,18 +291,24 @@ impl Config {
             monitor_seconds
         );
         if self.device_path.contains(['\r', '\n']) || self.language.contains(['\r', '\n']) {
-            return Err("设备路径含换行符".into());
+            return Err(
+                crate::tr!(config_configuration_values_must_not_contain_line_breaks).into(),
+            );
         }
-        crate::persistence::atomic_write(path, s.as_bytes())
-            .map_err(|e| format!("保存配置失败：{e}"))
+        crate::persistence::atomic_write(path, s.as_bytes()).map_err(|e| {
+            crate::tr!(
+                config_could_not_save_configuration,
+                error = format!("{}", e)
+            )
+        })
     }
 
     pub fn validate(&self) -> Result<(), String> {
         if self.dsx_udp || self.dsx_exe || self.usb_face != 0 {
-            return Err("DSX UDP/自动启动 DSX/Xbox/DS4 外观尚未支持，请关闭相应配置。".into());
+            return Err(crate::tr!(config_dsx_udp_automatic_dsx_launch_and_xbox).into());
         }
         if !self.auto_attach {
-            return Err("本机桥接需要 auto_attach=true。".into());
+            return Err(crate::tr!(config_local_bridging_requires_auto_attach_true).into());
         }
         Ok(())
     }

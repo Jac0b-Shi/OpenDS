@@ -46,7 +46,7 @@ impl Dialog {
             s.hwnd = CreateWindowExW(
                 WS_EX_DLGMODALFRAME,
                 class.as_ptr(),
-                wide("OpenDS · 麦克风测试").as_ptr(),
+                wide(crate::tr!(audio_test_view_opends_microphone_test)).as_ptr(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -58,7 +58,9 @@ impl Dialog {
                 null_mut(),
             );
             if s.hwnd.is_null() {
-                return Err("无法打开麦克风测试窗口".into());
+                return Err(
+                    crate::tr!(audio_test_view_could_not_create_microphone_test_window).into(),
+                );
             }
             SetWindowLongPtrW(s.hwnd, GWLP_USERDATA, ptr as isize);
             s.font = CreateFontW(
@@ -80,25 +82,60 @@ impl Dialog {
             for (i, (class, text, x, y, w, h)) in [
                 (
                     "STATIC",
-                    "倒数 3 秒后录音 5 秒，可分别回听蓝牙端和 USB 端。\r\n录音仅暂存在内存，关闭窗口即清除。",
+                    crate::tr!(audio_test_view_record_5_seconds_after_a_3_second),
                     20,
                     22,
                     520,
                     38,
                 ),
-                ("BUTTON", "录音 5 秒", 20, 72, 110, 34),
-                ("BUTTON", "取消", 138, 72, 65, 34),
-                ("BUTTON", "回听 USB 端", 319, 72, 110, 34),
-                ("BUTTON", "清除录音", 437, 72, 100, 34),
+                (
+                    "BUTTON",
+                    crate::tr!(audio_test_view_record_5_seconds),
+                    20,
+                    72,
+                    110,
+                    34,
+                ),
+                (
+                    "BUTTON",
+                    crate::tr!(audio_test_view_cancel),
+                    138,
+                    72,
+                    65,
+                    34,
+                ),
+                (
+                    "BUTTON",
+                    crate::tr!(audio_test_view_play_usb_capture),
+                    319,
+                    72,
+                    110,
+                    34,
+                ),
+                (
+                    "BUTTON",
+                    crate::tr!(audio_test_view_clear_recording),
+                    437,
+                    72,
+                    100,
+                    34,
+                ),
                 (
                     "STATIC",
-                    "回听使用系统默认播放设备。关闭此窗口会清除录音。",
+                    crate::tr!(audio_test_view_playback_uses_the_default_system_playback_device),
                     20,
                     130,
                     520,
                     110,
                 ),
-                ("BUTTON", "回听蓝牙端", 211, 72, 100, 34),
+                (
+                    "BUTTON",
+                    crate::tr!(audio_test_view_play_bluetooth_source),
+                    211,
+                    72,
+                    100,
+                    34,
+                ),
             ]
             .into_iter()
             .enumerate()
@@ -220,23 +257,35 @@ impl State {
         );
         SetWindowTextW(
             self.controls[5],
-            wide(&format!(
-                "{}\r\n蓝牙 Opus {} 包 · 解码 {} 样本 · USB 接收 {} 帧\r\nUSB 欠载 {} 次 · 丢弃 {} ms · 当前缓冲 {}/{} ms",
-                status.message,
-                self.monitor.mic_packets.load(Relaxed),
-                self.monitor.mic_samples.load(Relaxed),
-                self.monitor.mic_usb_frames.load(Relaxed),
-                self.monitor.mic_underruns.load(Relaxed),
-                self.monitor.mic_dropped.load(Relaxed) / 48,
-                self.monitor.mic_buffered.load(Relaxed) / 48,
-                self.monitor.microphone_buffer_ms.load(Relaxed)
+            wide(&crate::tr!(
+                audio_test_view_bluetooth_opus_packets_decoded_samples_usb_frames,
+                status = format!("{}", status.message),
+                packets = format!("{}", self.monitor.mic_packets.load(Relaxed)),
+                samples = format!("{}", self.monitor.mic_samples.load(Relaxed)),
+                frames = format!("{}", self.monitor.mic_usb_frames.load(Relaxed)),
+                underruns = format!("{}", self.monitor.mic_underruns.load(Relaxed)),
+                dropped = format!("{}", self.monitor.mic_dropped.load(Relaxed) / 48),
+                buffered = format!("{}", self.monitor.mic_buffered.load(Relaxed) / 48),
+                target = format!("{}", self.monitor.microphone_buffer_ms.load(Relaxed))
             ))
             .as_ptr(),
         );
         if !self.monitor.connected.load(Relaxed) {
-            SetWindowTextW(self.controls[5],wide("请先连接蓝牙手柄并启动桥接。\r\n回听使用系统默认播放设备。关闭此窗口会清除录音。").as_ptr());
+            SetWindowTextW(
+                self.controls[5],
+                wide(crate::tr!(
+                    audio_test_view_connect_the_bluetooth_controller_and_start_bridging
+                ))
+                .as_ptr(),
+            );
         } else if !self.monitor.microphone.load(Relaxed) {
-            SetWindowTextW(self.controls[5],wide("请先在连接与反馈中启用麦克风转发，保存并重启桥接。\r\n回听使用系统默认播放设备。关闭此窗口会清除录音。").as_ptr());
+            SetWindowTextW(
+                self.controls[5],
+                wide(crate::tr!(
+                    audio_test_view_enable_microphone_forwarding_in_connection_feedback_save
+                ))
+                .as_ptr(),
+            );
         }
     }
 }

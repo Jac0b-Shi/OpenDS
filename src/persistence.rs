@@ -62,8 +62,17 @@ pub enum InstanceError {
 impl std::fmt::Display for InstanceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AlreadyRunning => f.write_str("OpenDS 已在运行；请从现有托盘实例操作。"),
-            Self::System(e) => write!(f, "无法创建进程锁：{e}"),
+            Self::AlreadyRunning => f.write_str(crate::tr!(
+                persistence_opends_is_already_running_use_its_existing
+            )),
+            Self::System(e) => write!(
+                f,
+                "{}",
+                crate::tr!(
+                    persistence_could_not_create_process_lock,
+                    error = format!("{}", e)
+                )
+            ),
         }
     }
 }

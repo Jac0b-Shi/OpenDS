@@ -120,7 +120,11 @@ fn checked(c: &nwg::CheckBox) -> bool {
     c.check_state() == nwg::CheckBoxState::Checked
 }
 fn mic_buffer_label(ms: u16) -> String {
-    format!("{ms} ms · {} 样本", ms as u32 * 48)
+    crate::tr!(
+        gui_ms_samples,
+        milliseconds = format!("{}", ms),
+        samples = format!("{}", ms as u32 * 48)
+    )
 }
 fn selected_mic_buffer(combo: &nwg::ComboBox<String>, values: &[u16]) -> u16 {
     combo
@@ -223,14 +227,14 @@ impl App {
                         .build(&mut ui.$field)?;
                 };
             }
-            button!(start, "启动桥接");
-            button!(stop, "停止");
-            button!(save, "保存设置");
-            button!(refresh, "刷新设备");
-            button!(audio_test, "麦克风测试…");
-            button!(restore, "恢复手柄可见性");
-            button!(minimize_to_tray, "最小化到托盘");
-            button!(quit, "退出 OpenDS");
+            button!(start, crate::tr!(gui_start_bridge));
+            button!(stop, crate::tr!(gui_stop));
+            button!(save, crate::tr!(gui_save_settings));
+            button!(refresh, crate::tr!(gui_refresh_devices));
+            button!(audio_test, crate::tr!(gui_microphone_test));
+            button!(restore, crate::tr!(gui_restore_controller_visibility));
+            button!(minimize_to_tray, crate::tr!(gui_minimize_to_tray));
+            button!(quit, crate::tr!(gui_exit_opends));
             for label in [
                 &mut ui.status,
                 &mut ui.count_input,
@@ -254,23 +258,43 @@ impl App {
                         | nwg::TextBoxFlags::VSCROLL,
                 )
                 .build(&mut ui.logs)?;
-            cb!(auto_start, "打开 OpenDS 时自动开始桥接", cfg.auto_start);
+            cb!(
+                auto_start,
+                crate::tr!(gui_start_bridging_when_opends_opens),
+                cfg.auto_start
+            );
             cb!(
                 start_on_login,
-                "登录 Windows 时在托盘运行",
+                crate::tr!(gui_run_in_the_tray_at_windows_sign),
                 crate::startup::enabled().unwrap_or(false)
             );
-            cb!(reconnect, "断线后自动重连", cfg.reconnect);
-            cb!(hide, "隐藏真实手柄，避免重复输入", cfg.hide_device);
-            cb!(audio, "转发游戏扬声器音频", cfg.audio_enabled);
-            cb!(haptics, "转发左右独立的原生触觉", cfg.haptics_enabled);
-            cb!(microphone, "转发手柄麦克风", cfg.microphone_enabled);
+            cb!(
+                reconnect,
+                crate::tr!(gui_reconnect_automatically),
+                cfg.reconnect
+            );
+            cb!(
+                hide,
+                crate::tr!(gui_hide_the_physical_controller_to_avoid_duplicate),
+                cfg.hide_device
+            );
+            cb!(audio, crate::tr!(gui_forward_game_audio), cfg.audio_enabled);
+            cb!(
+                haptics,
+                crate::tr!(gui_forward_native_stereo_haptics),
+                cfg.haptics_enabled
+            );
+            cb!(
+                microphone,
+                crate::tr!(gui_forward_controller_microphone),
+                cfg.microphone_enabled
+            );
             nwg::ComboBox::builder()
                 .parent(window)
                 .collection(vec![
-                    "询问".into(),
-                    "最小化到托盘".into(),
-                    "直接退出".into(),
+                    crate::tr!(gui_ask).into(),
+                    crate::tr!(gui_minimize_to_tray).into(),
+                    crate::tr!(gui_exit_application).into(),
                 ])
                 .selected_index(Some(match cfg.close_action {
                     CloseAction::Ask => 0,
@@ -280,15 +304,15 @@ impl App {
                 .build(&mut ui.close_action)?;
             nwg::ComboBox::builder()
                 .parent(window)
-                .collection(vec!["自动选择蓝牙 DualSense".into()])
+                .collection(vec![crate::tr!(gui_auto_select_bluetooth_dualsense).into()])
                 .selected_index(Some(0))
                 .build(&mut ui.device)?;
             nwg::ComboBox::builder()
                 .parent(window)
                 .collection(vec![
-                    "自动选择（游戏设置 / 耳机插入状态）".into(),
-                    "手柄扬声器".into(),
-                    "耳机".into(),
+                    crate::tr!(gui_automatic_game_setting_headphone_connection).into(),
+                    crate::tr!(gui_controller_speaker).into(),
+                    crate::tr!(gui_headphones).into(),
                 ])
                 .selected_index(Some(cfg.audio_route as usize))
                 .build(&mut ui.route)?;
@@ -337,20 +361,25 @@ impl App {
                 .pos(Some(cfg.microphone_gain_db as usize))
                 .background_color(Some([255, 255, 255]))
                 .build(&mut ui.mic_gain)?;
-            cb!(active, "启用 HidHide 设备隐藏", false);
+            cb!(active, crate::tr!(gui_enable_hidhide_device_hiding), false);
             nwg::ListBox::builder()
                 .parent(window)
                 .collection(Vec::<String>::new())
                 .build(&mut ui.whitelist)?;
             input!(app_path, "");
-            button!(add, "添加程序");
-            button!(remove, "移除选中");
-            button!(add_self, "允许 OpenDS 访问");
-            button!(doctor, "重新检查");
-            button!(usbip, "安装 USB/IP Win2");
-            button!(hidhide_link, "安装 HidHide");
-            for name in ["概览", "实时监视", "连接与反馈", "设备隐藏", "诊断与日志"]
-            {
+            button!(add, crate::tr!(gui_add_application));
+            button!(remove, crate::tr!(gui_remove_selected));
+            button!(add_self, crate::tr!(gui_allow_opends_access));
+            button!(doctor, crate::tr!(gui_check_again));
+            button!(usbip, crate::tr!(gui_install_usb_ip_win2));
+            button!(hidhide_link, crate::tr!(gui_install_hidhide));
+            for name in [
+                crate::tr!(gui_overview),
+                crate::tr!(gui_live_monitor),
+                crate::tr!(gui_connection_feedback),
+                crate::tr!(gui_device_hiding),
+                crate::tr!(gui_diagnostics_logs),
+            ] {
                 let mut b = Default::default();
                 nwg::Button::builder()
                     .parent(window)
@@ -369,10 +398,10 @@ impl App {
                 .popup(true)
                 .build(&mut ui.menu)?;
             for (text, item) in [
-                ("启动桥接", &mut ui.start_menu),
-                ("停止桥接", &mut ui.stop_menu),
-                ("打开设置", &mut ui.show_menu),
-                ("退出 OpenDS", &mut ui.exit_menu),
+                (crate::tr!(gui_start_bridge), &mut ui.start_menu),
+                (crate::tr!(gui_stop_bridge), &mut ui.stop_menu),
+                (crate::tr!(gui_open_settings), &mut ui.show_menu),
+                (crate::tr!(gui_exit_opends), &mut ui.exit_menu),
             ] {
                 nwg::MenuItem::builder()
                     .parent(&ui.menu)
@@ -387,14 +416,18 @@ impl App {
                 .register_callback(&ui.count_output)
                 .register_callback(&ui.count_audio)
                 .register_callback(&ui.nav[4])
-                .register(&ui.usbip, "停止桥接后可下载并打开 USB/IP Win2 官方安装向导")
+                .register(
+                    &ui.usbip,
+                    crate::tr!(gui_stop_bridging_to_download_and_open_the),
+                )
                 .register(
                     &ui.hidhide_link,
-                    "停止桥接后可下载并打开 HidHide 官方安装向导",
+                    crate::tr!(gui_stop_bridging_to_download_and_open_the_2),
                 )
                 .build(&mut ui.tips)?;
-            ui.install_status
-                .set_text("安装需管理员确认，完成后会自动重新检查依赖。");
+            ui.install_status.set_text(crate::tr!(
+                gui_installation_requires_administrator_approval_dependencies_will_be
+            ));
             Ok(())
         })();
         build.map_err(|e| e.to_string())?;
@@ -423,10 +456,10 @@ impl App {
         a.refresh();
         if !crate::dependencies::ready() {
             a.page.set(4);
-            a.controller
-                .borrow()
-                .state
-                .log("首次使用请先在本页安装缺失驱动；安装完成并按提示重启后重新检查。");
+            a.controller.borrow().state.log_message(
+                crate::i18n::MessageId::gui_first_install_the_missing_drivers_on_this,
+                crate::tr!(gui_first_install_the_missing_drivers_on_this),
+            );
         }
         a.layout();
         if let Some(e) = error {
@@ -651,7 +684,7 @@ impl App {
             78,
             164,
             24,
-            "DualSense 控制中心",
+            crate::tr!(gui_dualsense_control_center),
             &f.small,
             theme::MUTED,
         );
@@ -660,7 +693,7 @@ impl App {
             h - 189,
             154,
             25,
-            "蓝牙连接 · USB 体验",
+            crate::tr!(gui_bluetooth_connection_usb_experience),
             &f.small,
             theme::MUTED,
         );
@@ -673,13 +706,19 @@ impl App {
             &f.small,
             theme::MUTED,
         );
-        let titles = ["概览", "实时监视", "连接与反馈", "设备隐藏", "诊断与日志"];
+        let titles = [
+            crate::tr!(gui_overview),
+            crate::tr!(gui_live_monitor),
+            crate::tr!(gui_connection_feedback),
+            crate::tr!(gui_device_hiding),
+            crate::tr!(gui_diagnostics_logs),
+        ];
         let descriptions = [
-            "连接状态与反馈数据，尽在此处。",
-            "按键与音频实时呈现，采集由你手动开启。",
-            "选择手柄，调整声音、触觉与连接行为。",
-            "让游戏只接收虚拟手柄的输入。",
-            "检查运行依赖，查看连接与恢复记录。",
+            crate::tr!(gui_connection_status_and_feedback_at_a_glance),
+            crate::tr!(gui_view_controller_input_and_audio_start_capture),
+            crate::tr!(gui_choose_your_controller_and_adjust_audio_haptics),
+            crate::tr!(gui_let_games_see_only_the_virtual_controller),
+            crate::tr!(gui_check_dependencies_and_review_connection_and_recovery),
         ];
         let p = self.page.get() as usize;
         text(x, 28, cw, 42, titles[p], &f.title, theme::INK);
@@ -701,7 +740,7 @@ impl App {
                     132,
                     cw - 56,
                     42,
-                    "原生反馈，无线连接。",
+                    crate::tr!(gui_native_feedback_wireless_freedom),
                     &f.title,
                     theme::INK,
                 );
@@ -710,26 +749,40 @@ impl App {
                     176,
                     cw - 56,
                     23,
-                    "DualSense 蓝牙连接 → 本机虚拟 USB 手柄",
+                    crate::tr!(gui_dualsense_bluetooth_local_virtual_usb_controller),
                     &f.body,
                     theme::MUTED,
                 );
                 let c = (cw - 32) / 3;
-                for (i, name) in ["输入报告", "输出反馈", "音频数据块"].iter().enumerate()
+                for (i, name) in [
+                    crate::tr!(gui_input_reports),
+                    crate::tr!(gui_output_feedback),
+                    crate::tr!(gui_audio_blocks),
+                ]
+                .iter()
+                .enumerate()
                 {
                     let left = x + i as i32 * (c + 16);
                     card(left, 320, c, 112);
                     text(left + 24, 337, c - 48, 24, name, &f.small, theme::MUTED);
                 }
                 card(x, 452, cw, h - 476);
-                text(x + 24, 466, cw - 48, 26, "最近活动", &f.strong, theme::INK);
+                text(
+                    x + 24,
+                    466,
+                    cw - 48,
+                    26,
+                    crate::tr!(gui_recent_activity),
+                    &f.strong,
+                    theme::INK,
+                );
                 if self.last_logs.borrow().is_empty() {
                     text(
                         x + 24,
                         506,
                         cw - 48,
                         30,
-                        "准备就绪。启动桥接后，这里会显示连接与恢复记录。",
+                        crate::tr!(gui_ready_start_bridging_to_see_connection_and),
                         &f.body,
                         theme::MUTED,
                     );
@@ -743,24 +796,47 @@ impl App {
                     h - 62,
                     88,
                     24,
-                    "关闭时行为",
+                    crate::tr!(gui_on_close),
                     &f.small,
                     theme::MUTED,
                 );
                 for (left, y, width, s) in [
-                    (x + 24, 130, cw - 48, "物理手柄"),
-                    (x + 24, 296, cw - 48, "声音输出"),
-                    (x + 24, 364, cw / 3 - 40, "扬声器音量  ·  0–255"),
-                    (x + cw / 3 + 8, 364, cw / 3 - 32, "触觉增益  ·  10–20"),
+                    (x + 24, 130, cw - 48, crate::tr!(gui_physical_controller)),
+                    (x + 24, 296, cw - 48, crate::tr!(gui_audio_output)),
+                    (
+                        x + 24,
+                        364,
+                        cw / 3 - 40,
+                        crate::tr!(gui_speaker_volume_0_255),
+                    ),
+                    (
+                        x + cw / 3 + 8,
+                        364,
+                        cw / 3 - 32,
+                        crate::tr!(gui_haptics_gain_10_20),
+                    ),
                     (
                         x + 2 * cw / 3,
                         364,
                         cw / 3 - 24,
-                        &format!("麦克风 +{} dB · 0–50", self.mic_gain.pos()),
+                        &crate::tr!(
+                            gui_microphone_db_0_50,
+                            gain = format!("{}", self.mic_gain.pos())
+                        ),
                     ),
-                    (x + 24, 432, cw / 3 - 40, "本机服务端口"),
-                    (x + cw / 3 + 8, 432, cw / 3 - 32, "扬声器/触觉缓存 · 块"),
-                    (x + 2 * cw / 3, 432, cw / 3 - 24, "麦克风安全缓冲 · ms"),
+                    (x + 24, 432, cw / 3 - 40, crate::tr!(gui_local_service_port)),
+                    (
+                        x + cw / 3 + 8,
+                        432,
+                        cw / 3 - 32,
+                        crate::tr!(gui_speaker_haptics_buffer_blocks),
+                    ),
+                    (
+                        x + 2 * cw / 3,
+                        432,
+                        cw / 3 - 24,
+                        crate::tr!(gui_microphone_safety_buffer_ms),
+                    ),
                 ] {
                     text(left, y, width, 24, s, &f.small, theme::MUTED);
                 }
@@ -772,7 +848,7 @@ impl App {
                     131,
                     cw - 48,
                     26,
-                    "应用白名单",
+                    crate::tr!(gui_application_whitelist),
                     &f.strong,
                     theme::INK,
                 );
@@ -781,7 +857,7 @@ impl App {
                     211,
                     cw - 48,
                     25,
-                    "列表中的程序仍能看见真实手柄；游戏通常无需添加。",
+                    crate::tr!(gui_listed_applications_can_still_see_the_physical),
                     &f.small,
                     theme::MUTED,
                 );
@@ -790,7 +866,7 @@ impl App {
                     630,
                     cw,
                     24,
-                    "退出桥接会恢复由 OpenDS 修改的隐藏状态。",
+                    crate::tr!(gui_stopping_the_bridge_restores_the_hiding_settings),
                     &f.small,
                     theme::MUTED,
                 );
@@ -798,7 +874,15 @@ impl App {
             _ => {
                 card(x, 112, cw, 226);
                 card(x, 358, cw, h - 382);
-                text(x + 24, 370, cw - 48, 25, "运行日志", &f.strong, theme::INK);
+                text(
+                    x + 24,
+                    370,
+                    cw - 48,
+                    25,
+                    crate::tr!(gui_application_log),
+                    &f.strong,
+                    theme::INK,
+                );
             }
         }
         EndPaint(hwnd, &ps);
@@ -917,26 +1001,35 @@ impl App {
         self.controller.borrow().state.error(e.clone());
         nwg::modal_error_message(&self.window, "OpenDS", &e);
     }
+    fn error_message(&self, id: crate::i18n::MessageId, e: impl Into<String>) {
+        let e = e.into();
+        self.controller.borrow().state.error_message(id, e.clone());
+        nwg::modal_error_message(&self.window, "OpenDS", &e);
+    }
     fn read_config(&self) -> Result<Config, String> {
         let mut c = self.config.borrow().clone();
-        c.port = self.port.text().parse().map_err(|_| "端口必须为 1–65535")?;
+        c.port = self
+            .port
+            .text()
+            .parse()
+            .map_err(|_| crate::tr!(gui_port_must_be_1_65535))?;
         c.buffer = self
             .buffer
             .text()
             .parse()
-            .map_err(|_| "缓冲块必须为 1–128")?;
+            .map_err(|_| crate::tr!(gui_buffer_must_be_1_128_blocks))?;
         c.speaker_volume = self
             .speaker
             .text()
             .parse()
-            .map_err(|_| "扬声器音量必须为 0–255")?;
+            .map_err(|_| crate::tr!(gui_speaker_volume_must_be_0_255))?;
         c.haptics_gain = self
             .haptic_gain
             .text()
             .parse()
-            .map_err(|_| "触觉增益必须为 10–20")?;
+            .map_err(|_| crate::tr!(gui_haptics_gain_must_be_10_20))?;
         if c.port == 0 || !(1..=128).contains(&c.buffer) || !(10..=20).contains(&c.haptics_gain) {
-            return Err("端口、缓冲块或触觉增益超出范围".into());
+            return Err(crate::tr!(gui_port_buffer_or_haptics_gain_is_out).into());
         }
         c.auto_start = checked(&self.auto_start);
         c.reconnect = checked(&self.reconnect);
@@ -970,7 +1063,10 @@ impl App {
     }
     fn start_bridge(&self) {
         if self.installation.borrow().is_some() {
-            self.error("正在安装驱动，请等待安装结束后再启动桥接。");
+            self.error_message(
+                crate::i18n::MessageId::gui_driver_installation_is_in_progress_wait_for,
+                crate::tr!(gui_driver_installation_is_in_progress_wait_for),
+            );
             return;
         }
         match self.save_settings() {
@@ -986,7 +1082,7 @@ impl App {
     }
     fn refresh(&self) {
         let mut paths = vec![String::new()];
-        let mut names = vec!["自动选择蓝牙 DualSense".to_string()];
+        let mut names = vec![crate::tr!(gui_auto_select_bluetooth_dualsense).to_string()];
         let selected = self.config.borrow().device_path.clone();
         for p in crate::hid::HidDevice::enum_paths() {
             if let Some(d) = crate::hid::HidDevice::open(&p) {
@@ -1005,7 +1101,7 @@ impl App {
             }
         }
         if !selected.is_empty() && !paths.iter().any(|p| p.eq_ignore_ascii_case(&selected)) {
-            names.push("已保存的手柄（当前未连接）".into());
+            names.push(crate::tr!(gui_saved_controller_currently_disconnected).into());
             paths.push(selected.clone());
         }
         let index = paths
@@ -1044,7 +1140,7 @@ impl App {
     }
     fn begin_installation(&self, component: &str) -> Result<(), String> {
         if self.installation.borrow().is_some() {
-            return Err("已有驱动安装正在进行，请等待完成。".into());
+            return Err(crate::tr!(gui_another_driver_installation_is_in_progress_wait).into());
         }
         if self
             .controller
@@ -1053,15 +1149,22 @@ impl App {
             .running
             .load(Ordering::Acquire)
         {
-            return Err("请先停止桥接，再安装驱动。".into());
+            return Err(crate::tr!(gui_stop_bridging_before_installing_drivers).into());
         }
         let job = crate::dependencies::install(component)?;
-        let message = format!("正在准备 {}，请在出现的官方向导中完成安装。", job.component);
+        let message = crate::tr!(
+            gui_preparing_complete_the_installation_in_the_official,
+            component = format!("{}", job.component)
+        );
         self.install_status.set_text(&message);
-        self.controller
-            .borrow()
-            .state
-            .log(format!("{message} 安装日志：{}", job.log_path.display()));
+        self.controller.borrow().state.log_message(
+            crate::i18n::MessageId::gui_installation_log,
+            crate::tr!(
+                gui_installation_log,
+                message = format!("{}", message),
+                path = format!("{}", job.log_path.display())
+            ),
+        );
         *self.installation.borrow_mut() = Some(job);
         Ok(())
     }
@@ -1088,15 +1191,21 @@ impl App {
             }
             let message = if success {
                 if crate::dependencies::ready() {
-                    format!("{} 安装已完成，运行依赖已就绪。", job.component)
+                    crate::tr!(
+                        gui_installed_dependencies_are_ready,
+                        component = format!("{}", job.component)
+                    )
                 } else {
-                    format!(
-                        "{} 向导已完成；依赖尚未就绪，请按安装提示重启后重新检查。",
-                        job.component
+                    crate::tr!(
+                        gui_wizard_finished_but_dependencies_are_not_ready,
+                        component = format!("{}", job.component)
                     )
                 }
             } else {
-                format!("{} 安装未完成或已取消，请查看日志。", job.component)
+                crate::tr!(
+                    gui_installation_failed_or_was_cancelled_see_the,
+                    component = format!("{}", job.component)
+                )
             };
             self.install_status.set_text(&message);
             state.log(&message);
@@ -1127,18 +1236,23 @@ impl App {
             nwg::stop_thread_dispatch();
         }
         let phase = if stopping {
-            "正在停止并恢复设备…".to_string()
+            crate::tr!(gui_stopping_and_restoring_devices).to_string()
         } else if s.connected.load(Ordering::Acquire) {
-            "● 已连接 · 正在转发".to_string()
+            crate::tr!(gui_connected_forwarding).to_string()
         } else if running {
-            "● 桥接已启动 · 等待手柄连接…".to_string()
+            crate::tr!(gui_bridge_started_waiting_for_controller).to_string()
         } else {
             s.last_error
                 .lock()
                 .ok()
                 .and_then(|e| e.clone())
-                .map(|e| format!("○ 桥接已停止 · {}", e.chars().take(64).collect::<String>()))
-                .unwrap_or_else(|| "○ 桥接尚未启动".to_string())
+                .map(|e| {
+                    crate::tr!(
+                        gui_bridge_stopped,
+                        error = format!("{}", e.chars().take(64).collect::<String>())
+                    )
+                })
+                .unwrap_or_else(|| crate::tr!(gui_bridge_not_started).to_string())
         };
         if self.status.text() != phase {
             self.status.set_text(&phase);
@@ -1176,12 +1290,13 @@ impl App {
         self.usbip.set_enabled(!running && !installing);
         self.hidhide_link.set_enabled(!running && !installing);
         if !installing {
-            let hint = "桥接正在运行，请先停止桥接再安装驱动。";
+            let hint = crate::tr!(gui_bridging_is_running_stop_it_before_installing);
             if running && self.install_status.text() != hint {
                 self.install_status.set_text(hint);
             } else if !running && self.install_status.text() == hint {
-                self.install_status
-                    .set_text("安装需管理员确认，完成后会自动重新检查依赖。");
+                self.install_status.set_text(crate::tr!(
+                    gui_installation_requires_administrator_approval_dependencies_will_be
+                ));
             }
         }
         let logs = s.logs();
@@ -1191,8 +1306,9 @@ impl App {
             *self.last_logs.borrow_mut() = logs;
         }
         if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
-            self.logs
-                .set_text("准备就绪。\r\n启动桥接后，这里会显示连接、反馈和恢复记录。");
+            self.logs.set_text(crate::tr!(
+                gui_ready_start_bridging_to_see_connection_feedback
+            ));
         }
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();
@@ -1367,11 +1483,20 @@ impl App {
         if event == E::OnTooltipText {
             let state = self.controller.borrow().state.clone();
             let value = if handle == self.count_input {
-                Some(("输入报告", state.frames_out.load(Ordering::Relaxed)))
+                Some((
+                    crate::tr!(gui_input_reports),
+                    state.frames_out.load(Ordering::Relaxed),
+                ))
             } else if handle == self.count_output {
-                Some(("输出反馈", state.output_callbacks.load(Ordering::Relaxed)))
+                Some((
+                    crate::tr!(gui_output_feedback),
+                    state.output_callbacks.load(Ordering::Relaxed),
+                ))
             } else if handle == self.count_audio {
-                Some(("音频数据块", state.audio_blocks.load(Ordering::Relaxed)))
+                Some((
+                    crate::tr!(gui_audio_blocks),
+                    state.audio_blocks.load(Ordering::Relaxed),
+                ))
             } else {
                 None
             };
@@ -1380,9 +1505,9 @@ impl App {
             } else if handle == self.nav[4] {
                 data.on_tooltip_text()
                     .set_text(if self.dependency_attention.get() {
-                        "缺少或无法访问运行依赖，请打开诊断检查"
+                        crate::tr!(gui_some_dependencies_are_missing_or_inaccessible_open)
                     } else {
-                        "运行依赖正常"
+                        crate::tr!(gui_dependencies_are_ready)
                     });
             }
             return;
@@ -1468,10 +1593,10 @@ impl App {
             return;
         } else if handle == self.save {
             self.save_settings().map(|_| {
-                self.controller
-                    .borrow()
-                    .state
-                    .log("设置已保存，下次启动桥接生效")
+                self.controller.borrow().state.log_message(
+                    crate::i18n::MessageId::gui_settings_saved_applied_the_next_time_bridging,
+                    crate::tr!(gui_settings_saved_applied_the_next_time_bridging),
+                )
             })
         } else if handle == self.refresh {
             self.refresh();
@@ -1500,7 +1625,7 @@ impl App {
         } else if handle == self.remove {
             match self.whitelist.selection_string() {
                 Some(p) => crate::hidhide::remove_application(&p).map(|_| self.refresh()),
-                None => Err("请先选择一个白名单条目".into()),
+                None => Err(crate::tr!(gui_select_a_whitelist_entry_first).into()),
             }
         } else if handle == self.add_self {
             std::env::current_exe()
@@ -1511,7 +1636,7 @@ impl App {
             let desired = checked(&self.active);
             match crate::hidhide::HidHide::open() {
                 Some(h) if h.set_active(desired) && h.get_active() == Some(desired) => Ok(()),
-                _ => Err("写入 HidHide 开关失败".into()),
+                _ => Err(crate::tr!(gui_could_not_change_hidhide_state).into()),
             }
         } else if handle == self.doctor {
             self.refresh_dependencies();
@@ -1562,7 +1687,8 @@ fn run_inner(
     let app = App::build(cfg, path, error, background)?;
     #[cfg(debug_assertions)]
     let demo = if smoke && std::env::var_os("OPENDS_UI_SMOKE_DEMO").is_some() {
-        app.window.set_text("OpenDS · 界面测试（模拟信号）");
+        app.window
+            .set_text(crate::tr!(gui_opends_ui_test_simulated_signals));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         Some((
             stop.clone(),
@@ -1578,57 +1704,68 @@ fn run_inner(
         let state = app.controller.borrow().state.clone();
         state.running.store(true, Ordering::Release);
         app.update();
-        if !app.status.text().contains("等待手柄连接") {
-            return Err("托盘启动时未显示等待手柄状态".into());
+        if !app
+            .status
+            .text()
+            .contains(crate::tr!(gui_waiting_for_controller))
+        {
+            return Err(crate::tr!(gui_tray_startup_did_not_display_the_waiting).into());
         }
         state.running.store(false, Ordering::Release);
-        *state.last_error.lock().map_err(|_| "状态不可用")? = Some("界面测试错误".into());
+        *state
+            .last_error
+            .lock()
+            .map_err(|_| crate::tr!(gui_state_unavailable))? =
+            Some(crate::tr!(gui_ui_smoke_error).into());
         app.update();
-        if !app.status.text().contains("界面测试错误") {
-            return Err("概览未显示桥接错误".into());
+        if !app.status.text().contains(crate::tr!(gui_ui_smoke_error)) {
+            return Err(crate::tr!(gui_overview_did_not_display_the_bridge_error).into());
         }
-        *state.last_error.lock().map_err(|_| "状态不可用")? = None;
+        *state
+            .last_error
+            .lock()
+            .map_err(|_| crate::tr!(gui_state_unavailable))? = None;
         app.show_window();
-        if app.status.text() != "○ 桥接尚未启动" {
-            return Err("从托盘打开时状态未立即刷新".into());
+        if app.status.text() != crate::tr!(gui_bridge_not_started) {
+            return Err(crate::tr!(gui_opening_from_tray_did_not_refresh_the).into());
         }
         let hwnd = theme::hwnd(&app.window.handle);
         if unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } & WS_MINIMIZEBOX as isize == 0 {
-            return Err("主窗口缺少任务栏最小化按钮".into());
+            return Err(crate::tr!(gui_main_window_is_missing_its_minimize_button).into());
         }
         app.window.minimize();
         if unsafe { IsIconic(hwnd) == 0 || IsWindowVisible(hwnd) == 0 } {
-            return Err("最小化没有保留任务栏窗口".into());
+            return Err(crate::tr!(gui_minimizing_did_not_preserve_the_taskbar_window).into());
         }
         app.apply_close_choice(crate::gui_close::Choice::Tray);
         if unsafe { IsWindowVisible(hwnd) } != 0 || app.exiting.get() {
-            return Err("最小化到托盘没有隐藏窗口或错误触发了退出".into());
+            return Err(crate::tr!(gui_minimizing_to_tray_did_not_hide_the).into());
         }
         app.show_window();
         if unsafe { IsIconic(hwnd) != 0 || IsWindowVisible(hwnd) == 0 } {
-            return Err("托盘恢复没有还原最小化窗口".into());
+            return Err(crate::tr!(gui_restoring_from_tray_did_not_restore_the).into());
         }
         crate::gui_close::smoke_test(hwnd)?;
         app.apply_close_choice(crate::gui_close::Choice::Cancel);
         if app.exiting.get() || unsafe { IsWindowVisible(hwnd) } == 0 {
-            return Err("取消关闭改变了窗口或退出状态".into());
+            return Err(crate::tr!(gui_cancelling_close_changed_the_window_or_exit).into());
         }
         app.set_close_action(CloseAction::Tray)?;
         if Config::load(&app.path)?.close_action != CloseAction::Tray
             || app.close_action.selection() != Some(1)
         {
-            return Err("关闭偏好未持久化或未同步设置页".into());
+            return Err(crate::tr!(gui_close_preference_was_not_persisted_or_synchronized).into());
         }
         app.confirm_close();
         if unsafe { IsWindowVisible(hwnd) } != 0 || app.exiting.get() {
-            return Err("已记住的托盘选项未生效".into());
+            return Err(crate::tr!(gui_remembered_tray_action_did_not_take_effect).into());
         }
         app.show_window();
         app.set_close_action(CloseAction::Ask)?;
         if Config::load(&app.path)?.close_action != CloseAction::Ask
             || app.close_action.selection() != Some(0)
         {
-            return Err("无法恢复关闭时询问".into());
+            return Err(crate::tr!(gui_could_not_restore_the_close_confirmation).into());
         }
         app.window.set_visible(true);
         app.page.set(1);
@@ -1639,7 +1776,7 @@ fn run_inner(
         let hwnd = theme::hwnd(&app.window.handle);
         for kind in [ICON_SMALL, ICON_BIG] {
             if unsafe { SendMessageW(hwnd, WM_GETICON, kind as usize, 0) } == 0 {
-                return Err("窗口或任务栏图标未加载".into());
+                return Err(crate::tr!(gui_window_or_taskbar_icon_was_not_loaded).into());
             }
         }
         // The deadline follows the saved exit path through confirm_close.
@@ -1669,7 +1806,7 @@ fn run_inner(
     if unsafe { SetTimer(theme::hwnd(&app.window.handle), 0x4f44, 500, None) } == 0 {
         nwg::unbind_raw_event_handler(&raw).map_err(|e| e.to_string())?;
         nwg::unbind_event_handler(&handler);
-        return Err("无法创建界面状态定时器".into());
+        return Err(crate::tr!(gui_could_not_create_the_ui_status_timer).into());
     }
     app.update();
     app.layout();

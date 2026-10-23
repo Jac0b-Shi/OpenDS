@@ -489,9 +489,12 @@ impl Monitor {
         let history = History::new(hz);
         let history_bytes = history.allocated_bytes();
         if self.queue_bytes() + history_bytes + self.recording.allocated_bytes() > CACHE_LIMIT {
-            return Err("监视缓存将超出 32 MiB 上限，请降低采样频率".into());
+            return Err(crate::tr!(monitor_monitor_cache_would_exceed_32_mib_reduce).into());
         }
-        *self.history.lock().map_err(|_| "监视缓存不可用")? = history;
+        *self
+            .history
+            .lock()
+            .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))? = history;
         self.history_bytes.store(history_bytes as u64, Release);
         self.epoch.fetch_add(1, AcqRel);
         self.active.store(true, Release);
@@ -503,7 +506,10 @@ impl Monitor {
                 self.active.store(false, Release);
                 e.to_string()
             })?;
-        *self.worker.lock().map_err(|_| "监视线程不可用")? = Some(thread);
+        *self
+            .worker
+            .lock()
+            .map_err(|_| crate::tr!(monitor_could_not_start_monitor_worker))? = Some(thread);
         Ok(())
     }
     pub fn stop(&self) {
@@ -518,14 +524,14 @@ impl Monitor {
     }
     pub fn start_recording(&self, path: std::path::PathBuf) -> Result<(), String> {
         if !self.active.load(Acquire) {
-            return Err("请先开始采集，再开启文件记录".into());
+            return Err(crate::tr!(monitor_start_capture_before_recording_to_a_file).into());
         }
         if self.queue_bytes()
             + self.history_bytes.load(Acquire) as usize
             + crate::monitor_recording::queue_bytes()
             > CACHE_LIMIT
         {
-            return Err("记录队列将超出监视缓存上限，请降低采样频率".into());
+            return Err(crate::tr!(monitor_recording_would_exceed_the_monitor_cache_limit).into());
         }
         self.recording
             .start(path, self.hz.load(Acquire), self.now())

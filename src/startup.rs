@@ -56,19 +56,21 @@ fn hkcu() -> Hkey {
     0x80000001u32 as i32 as isize as Hkey
 }
 fn error(code: i32) -> String {
-    format!(
-        "Windows 登录自启设置失败：{}",
-        std::io::Error::from_raw_os_error(code)
+    crate::tr!(
+        startup_windows_sign_in_startup_setup_failed,
+        error = format!("{}", std::io::Error::from_raw_os_error(code))
     )
 }
 pub fn command(exe: &Path) -> Result<String, String> {
-    let s = exe.to_str().ok_or("程序路径不是有效 Unicode")?;
+    let s = exe
+        .to_str()
+        .ok_or(crate::tr!(startup_the_executable_path_is_not_valid_unicode))?;
     if s.contains(['"', '\r', '\n']) {
-        return Err("程序路径包含无效字符".into());
+        return Err(crate::tr!(startup_the_executable_path_contains_invalid_characters).into());
     }
     let command = format!("\"{s}\" tray");
     if command.encode_utf16().count() > 260 {
-        return Err("登录启动命令超过 Windows 的 260 字符限制，请使用更短安装路径".into());
+        return Err(crate::tr!(startup_the_sign_in_startup_command_exceeds_the).into());
     }
     Ok(command)
 }

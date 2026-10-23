@@ -72,6 +72,9 @@ pub fn record(line: &str) {
         }
     }
 }
+pub fn record_message(id: crate::i18n::MessageId, message: &str) {
+    record(&format!("[{}] {message}", id.key()));
+}
 pub fn bounded(line: &str) -> String {
     line.chars().take(2048).collect()
 }

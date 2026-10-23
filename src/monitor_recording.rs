@@ -34,7 +34,9 @@ fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     };
     let mut dir = absolute
         .parent()
-        .ok_or_else(|| std::io::Error::other("保存目录无效"))?
+        .ok_or_else(|| {
+            std::io::Error::other(crate::tr!(monitor_recording_invalid_drive_directory))
+        })?
         .as_os_str()
         .encode_wide()
         .collect::<Vec<_>>();
@@ -52,18 +54,18 @@ fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
         )
     } == 0
     {
-        return Err(std::io::Error::other(format!(
-            "无法检查目标磁盘可用空间：{}",
-            std::io::Error::last_os_error()
+        return Err(std::io::Error::other(crate::tr!(
+            monitor_recording_could_not_check_free_space_on_the,
+            error = format!("{}", std::io::Error::last_os_error())
         )));
     }
     Ok(available)
 }
 fn require_space(available: u64) -> std::io::Result<()> {
     if available < DISK_RESERVE + WRITE_BUFFER as u64 {
-        return Err(std::io::Error::other(format!(
-            "目标磁盘剩余 {:.1} MiB，已停止记录以预留 512 MiB；桥接和采集继续运行",
-            available as f64 / 1048576.
+        return Err(std::io::Error::other(crate::tr!(
+            monitor_recording_only_mib_remain_on_the_target_disk,
+            megabytes = format!("{:.1}", available as f64 / 1048576.)
         )));
     }
     Ok(())
@@ -120,9 +122,14 @@ pub struct Status {
 }
 impl Recording {
     pub fn start(&self, path: PathBuf, hz: u32, now: u64) -> Result<(), String> {
-        let mut guard = self.session.lock().map_err(|_| "记录状态不可用")?;
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| crate::tr!(monitor_recording_recording_state_unavailable))?;
         if guard.as_ref().is_some_and(|s| !s.worker.is_finished()) {
-            return Err("记录仍在运行或正在保存，请稍后重试".into());
+            return Err(
+                crate::tr!(monitor_recording_recording_is_active_or_still_saving_try).into(),
+            );
         }
         if let Some(old) = guard.take() {
             let _ = old.worker.join();
@@ -141,9 +148,18 @@ impl Recording {
             .spawn(move || {
                 let result = write_csv(file, q, end, &p, hz, now, unix_ms);
                 if let Err(e) = result {
-                    crate::logging::record(&format!("CSV 记录失败：{e}"));
+                    crate::logging::record_message(
+                        crate::i18n::MessageId::monitor_recording_csv_recording_failed,
+                        &crate::tr!(
+                            monitor_recording_csv_recording_failed,
+                            error = format!("{}", e)
+                        ),
+                    );
                     if let Ok(mut error) = p.error.lock() {
-                        *error = Some(format!("CSV 记录失败：{e}"));
+                        *error = Some(crate::tr!(
+                            monitor_recording_csv_recording_failed,
+                            error = format!("{}", e)
+                        ));
                     }
                 }
                 p.active.store(false, Release);
@@ -181,7 +197,7 @@ impl Recording {
                 s.progress.dropped.fetch_add(end - s.next, Relaxed);
                 if let Ok(mut error) = s.progress.error.lock() {
                     *error = Some(
-                        "记录缓冲已满或采集延迟过长，已停止记录；已有数据正在保存，采集和桥接继续运行"
+                        crate::tr!(monitor_recording_recording_queue_full_or_capture_delayed_too)
                             .into(),
                     );
                 }
@@ -360,9 +376,10 @@ fn write_csv_checked(
         .map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!(
-                    "无法写入所选文件 {}：{e}。请检查保存位置的写入权限。",
-                    path.display()
+                crate::tr!(
+                    monitor_recording_could_not_write_to_check_write_permissions,
+                    path = format!("{}", path.display()),
+                    error = format!("{}", e)
                 ),
             )
         })?;

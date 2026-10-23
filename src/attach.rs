@@ -26,15 +26,14 @@ fn run(
     cancelled: impl Fn() -> bool,
     timeout: Duration,
 ) -> Result<Output, String> {
-    let exe = usbip_path()
-        .ok_or("找不到 USB/IP Win2 自带的 usbip.exe，请安装 compact 主程序或将其目录加入 PATH")?;
+    let exe = usbip_path().ok_or(crate::tr!(attach_cannot_find_usb_ip_win2_usbip_exe))?;
     let mut child = Command::new(exe)
         .args(args)
         .creation_flags(0x08000000)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动 USB/IP 操作失败：{e}"))?;
+        .map_err(|e| crate::tr!(attach_could_not_start_usb_ip, error = format!("{}", e)))?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -43,10 +42,10 @@ fn run(
                 if status.success() {
                     return Ok(output);
                 }
-                return Err(format!(
-                    "USB/IP 操作失败：{} {}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
+                return Err(crate::tr!(
+                    attach_usb_ip_failed,
+                    output = format!("{}", String::from_utf8_lossy(&output.stdout)),
+                    error = format!("{}", String::from_utf8_lossy(&output.stderr))
                 ));
             }
             Err(e) => {
@@ -59,7 +58,7 @@ fn run(
         if cancelled() || start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("USB/IP 操作已取消或超时".into());
+            return Err(crate::tr!(attach_usb_ip_operation_cancelled_or_timed_out).into());
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -81,15 +80,17 @@ pub fn first_device(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Result
     let port = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse::<u32>()
-        .map_err(|_| "挂接成功但未返回有效 UDE 端口".to_string())?;
+        .map_err(|_| {
+            crate::tr!(attach_attachment_succeeded_but_returned_no_valid_ude).to_string()
+        })?;
     if !(1..=255).contains(&port) {
-        return Err("UDE 端口超出范围".into());
+        return Err(crate::tr!(attach_ude_port_is_out_of_range).into());
     }
     Ok(port)
 }
 pub fn detach(port: u32) -> Result<(), String> {
     if !(1..=255).contains(&port) {
-        return Err("拒绝卸载无效 UDE 端口".into());
+        return Err(crate::tr!(attach_refusing_to_detach_an_invalid_ude_port).into());
     }
     run(
         vec!["detach".into(), "-p".into(), port.to_string()],

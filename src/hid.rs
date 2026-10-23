@@ -319,7 +319,7 @@ impl HidDevice {
         let _guard = self
             .read_lock
             .lock()
-            .map_err(|_| io::Error::other("HID 读锁损坏"))?;
+            .map_err(|_| io::Error::other(crate::tr!(hid_hid_closed)))?;
         let size = self.input_len.max(64) as usize;
         let mut buf = vec![0u8; size];
         let mut read = 0u32;
@@ -344,7 +344,10 @@ impl HidDevice {
             return Ok(None);
         }
         if read == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "HID 已断开"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                crate::tr!(hid_hid_disconnected),
+            ));
         }
         buf.truncate(read as usize);
         Ok(Some(buf))
@@ -365,11 +368,11 @@ impl HidDevice {
         let _guard = self
             .write_lock
             .lock()
-            .map_err(|_| io::Error::other("HID 写锁损坏"))?;
+            .map_err(|_| io::Error::other(crate::tr!(hid_hid_not_opened_for_writing)))?;
         if data.is_empty() || data.len() > self.output_len as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "HID 输出长度无效",
+                crate::tr!(hid_invalid_hid_output_report_length),
             ));
         }
         let mut padded = vec![0u8; self.output_len as usize];
@@ -393,10 +396,16 @@ impl HidDevice {
             )
         };
         if !self.complete(ok, &mut op, &mut written, timeout_ms)? {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "HID 写入超时"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                crate::tr!(hid_hid_write_timed_out),
+            ));
         }
         if written as usize != padded.len() {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "HID 写入不完整"));
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                crate::tr!(hid_incomplete_hid_write),
+            ));
         }
         Ok(())
     }
@@ -468,12 +477,14 @@ impl HidDevice {
 
     pub fn feature_report(&self, id: u8, length: usize, timeout: u32) -> io::Result<Vec<u8>> {
         if !(2..=1024).contains(&length) {
-            return Err(io::Error::other("特性报告长度无效"));
+            return Err(io::Error::other(crate::tr!(
+                hid_invalid_feature_report_length
+            )));
         }
         let _guard = self
             .write_lock
             .lock()
-            .map_err(|_| io::Error::other("HID 写锁损坏"))?;
+            .map_err(|_| io::Error::other(crate::tr!(hid_hid_not_opened_for_writing)))?;
         let mut report = vec![0u8; length.max(self.feature_len as usize)];
         report[0] = id;
         let event = self.event()?;
@@ -499,11 +510,16 @@ impl HidDevice {
             )
         };
         if !self.complete(ok, &mut op, &mut bytes, timeout)? {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "特性报告读取超时"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                crate::tr!(hid_feature_report_read_timed_out),
+            ));
         }
         report.truncate(length);
         if report[0] != id || report[1..].iter().all(|&b| b == 0) {
-            return Err(io::Error::other("特性报告内容无效"));
+            return Err(io::Error::other(crate::tr!(
+                hid_invalid_feature_report_response_length
+            )));
         }
         Ok(report)
     }

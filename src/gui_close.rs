@@ -28,13 +28,14 @@ pub fn ask(parent: HWND) -> Result<Decision, String> {
 fn show(parent: HWND, callback: PFTASKDIALOGCALLBACK, data: isize) -> Result<Decision, String> {
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let title = wide("OpenDS");
-    let instruction = wide("关闭 OpenDS 窗口？");
-    let content =
-        wide("最小化到托盘会保持桥接与采集运行。\n退出将停止桥接、结束文件记录并恢复设备可见性。");
-    let tray = wide("最小化到托盘");
-    let exit = wide("退出 OpenDS");
-    let cancel = wide("取消");
-    let remember = wide("记住我的选项");
+    let instruction = wide(crate::tr!(gui_close_close_the_opends_window));
+    let content = wide(crate::tr!(
+        gui_close_minimizing_to_the_tray_keeps_bridging_and
+    ));
+    let tray = wide(crate::tr!(gui_minimize_to_tray));
+    let exit = wide(crate::tr!(gui_exit_opends));
+    let cancel = wide(crate::tr!(audio_test_view_cancel));
+    let remember = wide(crate::tr!(gui_close_remember_my_choice));
     let buttons = [
         TASKDIALOG_BUTTON {
             nButtonID: TRAY,
@@ -66,9 +67,9 @@ fn show(parent: HWND, callback: PFTASKDIALOGCALLBACK, data: isize) -> Result<Dec
     let mut checked = 0;
     let result = unsafe { TaskDialogIndirect(&config, &mut selected, null_mut(), &mut checked) };
     if result < 0 {
-        return Err(format!(
-            "无法打开关闭选项（0x{:08X}），请使用托盘菜单或侧栏按钮。",
-            result as u32
+        return Err(crate::tr!(
+            gui_close_could_not_open_close_options_0x_use,
+            code = format!("{:08X}", result as u32)
         ));
     }
     let choice = match selected {
@@ -113,7 +114,9 @@ pub fn smoke_test(parent: HWND) -> Result<(), String> {
             if decision.choice != expected
                 || decision.remember != (remember && expected != Choice::Cancel)
             {
-                return Err("关闭选项或记忆选项检查失败".into());
+                return Err(
+                    crate::tr!(gui_close_close_action_or_remember_choice_test_failed).into(),
+                );
             }
         }
     }
@@ -131,7 +134,7 @@ pub fn smoke_test(parent: HWND) -> Result<(), String> {
         0
     }
     if show(parent, Some(dismiss), 0)?.choice != Choice::Cancel {
-        return Err("取消关闭检查失败".into());
+        return Err(crate::tr!(gui_close_close_cancellation_test_failed).into());
     }
     Ok(())
 }

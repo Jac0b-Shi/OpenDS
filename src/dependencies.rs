@@ -73,33 +73,47 @@ pub fn inspect(hidhide_owned_healthy: bool) -> Status {
 }
 impl Status {
     pub fn summary(&self) -> String {
-        format!(
-            "USB/IP Win2 UDE：{}\r\nHidHide：{}\r\nlibVIIPER：{}\r\nOpus：{}\r\n配置：{}",
-            if self.usbip_service {
-                if self.usbip_tool {
-                    "服务与挂接工具可用"
+        crate::tr!(
+            dependencies_usb_ip_win2_ude_hidhide_libviiper_opus,
+            usbip = format!(
+                "{}",
+                if self.usbip_service {
+                    if self.usbip_tool {
+                        crate::tr!(dependencies_service_and_attachment_tool_available)
+                    } else {
+                        crate::tr!(dependencies_service_running_usbip_exe_is_missing)
+                    }
                 } else {
-                    "服务已运行，缺少 usbip.exe 主程序"
+                    crate::tr!(dependencies_not_running_or_not_installed_install_reboot)
                 }
-            } else {
-                "未运行或未安装，请安装后重启并重新检查"
-            },
-            match self.hidhide {
-                HidHideStatus::InUse => "已启用，正在隐藏物理手柄",
-                HidHideStatus::Accessible => "可访问",
-                HidHideStatus::Unavailable => "不可访问，请检查驱动或权限",
-            },
-            if self.viiper {
-                "可用"
-            } else {
-                "缺少配套 DLL，请放到 opends.exe 同目录"
-            },
-            if self.opus {
-                "可用"
-            } else {
-                "缺少 libopus-0.dll；音频和原生触觉不可用"
-            },
-            crate::config::Config::path().display()
+            ),
+            hidhide = format!(
+                "{}",
+                match self.hidhide {
+                    HidHideStatus::InUse =>
+                        crate::tr!(dependencies_enabled_hiding_the_physical_controller),
+                    HidHideStatus::Accessible => crate::tr!(dependencies_accessible),
+                    HidHideStatus::Unavailable =>
+                        crate::tr!(dependencies_not_accessible_check_driver_and_permissions),
+                }
+            ),
+            viiper = format!(
+                "{}",
+                if self.viiper {
+                    crate::tr!(dependencies_available)
+                } else {
+                    crate::tr!(dependencies_matching_dll_missing_place_it_beside_opends)
+                }
+            ),
+            opus = format!(
+                "{}",
+                if self.opus {
+                    crate::tr!(dependencies_available)
+                } else {
+                    crate::tr!(dependencies_libopus_0_dll_missing_audio_and_native)
+                }
+            ),
+            path = format!("{}", crate::config::Config::path().display())
         )
     }
 
@@ -126,9 +140,12 @@ pub struct Installation {
 }
 impl Installation {
     pub fn poll(&mut self) -> Result<Option<std::process::ExitStatus>, String> {
-        self.child
-            .try_wait()
-            .map_err(|e| format!("无法读取安装结果：{e}"))
+        self.child.try_wait().map_err(|e| {
+            crate::tr!(
+                dependencies_could_not_read_installation_result,
+                error = format!("{}", e)
+            )
+        })
     }
     pub fn log_tail(&self) -> String {
         use std::io::{Read, Seek, SeekFrom};
@@ -151,12 +168,14 @@ pub fn install(component: &str) -> Result<Installation, String> {
     let name = match component {
         "usbip" => "USB/IP Win2",
         "hidhide" => "HidHide",
-        _ => return Err("不支持的驱动组件".into()),
+        _ => return Err(crate::tr!(dependencies_unsupported_driver_component).into()),
     };
     let dir = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .parent()
-        .ok_or("无法获取程序目录")?
+        .ok_or(crate::tr!(
+            dependencies_could_not_locate_the_application_directory
+        ))?
         .to_owned();
     let mut script = dir.join("scripts/Install-Drivers.ps1");
     if !script.is_file() {
@@ -164,11 +183,13 @@ pub fn install(component: &str) -> Result<Installation, String> {
             .join("scripts/Install-Drivers.ps1");
     }
     if !script.is_file() {
-        return Err("缺少 scripts/Install-Drivers.ps1，请重新解压完整发布包。".into());
+        return Err(crate::tr!(dependencies_scripts_install_drivers_ps1_is_missing_extract).into());
     }
     let log_dir = std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
-        .ok_or("无法取得安装日志目录")?
+        .ok_or(crate::tr!(
+            dependencies_could_not_locate_the_installation_log_directory
+        ))?
         .join("OpenDS/logs");
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log_path = log_dir.join(format!("install-{component}.log"));
@@ -193,7 +214,12 @@ pub fn install(component: &str) -> Result<Installation, String> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .spawn()
-        .map_err(|e| format!("无法启动安装向导：{e}"))?;
+        .map_err(|e| {
+            crate::tr!(
+                dependencies_could_not_start_installer,
+                error = format!("{}", e)
+            )
+        })?;
     Ok(Installation {
         child,
         component: name,

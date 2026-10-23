@@ -43,7 +43,7 @@ impl Test {
         Self {
             shared: Arc::new(Mutex::new(State {
                 status: Status {
-                    message: "点击录音：倒数 3 秒后录制 5 秒。".into(),
+                    message: crate::tr!(audio_test_click_record_to_record_5_seconds_after).into(),
                     ..Default::default()
                 },
                 pcm: Arc::from([]),
@@ -65,7 +65,11 @@ fn status(shared: &Mutex<State>, message: impl Into<String>, busy: bool) {
 }
 fn countdown(shared: &Mutex<State>, cancel: &AtomicBool) -> bool {
     for second in (1..=3).rev() {
-        status(shared, format!("准备开始 · {second}"), true);
+        status(
+            shared,
+            crate::tr!(audio_test_starting_in, second = format!("{}", second)),
+            true,
+        );
         for _ in 0..50 {
             if cancel.load(Acquire) {
                 return false;
@@ -81,7 +85,7 @@ impl Test {
             .try_lock()
             .map(|s| s.status.clone())
             .unwrap_or(Status {
-                message: "处理中…".into(),
+                message: crate::tr!(audio_test_working).into(),
                 busy: true,
                 recorded: false,
                 source_recorded: false,
@@ -101,7 +105,11 @@ impl Test {
             if let Some(w) = self.worker.take() {
                 let _ = w.join();
             }
-            status(&self.shared, "已取消 / 已清除录音", false);
+            status(
+                &self.shared,
+                crate::tr!(audio_test_cancelled_ready_to_record_again),
+                false,
+            );
         }
     }
     pub fn start(&mut self, record: bool) -> Result<(), String> {
@@ -112,7 +120,7 @@ impl Test {
     }
     fn start_job(&mut self, record: bool, source_replay: bool) -> Result<(), String> {
         if self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
-            return Err("请先取消或等待当前测试结束".into());
+            return Err(crate::tr!(audio_test_cancel_the_current_test_and_wait_for).into());
         }
         if let Some(w) = self.worker.take() {
             let _ = w.join();
@@ -128,7 +136,9 @@ impl Test {
             }
             None
         } else {
-            let s = shared.lock().map_err(|_| "录音不可用")?;
+            let s = shared
+                .lock()
+                .map_err(|_| crate::tr!(audio_test_recording_cleared))?;
             Some(if source_replay {
                 s.source_pcm.clone()
             } else {
@@ -136,16 +146,16 @@ impl Test {
             })
         };
         if replay.as_ref().is_some_and(|p| p.is_empty()) {
-            return Err("请先录制一段声音".into());
+            return Err(crate::tr!(audio_test_record_some_audio_first).into());
         }
         status(
             &shared,
             if record {
-                "准备开始 · 3"
+                crate::tr!(audio_test_starting_in_3)
             } else if source_replay {
-                "正在回听蓝牙端 · 默认播放设备"
+                crate::tr!(audio_test_playing_bluetooth_source_through_the_default_playback)
             } else {
-                "正在回听 USB 端 · 默认播放设备"
+                crate::tr!(audio_test_playing_usb_capture_through_the_default_playback)
             },
             true,
         );
@@ -163,18 +173,14 @@ impl Test {
                         playback(replay.unwrap(), &cancel).map(|_| None)
                     };
                     if cancel.load(Acquire) {
-                        status(&shared, "已取消", false);
+                        status(&shared, crate::tr!(audio_test_cancelled), false);
                         return;
                     }
                     match result {
                         Ok(Some((pcm, source))) => {
                             let (zero_frames, longest, interior) = zero_runs(&pcm);
-                            crate::logging::record(&format!(
-                                "麦克风测试：采集 {} 帧；双声道全零 {} 帧，最长 {} 帧，内部至少 1ms 的零段 {} 个",
-                                pcm.len() / 2, zero_frames, longest, interior));
-                            crate::logging::record(&format!(
-                                "麦克风对照：蓝牙端 {} 帧，最长包间隔 {:.1}ms，诊断队列丢包 {}；USB 端 {} 帧",
-                                source.pcm.len() / 2, source.longest_gap_ms, source.dropped, pcm.len() / 2));
+                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_test_captured_frames_stereo_zero_frames, &crate::tr!(audio_test_microphone_test_captured_frames_stereo_zero_frames, frames = format!("{}", pcm.len() / 2), silent = format!("{}", zero_frames), longest = format!("{}", longest), bursts = format!("{}", interior)));
+                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_source_decoded_frames_longest_packet_gap, &crate::tr!(audio_test_microphone_source_decoded_frames_longest_packet_gap, frames = format!("{}", source.pcm.len() / 2), gap = format!("{:.1}", source.longest_gap_ms), gaps = format!("{}", source.dropped), device = format!("{}", pcm.len() / 2)));
                             let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                             let seconds = pcm.len() as f32 / (RATE * 2) as f32;
                             if let Ok(mut s) = shared.lock() {
@@ -184,27 +190,23 @@ impl Test {
                                 s.pcm = pcm.into();
                                 s.source_pcm = source.pcm.into();
                                 s.status = Status {
-                                    message: format!(
-                                        "录制 {seconds:.1} 秒 · 峰值 {:.1}%{}",
-                                        peak as f32 / 327.68,
-                                        if peak == 0 {
-                                            " · 未录到声音，请检查静音与麦克风设置"
+                                    message: crate::tr!(audio_test_recorded_s_peak, seconds = format!("{:.1}", seconds), peak = format!("{:.1}", peak as f32 / 327.68), hint = format!("{}", if peak == 0 {
+                                            crate::tr!(audio_test_no_audible_signal_recorded_check_mute_and)
                                         } else {
-                                            " · 请分别回听两端"
-                                        }
-                                    ),
+                                            crate::tr!(audio_test_ready_to_play_back)
+                                        })),
                                     busy: false,
                                     recorded: !s.pcm.is_empty(),
                                     source_recorded: !s.source_pcm.is_empty(),
                                 };
                             }
                         }
-                        Ok(None) => status(&shared, "回听结束", false),
+                        Ok(None) => status(&shared, crate::tr!(audio_test_playback_finished), false),
                         Err(e) => status(&shared, e, false),
                     }
                 })
                 .map_err(|e| {
-                    status(&self.shared, "无法启动音频测试", false);
+                    status(&self.shared, crate::tr!(audio_test_could_not_start_the_audio_test), false);
                     e.to_string()
                 })?,
         );
@@ -263,9 +265,11 @@ fn check(code: u32, operation: &str) -> Result<(), String> {
             .iter()
             .position(|c| *c == 0)
             .unwrap_or(message.len());
-        Err(format!(
-            "{operation}失败：{}（{code}）",
-            String::from_utf16_lossy(&message[..end])
+        Err(crate::tr!(
+            audio_test_failed,
+            operation = format!("{}", operation),
+            error = format!("{}", String::from_utf16_lossy(&message[..end])),
+            code = format!("{}", code)
         ))
     }
 }
@@ -295,9 +299,9 @@ fn capture(
         }
         if ids.len() != 1 {
             return Err(if ids.is_empty() {
-                "未找到 DualSense 麦克风，请先连接桥接"
+                crate::tr!(audio_test_no_dualsense_microphone_found_connect_the_controller)
             } else {
-                "检测到多个 DualSense 麦克风，请仅保留待测设备"
+                crate::tr!(audio_test_multiple_dualsense_microphones_found_disconnect_the_other)
             }
             .into());
         }
@@ -305,40 +309,48 @@ fn capture(
         let mut handle = null_mut();
         check(
             waveInOpen(&mut handle, ids[0], &format(), 0, 0, 0),
-            "打开 DualSense 麦克风",
+            crate::tr!(audio_test_open_dualsense_microphone),
         )?;
         device.input = handle;
         check(
             waveInPrepareHeader(handle, &mut *device.header, device.header_size()),
-            "准备录音缓冲",
+            crate::tr!(audio_test_prepare_recording_buffer),
         )?;
         device.prepared = true;
         check(
             waveInAddBuffer(handle, &mut *device.header, device.header_size()),
-            "提交录音缓冲",
+            crate::tr!(audio_test_submit_recording_buffer),
         )?;
         let recording = source.begin();
-        check(waveInStart(handle), "启动录音")?;
+        check(waveInStart(handle), crate::tr!(audio_test_start_recording))?;
         let started = Instant::now();
         while !device.done() && !cancel.load(Acquire) {
             if started.elapsed() > Duration::from_secs(SECONDS as u64 + 2) {
-                return Err("录音超时：未收到完整的 USB 麦克风数据".into());
+                return Err(
+                    crate::tr!(audio_test_recording_timed_out_no_complete_usb_microphone).into(),
+                );
             }
             status(
                 shared,
-                format!(
-                    "正在录音 · 剩余 {} 秒",
-                    SECONDS.saturating_sub(started.elapsed().as_secs() as usize)
+                crate::tr!(
+                    audio_test_recording_seconds_remaining,
+                    seconds = format!(
+                        "{}",
+                        SECONDS.saturating_sub(started.elapsed().as_secs() as usize)
+                    )
                 ),
                 true,
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        check(waveInReset(handle), "结束录音")?;
-        crate::logging::record(&format!(
-            "麦克风录音耗时：{:.3}s",
-            started.elapsed().as_secs_f64()
-        ));
+        check(waveInReset(handle), crate::tr!(audio_test_finish_recording))?;
+        crate::logging::record_message(
+            crate::i18n::MessageId::audio_test_microphone_recording_duration_s,
+            &crate::tr!(
+                audio_test_microphone_recording_duration_s,
+                seconds = format!("{:.3}", started.elapsed().as_secs_f64())
+            ),
+        );
         let count = (device.header.dwBytesRecorded as usize / 2).min(device.buffer.len());
         device.finish()?;
         let mut pcm = Vec::new();
@@ -355,22 +367,22 @@ fn playback(pcm: Arc<[i16]>, cancel: &AtomicBool) -> Result<(), String> {
         let mut handle = null_mut();
         check(
             waveOutOpen(&mut handle, WAVE_MAPPER, &format(), 0, 0, 0),
-            "打开默认播放设备",
+            crate::tr!(audio_test_open_default_playback_device),
         )?;
         device.output = handle;
         check(
             waveOutPrepareHeader(handle, &mut *device.header, device.header_size()),
-            "准备回听缓冲",
+            crate::tr!(audio_test_prepare_playback_buffer),
         )?;
         device.prepared = true;
         check(
             waveOutWrite(handle, &mut *device.header, device.header_size()),
-            "开始回听",
+            crate::tr!(audio_test_start_playback),
         )?;
         let started = Instant::now();
         while !device.done() && !cancel.load(Acquire) {
             if started.elapsed() > Duration::from_secs(8) {
-                return Err("回听超时".into());
+                return Err(crate::tr!(audio_test_playback_timed_out).into());
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -406,27 +418,39 @@ impl Wave {
     fn finish(&mut self) -> Result<(), String> {
         unsafe {
             if !self.input.is_null() {
-                check(waveInReset(self.input), "停止录音")?;
+                check(
+                    waveInReset(self.input),
+                    crate::tr!(audio_test_stop_recording),
+                )?;
                 if self.prepared {
                     check(
                         waveInUnprepareHeader(self.input, &mut *self.header, self.header_size()),
-                        "释放录音缓冲",
+                        crate::tr!(audio_test_release_recording_buffer),
                     )?;
                     self.prepared = false;
                 }
-                check(waveInClose(self.input), "关闭麦克风")?;
+                check(
+                    waveInClose(self.input),
+                    crate::tr!(audio_test_close_microphone),
+                )?;
                 self.input = null_mut();
             }
             if !self.output.is_null() {
-                check(waveOutReset(self.output), "停止回听")?;
+                check(
+                    waveOutReset(self.output),
+                    crate::tr!(audio_test_stop_playback),
+                )?;
                 if self.prepared {
                     check(
                         waveOutUnprepareHeader(self.output, &mut *self.header, self.header_size()),
-                        "释放回听缓冲",
+                        crate::tr!(audio_test_release_playback_buffer),
                     )?;
                     self.prepared = false;
                 }
-                check(waveOutClose(self.output), "关闭播放设备")?;
+                check(
+                    waveOutClose(self.output),
+                    crate::tr!(audio_test_close_playback_device),
+                )?;
                 self.output = null_mut();
             }
         }
@@ -449,7 +473,10 @@ impl Drop for Wave {
                 std::mem::replace(&mut self.header, Box::new(unsafe { std::mem::zeroed() }));
             std::mem::forget(header);
             std::mem::forget(std::mem::take(&mut self.buffer));
-            crate::logging::record("音频驱动未返回测试缓冲；已保留缓冲避免释放仍被驱动使用的内存");
+            crate::logging::record_message(
+                crate::i18n::MessageId::audio_test_the_audio_driver_did_not_return_the,
+                &crate::tr!(audio_test_the_audio_driver_did_not_return_the),
+            );
         }
     }
 }

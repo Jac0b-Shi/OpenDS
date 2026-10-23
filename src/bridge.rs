@@ -36,6 +36,15 @@ pub struct BridgeState {
     logs: Mutex<VecDeque<String>>,
 }
 impl BridgeState {
+    pub fn log_message(&self, id: crate::i18n::MessageId, message: impl Into<String>) {
+        self.log(format!("[{}] {}", id.key(), message.into()));
+    }
+    pub fn error_message(&self, id: crate::i18n::MessageId, message: String) {
+        self.log_message(id, message.clone());
+        if let Ok(mut error) = self.last_error.lock() {
+            *error = Some(message);
+        }
+    }
     pub fn log(&self, s: impl Into<String>) {
         let s = crate::logging::bounded(&s.into());
         eprintln!("{s}");
@@ -54,7 +63,7 @@ impl BridgeState {
             .unwrap_or_default()
     }
     pub fn error(&self, s: String) {
-        self.log(&s);
+        self.log(format!("[bridge-error] {s}"));
         if let Ok(mut e) = self.last_error.lock() {
             *e = Some(s);
         }
@@ -77,21 +86,27 @@ impl BridgeController {
     pub fn start(&mut self, cfg: Config, limit: Option<Duration>) -> Result<(), String> {
         self.poll();
         if self.worker.is_some() {
-            return Err("桥接已运行或正在停止".into());
+            return Err(crate::tr!(bridge_bridging_is_already_running_or_stopping).into());
         }
         cfg.validate()?;
         if !viiper::is_available() {
-            return Err("未找到配套 libVIIPER.dll，请先检查依赖。".into());
+            return Err(
+                crate::tr!(bridge_matching_libviiper_dll_not_found_check_dependencies).into(),
+            );
         }
         if cfg.microphone_enabled
             && (!viiper::supports_microphone() || crate::opus::LibOpusDecoder::new().is_none())
         {
-            return Err("配套运行库不支持麦克风转发；请更新 DLL 或关闭麦克风设置。".into());
+            return Err(
+                crate::tr!(bridge_the_runtime_does_not_support_microphone_forwarding).into(),
+            );
         }
         if (cfg.audio_enabled || cfg.haptics_enabled || cfg.microphone_enabled)
             && crate::opus::LibOpusEncoder::with_complexity(cfg.opus_complexity).is_none()
         {
-            return Err("Opus 编码器不可用；请安装配套运行库，或关闭音频和原生触觉转发。".into());
+            return Err(
+                crate::tr!(bridge_opus_encoder_unavailable_install_the_matching_runtime).into(),
+            );
         }
         let state = Arc::new(BridgeState {
             monitor: self.state.monitor.clone(),
@@ -108,7 +123,7 @@ impl BridgeController {
                     }));
                     match result {
                         Ok(Err(e)) => state.error(e),
-                        Err(_) => state.error("桥接线程异常；已执行资源清理，请检查日志。".into()),
+                        Err(_) => state.error_message(crate::i18n::MessageId::bridge_bridge_thread_failed_unexpectedly_resources_have_been, crate::tr!(bridge_bridge_thread_failed_unexpectedly_resources_have_been).into()),
                         _ => {}
                     }
                     state.connected.store(false, Ordering::Release);
@@ -116,11 +131,11 @@ impl BridgeController {
                     state.monitor.reset();
                     state.hidhide_healthy.store(false, Ordering::Release);
                     state.running.store(false, Ordering::Release);
-                    state.log("桥接已停止");
+                    state.log_message(crate::i18n::MessageId::bridge_bridge_stopped, crate::tr!(bridge_bridge_stopped));
                 })
                 .map_err(|e| {
                     self.state.running.store(false, Ordering::Release);
-                    format!("启动桥接线程失败：{e}")
+                    crate::tr!(bridge_could_not_start_bridge_thread, error = format!("{}", e))
                 })?,
         );
         Ok(())
@@ -241,8 +256,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.device.send_raw_report(&report::neutral_usb_report());
         if !self.device.clear_callbacks() {
-            self.state
-                .log("部分回调注销失败；回调入口已隔离，随后移除虚拟设备");
+            self.state.log_message(
+                crate::i18n::MessageId::bridge_some_callback_removals_failed_callbacks_have_been,
+                crate::tr!(bridge_some_callback_removals_failed_callbacks_have_been),
+            );
         }
         if let Ok(mut g) = CALLBACKS.write() {
             if g.as_ref().is_some_and(|t| t.handle == self.device.handle()) {
@@ -252,7 +269,7 @@ impl Drop for Session {
         self.output_running.store(false, Ordering::Release);
         if let Some(h) = self.output.take() {
             if h.join().is_err() {
-                self.state.error("输出线程异常，已停止会话".into());
+                self.state.error_message(crate::i18n::MessageId::bridge_output_thread_failed_unexpectedly_stopping_the_session, crate::tr!(bridge_output_thread_failed_unexpectedly_stopping_the_session).into());
             }
         }
         if let Some(port) = self.ude_port.take() {
@@ -261,8 +278,10 @@ impl Drop for Session {
             }
         }
         if !self.device.remove() {
-            self.state
-                .error("移除虚拟设备失败；请检查 UDE 驱动状态".into());
+            self.state.error_message(
+                crate::i18n::MessageId::bridge_could_not_remove_virtual_device_check_the,
+                crate::tr!(bridge_could_not_remove_virtual_device_check_the).into(),
+            );
         }
         if let Some(mut h) = self.hider.take() {
             if let Err(e) = h.restore() {
@@ -298,10 +317,15 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
             .find(|d| d.is_dualsense_bluetooth());
         let Some(physical) = physical else {
             if !cfg.reconnect {
-                return Err("未找到指定的蓝牙 DualSense；请检查连接和 HidHide 白名单。".into());
+                return Err(
+                    crate::tr!(bridge_the_selected_bluetooth_dualsense_was_not_found).into(),
+                );
             }
             if !waiting {
-                state.log("等待蓝牙 DualSense 连接…");
+                state.log_message(
+                    crate::i18n::MessageId::bridge_waiting_for_bluetooth_dualsense,
+                    crate::tr!(bridge_waiting_for_bluetooth_dualsense),
+                );
                 waiting = true;
             }
             wait_retry(started, limit, state);
@@ -324,7 +348,10 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
                 // 可恢复的断线留在日志中；不污染最终退出码或覆盖清理失败。
                 state.log(e);
                 state.reconnects.fetch_add(1, Ordering::Relaxed);
-                state.log("已释放输入，等待重新连接");
+                state.log_message(
+                    crate::i18n::MessageId::bridge_input_released_waiting_to_reconnect,
+                    crate::tr!(bridge_input_released_waiting_to_reconnect),
+                );
                 wait_retry(started, limit, state);
             }
         }
@@ -339,10 +366,13 @@ fn run_session(
     started: Instant,
     limit: Option<Duration>,
 ) -> Result<(), String> {
-    state.log(format!(
-        "连接 PID={:04X}，创建虚拟 USB 设备…",
-        physical.product_id
-    ));
+    state.log_message(
+        crate::i18n::MessageId::bridge_physical_pid_creating_a_virtual_usb_device,
+        crate::tr!(
+            bridge_physical_pid_creating_a_virtual_usb_device,
+            pid = format!("{:04X}", physical.product_id)
+        ),
+    );
     let mut features = Vec::new();
     for (id, length) in [(0x05, 41), (0x09, 20), (0x20, 64)] {
         let mut report = None;
@@ -356,14 +386,30 @@ fn run_session(
                         report = Some(usb);
                         break;
                     }
-                    state.log(format!("特性 0x{id:02X} 蓝牙 CRC 无效，重试…"));
+                    state.log_message(
+                        crate::i18n::MessageId::bridge_feature_0x_has_an_invalid_bluetooth_crc,
+                        crate::tr!(
+                            bridge_feature_0x_has_an_invalid_bluetooth_crc,
+                            report = format!("{:02X}", id)
+                        ),
+                    );
                 }
-                Err(e) => state.log(format!("读取特性 0x{id:02X} 失败：{e}，重试…")),
+                Err(e) => state.log_message(
+                    crate::i18n::MessageId::bridge_could_not_read_feature_0x_retrying,
+                    crate::tr!(
+                        bridge_could_not_read_feature_0x_retrying,
+                        report = format!("{:02X}", id),
+                        error = format!("{}", e)
+                    ),
+                ),
             }
         }
-        features.push(
-            report.ok_or_else(|| format!("无法取得真实特性 0x{id:02X}；未创建不完整的虚拟身份"))?,
-        );
+        features.push(report.ok_or_else(|| {
+            crate::tr!(
+                bridge_could_not_obtain_physical_feature_0x_no,
+                report = format!("{:02X}", id)
+            )
+        })?);
     }
     let firmware = Some(u16::from_le_bytes([features[2][44], features[2][45]]));
     let mac = features[1][1..7]
@@ -373,7 +419,7 @@ fn run_session(
         .collect::<Vec<_>>()
         .join(":");
     let server = viiper::Viiper::start(&format!("127.0.0.1:{}", cfg.port))
-        .ok_or("USB 服务启动失败，请检查 UDE 驱动和端口占用")?;
+        .ok_or(crate::tr!(bridge_could_not_start_the_usb_server_check))?;
     crate::attach::cleanup_owned(cfg.port, server.bus_id(), || expired(started, limit, state))?;
     let pid = if physical.product_id == viiper::PID_DUALSENSE_EDGE && !cfg.edge_as_ds {
         viiper::PID_DUALSENSE_EDGE
@@ -383,9 +429,9 @@ fn run_session(
     let serial = physical.serial_number();
     let device = server
         .create_dualsense_with_identity(viiper::VID_SONY, pid, false, serial.as_deref(), Some(&mac))
-        .ok_or("创建虚拟 DualSense 失败")?;
+        .ok_or(crate::tr!(bridge_could_not_create_virtual_dualsense))?;
     if pid == viiper::PID_DUALSENSE && !device.use_physical_usb_profile() {
-        return Err("配套 VIIPER 缺少真机 USB 描述符配置，请使用当前发布包中的 DLL".into());
+        return Err(crate::tr!(bridge_viiper_does_not_support_the_usb_audio).into());
     }
     let audio = AudioSession::new(cfg.buffer as usize);
     let _ = audio.monitor.set(state.monitor.clone());
@@ -406,13 +452,21 @@ fn run_session(
         .store(cfg.microphone_gain_db as u32, Ordering::Relaxed);
     let vibration_v2 = crate::output::uses_vibration_v2(physical.product_id, firmware);
     audio.vibration_v2.store(vibration_v2, Ordering::Relaxed);
-    state.log(format!(
-        "真实手柄固件特性={}，震动协议={}",
-        firmware
-            .map(|v| format!("{}.{:02}", v >> 8, v & 255))
-            .unwrap_or_else(|| "读取失败，按兼容模式处理".into()),
-        if vibration_v2 { "v2" } else { "v1" }
-    ));
+    state.log_message(
+        crate::i18n::MessageId::bridge_physical_controller_firmware_audio_protocol,
+        crate::tr!(
+            bridge_physical_controller_firmware_audio_protocol,
+            firmware = format!(
+                "{}",
+                firmware
+                    .map(|v| format!("{}.{:02}", v >> 8, v & 255))
+                    .unwrap_or_else(
+                        || crate::tr!(bridge_read_failed_using_compatibility_mode).into()
+                    )
+            ),
+            protocol = format!("{}", if vibration_v2 { "v2" } else { "v1" })
+        ),
+    );
     let mut session = Session {
         device,
         _server: server,
@@ -424,16 +478,23 @@ fn run_session(
     };
     for report in &features {
         if !session.device.set_feature_report(report) {
-            return Err(format!("配套 VIIPER 无法设置真实特性 0x{:02X}", report[0]));
+            return Err(crate::tr!(
+                bridge_viiper_could_not_set_physical_feature_0x,
+                report = format!("{:02X}", report[0])
+            ));
         }
     }
     session
         .device
         .send_raw_report(&report::neutral_usb_report());
-    state.log("已校验蓝牙 CRC 并转换为 USB 特性，预载真实校准、配对与固件；随后挂接 USB");
+    state.log_message(
+        crate::i18n::MessageId::bridge_bluetooth_crc_verified_calibration_pairing_and_firmware,
+        crate::tr!(bridge_bluetooth_crc_verified_calibration_pairing_and_firmware),
+    );
     if cfg.hide_device {
-        let id = hidhide::interface_path_to_instance_id(&physical.path)
-            .ok_or("无法识别物理设备实例 ID")?;
+        let id = hidhide::interface_path_to_instance_id(&physical.path).ok_or(crate::tr!(
+            bridge_could_not_identify_the_physical_device_instance
+        ))?;
         session.hider = Some(hidhide::Hider::engage(&[id])?);
         state.hidhide_healthy.store(true, Ordering::Release);
     }
@@ -444,19 +505,24 @@ fn run_session(
     let mut enable = [0u8; 48];
     enable[0] = 2;
     if let Some(r) = crate::output::usb_to_bluetooth(&enable, 0) {
-        physical
-            .write_result(&r, 200)
-            .map_err(|e| format!("激活完整模式失败：{e}"))?;
+        physical.write_result(&r, 200).map_err(|e| {
+            crate::tr!(
+                bridge_could_not_enable_full_input_mode,
+                error = format!("{}", e)
+            )
+        })?;
     }
     {
-        let mut g = CALLBACKS.write().map_err(|_| "回调注册锁损坏")?;
+        let mut g = CALLBACKS
+            .write()
+            .map_err(|_| crate::tr!(bridge_callback_registration_incomplete))?;
         *g = Some(CallbackTarget {
             handle: session.device.handle(),
             session: audio.clone(),
         });
     }
     if !session.device.set_output_callback(on_output) {
-        return Err("libVIIPER 缺少输出回调；请使用配套版本".into());
+        return Err(crate::tr!(bridge_libviiper_does_not_support_output_callbacks_use).into());
     }
     let mut audio_subscribed = cfg.audio_enabled || cfg.haptics_enabled || state.monitor.wants(0);
     if audio_subscribed {
@@ -464,7 +530,7 @@ fn run_session(
             || !session.device.set_haptics_callback(on_haptics)
             || !session.device.set_reset_callback(on_reset)
         {
-            return Err("libVIIPER 缺少音频/触觉/流重置回调；请使用配套版本".into());
+            return Err(crate::tr!(bridge_libviiper_does_not_support_audio_haptics_or).into());
         }
     }
     session.output = Some(
@@ -474,7 +540,12 @@ fn run_session(
             session.output_running.clone(),
             cfg.clone(),
         )
-        .map_err(|e| format!("输出线程启动失败：{e}"))?,
+        .map_err(|e| {
+            crate::tr!(
+                bridge_could_not_start_output_thread,
+                error = format!("{}", e)
+            )
+        })?,
     );
     session.ude_port = Some(
         session
@@ -484,7 +555,10 @@ fn run_session(
     state.connected.store(true, Ordering::Release);
     state.monitor.reset();
     state.monitor.connected.store(true, Ordering::Release);
-    state.log("桥接已连接；输入、输出、音频使用独立调度");
+    state.log_message(
+        crate::i18n::MessageId::bridge_bridge_connected_input_output_and_audio_are,
+        crate::tr!(bridge_bridge_connected_input_output_and_audio_are),
+    );
     let mut last_valid = Instant::now();
     let mut last_stats = Instant::now();
     let mut last_hidhide_check = Instant::now();
@@ -499,7 +573,7 @@ fn run_session(
         .microphone_buffer_ms
         .store(mic_buffer_ms, Ordering::Relaxed);
     if cfg.microphone_enabled && !session.device.microphone_buffer(mic_buffer_ms) {
-        return Err("麦克风缓冲配置失败，请使用配套 libVIIPER.dll".into());
+        return Err(crate::tr!(bridge_could_not_configure_microphone_buffering_use_the).into());
     }
     state.monitor.mic_buffered.store(0, Ordering::Relaxed);
     state.monitor.mic_underruns.store(0, Ordering::Relaxed);
@@ -507,7 +581,8 @@ fn run_session(
     let mut mic_stats_at = Instant::now();
     let mut gyro = [0i16; 3];
     let mut microphone = if cfg.microphone_enabled {
-        let mut mic = crate::microphone::Microphone::new().ok_or("麦克风解码器不可用")?;
+        let mut mic = crate::microphone::Microphone::new()
+            .ok_or(crate::tr!(bridge_could_not_create_microphone_decoder))?;
         mic.set_test_capture(state.monitor.mic_test_capture.clone());
         Some(mic)
     } else {
@@ -520,15 +595,17 @@ fn run_session(
                 .device
                 .monitor_audio_callbacks(subscribe, on_audio, on_haptics, on_reset)
             {
-                return Err("更新音频监视订阅失败".into());
+                return Err(crate::tr!(bridge_could_not_update_audio_monitor_subscription).into());
             }
             audio_subscribed = subscribe;
         }
         if audio.stats.failed.load(Ordering::Acquire) {
-            return Err("连续写入物理手柄失败".into());
+            return Err(
+                crate::tr!(bridge_repeated_writes_to_the_physical_controller_failed).into(),
+            );
         }
         if last_valid.elapsed() >= Duration::from_secs(3) {
-            return Err("手柄连续 3 秒没有有效输入，已判定断线".into());
+            return Err(crate::tr!(bridge_no_valid_controller_input_for_3_seconds).into());
         }
         match physical.read_result(20) {
             Ok(Some(data)) => {
@@ -545,7 +622,13 @@ fn run_session(
                     let wanted = state.monitor.microphone_buffer_ms.load(Ordering::Relaxed);
                     if wanted != mic_buffer_ms && session.device.microphone_buffer(wanted) {
                         mic_buffer_ms = wanted;
-                        state.log(format!("麦克风安全缓冲已调整为 {wanted} ms"));
+                        state.log_message(
+                            crate::i18n::MessageId::bridge_microphone_safety_buffer_changed_to_ms,
+                            crate::tr!(
+                                bridge_microphone_safety_buffer_changed_to_ms,
+                                milliseconds = format!("{}", wanted)
+                            ),
+                        );
                     }
                     if mic_stats_at.elapsed() >= Duration::from_millis(250) {
                         if let Some(s) = session.device.microphone_stats() {
@@ -608,7 +691,7 @@ fn run_session(
                 }
                 if let Some(usb) = report.usb_payload() {
                     if !session.device.send_raw_report(&usb) {
-                        return Err("虚拟设备输入提交失败".into());
+                        return Err(crate::tr!(bridge_could_not_submit_virtual_device_input).into());
                     }
                     state.frames_out.fetch_add(1, Ordering::Relaxed);
                     last_valid = Instant::now();
@@ -618,10 +701,15 @@ fn run_session(
             }
             Ok(None) => {
                 if last_valid.elapsed() >= Duration::from_secs(3) {
-                    return Err("手柄连续 3 秒没有有效输入，已判定断线".into());
+                    return Err(crate::tr!(bridge_no_valid_controller_input_for_3_seconds).into());
                 }
             }
-            Err(e) => return Err(format!("蓝牙手柄读取失败：{e}")),
+            Err(e) => {
+                return Err(crate::tr!(
+                    bridge_could_not_read_bluetooth_controller,
+                    error = format!("{}", e)
+                ))
+            }
         }
         if last_stats.elapsed() >= Duration::from_millis(250) {
             if last_hidhide_check.elapsed() >= Duration::from_secs(5) {
@@ -648,27 +736,41 @@ fn run_session(
             old_outputs = outputs;
             last_stats = Instant::now();
             if diagnostic.elapsed() >= Duration::from_secs(60) {
-                state.log(format!(
-                    "麦克风：音频标记={} 头={:02X} Opus包={} 解码样本={} USB接收帧={}",
-                    state.monitor.mic_tagged.load(Ordering::Relaxed),
-                    state.monitor.mic_prefix.load(Ordering::Relaxed),
-                    state.monitor.mic_packets.load(Ordering::Relaxed),
-                    state.monitor.mic_samples.load(Ordering::Relaxed),
-                    state.monitor.mic_usb_frames.load(Ordering::Relaxed)
-                ));
+                state.log_message(crate::i18n::MessageId::bridge_microphone_audio_flags_header_opus_packets_decoded, crate::tr!(bridge_microphone_audio_flags_header_opus_packets_decoded, flags = format!("{}", state.monitor.mic_tagged.load(Ordering::Relaxed)), header = format!("{:02X}", state.monitor.mic_prefix.load(Ordering::Relaxed)), packets = format!("{}", state.monitor.mic_packets.load(Ordering::Relaxed)), samples = format!("{}", state.monitor.mic_samples.load(Ordering::Relaxed)), frames = format!("{}", state.monitor.mic_usb_frames.load(Ordering::Relaxed))));
                 let raw = audio
                     .stats
                     .last_output
                     .load(Ordering::Relaxed)
                     .to_le_bytes();
-                state.log(format!("诊断：完整输入={full} 兼容输入={simple} 陀螺仪={gyro:?}；游戏反馈={callbacks} 非零震动={} 原生触觉={} 音频回调={}；最近标志={:02X} 马达=({}, {}) 蓝牙发送={outputs} 写失败={}",audio.stats.rumble_updates.load(Ordering::Relaxed),audio.stats.haptics_nonzero.load(Ordering::Relaxed),audio.stats.pcm_callbacks.load(Ordering::Relaxed),raw[0],raw[3],raw[2],audio.stats.write_fail.load(Ordering::Relaxed)));
-                state.log(format!(
-                    "音频批次：最大={}B 拒绝={} 非零={} 编码失败={}",
-                    audio.stats.pcm_max_bytes.load(Ordering::Relaxed),
-                    audio.stats.pcm_rejected.load(Ordering::Relaxed),
-                    audio.stats.pcm_nonzero.load(Ordering::Relaxed),
-                    audio.stats.encode_fail.load(Ordering::Relaxed)
-                ));
+                state.log_message(
+                    crate::i18n::MessageId::bridge_diagnostics_full_input_simple_input_gyro_game,
+                    crate::tr!(
+                        bridge_diagnostics_full_input_simple_input_gyro_game,
+                        full = format!("{}", full),
+                        simple = format!("{}", simple),
+                        gyro = format!("{:?}", gyro),
+                        callbacks = format!("{}", callbacks),
+                        rumble = format!("{}", audio.stats.rumble_updates.load(Ordering::Relaxed)),
+                        haptics =
+                            format!("{}", audio.stats.haptics_nonzero.load(Ordering::Relaxed)),
+                        audio = format!("{}", audio.stats.pcm_callbacks.load(Ordering::Relaxed)),
+                        flags = format!("{:02X}", raw[0]),
+                        motor_left = format!("{}", raw[3]),
+                        motor_right = format!("{}", raw[2]),
+                        outputs = format!("{}", outputs),
+                        failures = format!("{}", audio.stats.write_fail.load(Ordering::Relaxed))
+                    ),
+                );
+                state.log_message(
+                    crate::i18n::MessageId::bridge_audio_batches_max_b_rejected_nonzero_encoding,
+                    crate::tr!(
+                        bridge_audio_batches_max_b_rejected_nonzero_encoding,
+                        bytes = format!("{}", audio.stats.pcm_max_bytes.load(Ordering::Relaxed)),
+                        rejected = format!("{}", audio.stats.pcm_rejected.load(Ordering::Relaxed)),
+                        nonzero = format!("{}", audio.stats.pcm_nonzero.load(Ordering::Relaxed)),
+                        failures = format!("{}", audio.stats.encode_fail.load(Ordering::Relaxed))
+                    ),
+                );
                 diagnostic = Instant::now();
             }
         }

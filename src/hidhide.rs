@@ -295,16 +295,20 @@ fn parse_backup(text: &str) -> Result<Backup, String> {
     for line in text.lines() {
         if let Some(v) = line.strip_prefix("active=") {
             if active_seen {
-                return Err("HidHide 恢复日志有重复 active 项".into());
+                return Err(
+                    crate::tr!(hidhide_duplicate_active_key_in_hidhide_recovery_journal).into(),
+                );
             }
             active_seen = true;
             b.active = match v {
                 "1" => true,
                 "0" => false,
-                _ => return Err("HidHide 恢复日志损坏".into()),
+                _ => return Err(crate::tr!(hidhide_empty_hidhide_recovery_journal).into()),
             };
         } else if let Some(v) = line.strip_prefix("version=") {
-            b.version = v.parse().map_err(|_| "HidHide 恢复日志版本无效")?;
+            b.version = v
+                .parse()
+                .map_err(|_| crate::tr!(hidhide_invalid_hidhide_recovery_journal_version))?;
         } else if let Some(v) = line.strip_prefix("dev=") {
             if !v.is_empty() {
                 b.blacklist.push(v.to_owned());
@@ -320,17 +324,24 @@ fn parse_backup(text: &str) -> Result<Backup, String> {
         }
     }
     if !active_seen || !matches!(b.version, 1 | 2) {
-        return Err("HidHide 恢复日志不完整或版本不支持；已保留文件".into());
+        return Err(
+            crate::tr!(hidhide_corrupt_or_unsupported_hidhide_recovery_journal_file).into(),
+        );
     }
     Ok(b)
 }
 
 pub fn load_backup() -> Result<Option<Backup>, String> {
-    let p = backup_path().ok_or("LOCALAPPDATA 未设置，无法定位 HidHide 恢复日志")?;
+    let p = backup_path().ok_or(crate::tr!(
+        hidhide_localappdata_is_not_set_cannot_locate_the
+    ))?;
     match std::fs::read_to_string(p) {
         Ok(s) => parse_backup(&s).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("读取 HidHide 恢复日志失败：{e}")),
+        Err(e) => Err(crate::tr!(
+            hidhide_could_not_read_hidhide_recovery_journal,
+            error = format!("{}", e)
+        )),
     }
 }
 
@@ -369,9 +380,15 @@ impl HideDriver for HidHide {
     }
 }
 fn restore_state(h: &impl HideDriver, b: &Backup) -> Result<(), String> {
-    let current = h.black().ok_or("读取 HidHide 黑名单失败；恢复日志已保留")?;
-    let white = h.white().ok_or("读取 HidHide 白名单失败；恢复日志已保留")?;
-    let active = h.active().ok_or("读取 HidHide 开关失败；恢复日志已保留")?;
+    let current = h.black().ok_or(crate::tr!(
+        hidhide_could_not_read_hidhide_device_blacklist_recovery
+    ))?;
+    let white = h.white().ok_or(crate::tr!(
+        hidhide_could_not_read_hidhide_application_whitelist_recovery
+    ))?;
+    let active = h.active().ok_or(crate::tr!(
+        hidhide_could_not_read_hidhide_state_recovery_journal
+    ))?;
     // v2 只撤销 OpenDS 自己新增的条目，保留用户运行期间的增删。
     let target: Vec<String> = if b.version == 1 {
         b.blacklist.clone()
@@ -394,13 +411,16 @@ fn restore_state(h: &impl HideDriver, b: &Backup) -> Result<(), String> {
         active
     };
     if !h.write_black(&target) || !h.write_white(&target_white) || !h.write_active(target_active) {
-        return Err("HidHide 恢复写入失败；恢复日志已保留".into());
+        return Err(crate::tr!(hidhide_could_not_restore_hidhide_state_recovery_journal).into());
     }
     if !h.black().is_some_and(|v| same(&v, &target))
         || !h.white().is_some_and(|v| same(&v, &target_white))
         || h.active() != Some(target_active)
     {
-        return Err("HidHide 恢复回读不一致；恢复日志已保留".into());
+        return Err(crate::tr!(
+            hidhide_hidhide_recovery_verification_failed_recovery_journal_retained
+        )
+        .into());
     }
     Ok(())
 }
@@ -412,14 +432,25 @@ pub fn recover_if_needed() -> Result<Option<Backup>, String> {
     let Some(b) = load_backup()? else {
         return Ok(None);
     };
-    let hh = HidHide::open().ok_or("HidHide 不可用，尚不能恢复；恢复日志已保留")?;
-    restore_journal(&hh, &b, &backup_path().ok_or("恢复路径不可用")?)?;
+    let hh = HidHide::open().ok_or(crate::tr!(
+        hidhide_hidhide_unavailable_cannot_restore_yet_recovery_journal
+    ))?;
+    restore_journal(
+        &hh,
+        &b,
+        &backup_path().ok_or(crate::tr!(hidhide_could_not_read_the_recovery_path))?,
+    )?;
     Ok(Some(b))
 }
 
 fn restore_journal(h: &impl HideDriver, b: &Backup, path: &std::path::Path) -> Result<(), String> {
     restore_state(h, b)?;
-    std::fs::remove_file(path).map_err(|e| format!("HidHide 已恢复，但删除恢复日志失败：{e}"))
+    std::fs::remove_file(path).map_err(|e| {
+        crate::tr!(
+            hidhide_hidhide_restored_but_its_recovery_journal_could,
+            error = format!("{}", e)
+        )
+    })
 }
 
 /// 隐藏期间的状态守卫：构造时保存并应用，Drop 时恢复。
@@ -434,14 +465,23 @@ impl Hider {
     ///
     /// 驱动不可用或读取原状态失败时返回错误，不修改驱动。
     pub fn engage(device_ids: &[String]) -> Result<Self, String> {
-        let path = backup_path().ok_or("LOCALAPPDATA 未设置，拒绝在无恢复日志时隐藏设备")?;
+        let path =
+            backup_path().ok_or(crate::tr!(hidhide_localappdata_is_not_set_refusing_to_hide))?;
         if path.exists() {
-            return Err("还有未完成的 HidHide 恢复，请先执行 restore".into());
+            return Err(
+                crate::tr!(hidhide_unfinished_hidhide_recovery_found_run_restore_first).into(),
+            );
         }
-        let hh = HidHide::open().ok_or("HidHide 驱动不可用")?;
-        let active = hh.get_active().ok_or("读取 HidHide 开关失败")?;
-        let blacklist = hh.get_blacklist().ok_or("读取 HidHide 黑名单失败")?;
-        let mut whitelist = hh.get_whitelist().ok_or("读取 HidHide 白名单失败")?;
+        let hh = HidHide::open().ok_or(crate::tr!(hidhide_hidhide_driver_unavailable))?;
+        let active = hh
+            .get_active()
+            .ok_or(crate::tr!(hidhide_could_not_read_hidhide_state))?;
+        let blacklist = hh
+            .get_blacklist()
+            .ok_or(crate::tr!(hidhide_could_not_read_hidhide_device_blacklist))?;
+        let mut whitelist = hh.get_whitelist().ok_or(crate::tr!(
+            hidhide_could_not_read_hidhide_application_whitelist
+        ))?;
         let exe = application_path(
             &std::env::current_exe()
                 .map_err(|e| e.to_string())?
@@ -465,8 +505,14 @@ impl Hider {
             whitelist_added,
             version: 2,
         };
-        crate::persistence::atomic_write(&path, serialize_backup(&backup).as_bytes())
-            .map_err(|e| format!("保存恢复日志失败，未改动驱动：{e}"))?;
+        crate::persistence::atomic_write(&path, serialize_backup(&backup).as_bytes()).map_err(
+            |e| {
+                crate::tr!(
+                    hidhide_could_not_save_recovery_journal_driver_unchanged,
+                    error = format!("{}", e)
+                )
+            },
+        )?;
         let mut guard = Self {
             hh,
             backup,
@@ -491,9 +537,14 @@ impl Hider {
             || guard.hh.get_active() != Some(true)
         {
             let rollback = guard.restore();
-            return Err(format!(
-                "隐藏物理手柄失败；{}",
-                rollback.err().unwrap_or_else(|| "已回滚".into())
+            return Err(crate::tr!(
+                hidhide_could_not_hide_the_physical_controller,
+                result = format!(
+                    "{}",
+                    rollback
+                        .err()
+                        .unwrap_or_else(|| crate::tr!(hidhide_rolled_back).into())
+                )
             ));
         }
         Ok(guard)
@@ -506,7 +557,7 @@ impl Hider {
         restore_journal(
             &self.hh,
             &self.backup,
-            &backup_path().ok_or("恢复路径不可用")?,
+            &backup_path().ok_or(crate::tr!(hidhide_could_not_read_the_recovery_path))?,
         )?;
         self.restored = true;
         Ok(())
@@ -560,26 +611,34 @@ pub fn interface_path_to_instance_id(path: &str) -> Option<String> {
 /// HidHide 存储 NT 卷路径；不直接写 C:\ 或不受支持的 UNC 路径。
 pub fn application_path(path: &str) -> Result<String, String> {
     if path.contains(['\r', '\n', '\0']) {
-        return Err("程序路径含无效字符".into());
+        return Err(crate::tr!(hidhide_invalid_characters_in_application_path).into());
     }
     if path.starts_with(r"\Device\") {
         return Ok(path.to_owned());
     }
-    let full = std::fs::canonicalize(path).map_err(|e| format!("程序路径不可用：{e}"))?;
+    let full = std::fs::canonicalize(path).map_err(|e| {
+        crate::tr!(
+            hidhide_application_path_unavailable,
+            error = format!("{}", e)
+        )
+    })?;
     let s = full.display().to_string();
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
     if s.as_bytes().get(1) != Some(&b':') {
-        return Err("请选择本机磁盘上的程序，不支持 UNC 路径".into());
+        return Err(crate::tr!(hidhide_select_an_application_on_a_local_disk).into());
     }
     let drive = wide(&s[..2]);
     let mut target = [0u16; 32768];
     if unsafe { QueryDosDeviceW(drive.as_ptr(), target.as_mut_ptr(), target.len() as u32) } == 0 {
-        return Err(format!(
-            "转换磁盘路径失败：{}",
-            std::io::Error::last_os_error()
+        return Err(crate::tr!(
+            hidhide_could_not_convert_application_path,
+            error = format!("{}", std::io::Error::last_os_error())
         ));
     }
-    let n = target.iter().position(|&c| c == 0).ok_or("磁盘路径无效")?;
+    let n = target
+        .iter()
+        .position(|&c| c == 0)
+        .ok_or(crate::tr!(hidhide_invalid_application_path))?;
     Ok(format!(
         "{}{}",
         String::from_utf16_lossy(&target[..n]),
@@ -589,26 +648,28 @@ pub fn application_path(path: &str) -> Result<String, String> {
 
 pub fn add_application(path: &str) -> Result<(), String> {
     let p = application_path(path)?;
-    let h = HidHide::open().ok_or("HidHide 驱动不可用")?;
-    let mut v = h.get_whitelist().ok_or("读取白名单失败")?;
+    let h = HidHide::open().ok_or(crate::tr!(hidhide_hidhide_driver_unavailable))?;
+    let mut v = h
+        .get_whitelist()
+        .ok_or(crate::tr!(hidhide_could_not_read_application_whitelist))?;
     if !contains(&v, &p) {
         v.push(p);
     }
     if !h.set_whitelist(&v) || !h.get_whitelist().is_some_and(|r| same(&r, &v)) {
-        return Err("写入或验证白名单失败".into());
+        return Err(crate::tr!(hidhide_could_not_write_or_verify_application_whitelist).into());
     }
     Ok(())
 }
 pub fn remove_application(path: &str) -> Result<(), String> {
-    let h = HidHide::open().ok_or("HidHide 驱动不可用")?;
+    let h = HidHide::open().ok_or(crate::tr!(hidhide_hidhide_driver_unavailable))?;
     let v: Vec<String> = h
         .get_whitelist()
-        .ok_or("读取白名单失败")?
+        .ok_or(crate::tr!(hidhide_could_not_read_application_whitelist))?
         .into_iter()
         .filter(|p| !p.eq_ignore_ascii_case(path))
         .collect();
     if !h.set_whitelist(&v) || !h.get_whitelist().is_some_and(|r| same(&r, &v)) {
-        return Err("写入或验证白名单失败".into());
+        return Err(crate::tr!(hidhide_could_not_write_or_verify_application_whitelist).into());
     }
     Ok(())
 }

@@ -74,25 +74,61 @@ fn cli() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("gui");
     match command {
+        "language" => {
+            if args.get(2).map(String::as_str) != Some("check") || args.len() != 4 {
+                return Err(crate::tr!(language_check_usage).into());
+            }
+            let (catalog, _) = i18n::read_pack(std::path::Path::new(&args[3]))
+                .map_err(|e| crate::tr!(language_check_error, error = e))?;
+            let english = i18n::english_catalog();
+            let count = language_pack::compare(&catalog, &english)?;
+            println!(
+                "{}",
+                crate::tr!(
+                    language_check_result,
+                    language = catalog.name,
+                    translated = count,
+                    total = english.variables.len(),
+                    percent = count * 100 / english.variables.len().max(1)
+                )
+            );
+            for id in english
+                .variables
+                .keys()
+                .filter(|id| !catalog.variables.contains_key(*id))
+            {
+                println!("{}", crate::tr!(language_check_missing, id = id.as_str()));
+            }
+            return Ok(());
+        }
         "startup" => {
             match args.get(2).map(String::as_str) {
                 Some("enable") => startup::set_enabled(true)?,
                 Some("disable") => startup::set_enabled(false)?,
                 Some("status") | None => {}
-                _ => return Err("使用 startup enable / disable / status".into()),
+                _ => return Err(crate::tr!(main_use_startup_enable_disable_status).into()),
             }
             println!(
-                "Windows 登录自启：{}",
-                if startup::enabled()? {
-                    "开启"
-                } else {
-                    "关闭"
-                }
+                "{}",
+                crate::tr!(
+                    main_windows_sign_in_startup,
+                    state = format!(
+                        "{}",
+                        if startup::enabled()? {
+                            crate::tr!(main_enabled)
+                        } else {
+                            crate::tr!(main_disabled)
+                        }
+                    )
+                )
             );
             return Ok(());
         }
         "--help" | "-h" | "help" => {
-            println!("OpenDS\n  opends gui                 设置与托盘（默认）\n  opends bridge [秒数]        前台桥接；省略或 0 表示持续运行，Ctrl+C 停止\n  opends restore             恢复未完成的 HidHide 会话\n  opends doctor              依赖诊断（只读）\n  opends list                枚举物理蓝牙 DualSense\n  opends probe               读取一帧输入（不写设备）");
+            println!(
+                "{}",
+                crate::tr!(main_opends_opends_gui_settings_and_tray_default)
+            );
             return Ok(());
         }
         "doctor" => {
@@ -101,7 +137,10 @@ fn cli() -> Result<(), String> {
         }
         "ui-smoke-test" => {
             gui::smoke_test()?;
-            println!("GUI 创建、图标加载、事件循环和正常退出检查通过");
+            println!(
+                "{}",
+                crate::tr!(main_gui_creation_icons_event_loop_and_clean)
+            );
             return Ok(());
         }
         "list" | "probe" => {
@@ -122,7 +161,9 @@ fn cli() -> Result<(), String> {
                                         println!("{s:?}");
                                     }
                                 }
-                                Ok(None) => println!("500ms 内无输入"),
+                                Ok(None) => {
+                                    println!("{}", crate::tr!(main_no_input_received_within_500_ms))
+                                }
                                 Err(e) => return Err(e.to_string()),
                             }
                         }
@@ -132,7 +173,12 @@ fn cli() -> Result<(), String> {
             return Ok(());
         }
         "gui" | "tray" | "bridge" | "restore" => {}
-        _ => return Err(format!("未知命令：{command}；使用 opends --help")),
+        _ => {
+            return Err(crate::tr!(
+                main_unknown_command_use_opends_help,
+                command = format!("{}", command)
+            ))
+        }
     }
     let _instance = match persistence::InstanceGuard::acquire() {
         Err(persistence::InstanceError::AlreadyRunning) if command == "tray" => return Ok(()),
@@ -141,8 +187,11 @@ fn cli() -> Result<(), String> {
     let recovery = hidhide::recover_if_needed();
     if command == "restore" {
         match recovery? {
-            Some(_) => println!("HidHide 恢复成功且回读一致"),
-            None => println!("没有待恢复的 HidHide 会话"),
+            Some(_) => println!(
+                "{}",
+                crate::tr!(main_hidhide_recovery_succeeded_and_was_verified)
+            ),
+            None => println!("{}", crate::tr!(main_no_hidhide_session_needs_recovery)),
         };
         return Ok(());
     }
@@ -154,14 +203,19 @@ fn cli() -> Result<(), String> {
     recovery?;
     let limit = match args.get(2) {
         Some(v) => {
-            let secs = v.parse::<u64>().map_err(|_| "秒数必须为非负整数")?;
+            let secs = v
+                .parse::<u64>()
+                .map_err(|_| crate::tr!(main_seconds_must_be_a_non_negative_integer))?;
             (secs > 0).then_some(Duration::from_secs(secs))
         }
         None => None,
     };
     let mut controller = bridge::BridgeController::default();
     controller.start(cfg, limit)?;
-    *CONSOLE_STATE.write().map_err(|_| "控制台状态锁损坏")? = Some(controller.state.clone());
+    *CONSOLE_STATE
+        .write()
+        .map_err(|_| crate::tr!(main_console_state_lock_is_poisoned))? =
+        Some(controller.state.clone());
     unsafe {
         SetConsoleCtrlHandler(Some(console_stop), 1);
     }
@@ -169,7 +223,9 @@ fn cli() -> Result<(), String> {
     unsafe {
         SetConsoleCtrlHandler(Some(console_stop), 0);
     }
-    *CONSOLE_STATE.write().map_err(|_| "控制台状态锁损坏")? = None;
+    *CONSOLE_STATE
+        .write()
+        .map_err(|_| crate::tr!(main_console_state_lock_is_poisoned))? = None;
     let error = controller
         .state
         .last_error
@@ -179,6 +235,14 @@ fn cli() -> Result<(), String> {
     error.map_or(Ok(()), Err)
 }
 fn main() {
+    let language = if std::env::args().nth(1).as_deref() == Some("ui-smoke-test") {
+        std::env::var("OPENDS_UI_SMOKE_LANGUAGE").unwrap_or_else(|_| "auto".into())
+    } else {
+        config::Config::load(&config::Config::path())
+            .map(|c| c.language)
+            .unwrap_or_else(|_| "auto".into())
+    };
+    i18n::initialize(&language);
     let gui = std::env::args()
         .nth(1)
         .is_none_or(|s| s == "gui" || s == "tray");
