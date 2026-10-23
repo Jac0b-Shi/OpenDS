@@ -80,6 +80,9 @@ haptics_gain=10
 | `monitor_sample_hz` | monitor sample rate, 20 / 50 / 100 / 200 |
 | `monitor_fps` | monitor refresh rate, 15 / 30 / 60 |
 | `monitor_seconds` | monitor time span, 30–900 s |
+| `language` | UI language, `auto` follows the system, or a code such as `zh-CN` |
+| `theme` | appearance, `system` / `light` / `dark` |
+| `close_action` | what closing the window does, `ask` / `tray` / `exit` |
 
 Restart the bridge after changing anything.
 
@@ -164,6 +167,7 @@ When distributing binaries, include `vendor/viiper-source`; the release script p
 
 - [User guide](docs/guides/user-guide.md)
 - [Live monitor](docs/guides/monitor.md)
+- [General settings](docs/guides/settings.md)
 - [Microphone](docs/guides/microphone.md)
 - [Developer guide](docs/guides/developer-guide.md)
 - [Protocol notes](docs/guides/protocol.md)

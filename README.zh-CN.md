@@ -8,9 +8,7 @@
 
 1. 解压 `OpenDS-…-windows-x64.zip` 到本地磁盘，保留全部文件。需要固定安装时，用 PowerShell 运行 `scripts/Install-OpenDS.ps1`。
 2. 在 Windows 蓝牙设置里配对 DualSense，退出其他占用该手柄的工具。手柄之前连过别的设备时，先进入配对模式：
-
    > 确认玩家指示灯已熄灭。如果亮着，长按 PS 键直到熄灭，并断开 USB 线。按住**创建键**，同时按住 **PS 键**，直到光条开始闪烁。然后在 Windows 蓝牙设置里选择手柄。
-
    步骤摘自 [PlayStation 官方配对教程](https://www.playstation.com/zh-hans-cn/support/hardware/pair-dualsense-controller-bluetooth/)。[Apple 支持文档](https://support.apple.com/zh-cn/HT211813) 对创建键的位置有更清楚的示意，配对按键相同。
 3. 双击 `opends.exe`。缺少驱动时按提示安装 USB/IP Win2 和 HidHide，并重启系统。
 4. 在「连接与反馈」选中手柄并保存，回到概览点击「启动桥接」。
@@ -34,17 +32,17 @@
 
 ## 依赖
 
-| 组件 | 用途 |
-| --- | --- |
-| USB/IP Win2 | 创建虚拟 USB 设备 |
-| HidHide | 隐藏物理手柄，避免游戏看到两个设备 |
+| 组件          | 用途                |
+| ----------- | ----------------- |
+| USB/IP Win2 | 创建虚拟 USB 设备       |
+| HidHide     | 隐藏物理手柄，避免游戏看到两个设备 |
 
 `scripts/Install-Drivers.ps1` 从两个上游仓库的 Release 下载安装包，校验 SHA-256 和发布者签名后运行：
 
-| 驱动 | 上游仓库 |
-| --- | --- |
+| 驱动          | 上游仓库                                                          |
+| ----------- | ------------------------------------------------------------- |
 | USB/IP Win2 | [vadimgrn/usbip-win2](https://github.com/vadimgrn/usbip-win2) |
-| HidHide | [nefarius/HidHide](https://github.com/nefarius/HidHide) |
+| HidHide     | [nefarius/HidHide](https://github.com/nefarius/HidHide)       |
 
 手动下载的文件名、地址和摘要见 `scripts/drivers.json`。
 
@@ -69,17 +67,20 @@ audio=1
 haptics_gain=10
 ```
 
-| 键 | 说明 |
-| --- | --- |
-| `port` | 虚拟设备端口 |
-| `buffer` | 音频缓冲块数，16–128。每块约 10.7 ms，队列满时 64 块约 683 ms、128 块约 1.37 s。调大更抗卡顿，代价是游戏声音落后画面 |
-| `audio` | 扬声器音频开关 |
-| `haptics_gain` | 触觉强度，10–20 |
-| `microphone_gain_db` | 麦克风增益，0–50 dB，带峰值限幅 |
-| `microphone_buffer_ms` | 麦克风抖动缓冲，16–512 毫秒 |
-| `monitor_sample_hz` | 监视采样率，20 / 50 / 100 / 200 |
-| `monitor_fps` | 监视刷新率，15 / 30 / 60 |
-| `monitor_seconds` | 监视时间跨度，30–900 秒 |
+| 键                      | 说明                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `port`                 | 虚拟设备端口                                                                       |
+| `buffer`               | 音频缓冲块数，16–128。每块约 10.7 ms，队列满时 64 块约 683 ms、128 块约 1.37 s。调大更抗卡顿，代价是游戏声音落后画面 |
+| `audio`                | 扬声器音频开关                                                                      |
+| `haptics_gain`         | 触觉强度，10–20                                                                   |
+| `microphone_gain_db`   | 麦克风增益，0–50 dB，带峰值限幅                                                          |
+| `microphone_buffer_ms` | 麦克风抖动缓冲，16–512 毫秒                                                            |
+| `monitor_sample_hz`    | 监视采样率，20 / 50 / 100 / 200                                                    |
+| `monitor_fps`          | 监视刷新率，15 / 30 / 60                                                           |
+| `monitor_seconds`      | 监视时间跨度，30–900 秒                                                              |
+| `language`             | 界面语言，`auto` 跟随系统，或语言代码如 `zh-CN`                                      |
+| `theme`                | 外观，`system` / `light` / `dark`                                                    |
+| `close_action`         | 关闭行为，`ask` / `tray` / `exit`                                                    |
 
 修改后重启桥接生效。
 
@@ -96,21 +97,27 @@ haptics_gain=10
 ## 常见问题
 
 **设备管理器里找不到手柄**
+
 物理手柄被 HidHide 隐藏了。退出 OpenDS 会自动恢复；异常退出后运行 `opends.exe restore`。
 
 **游戏里没有震动**
+
 先启动 OpenDS 再开游戏。游戏通常在启动时探测手柄类型和支持的能力。中途接入的手柄会被识别成输入设备，但能力探测不会重跑，震动、自适应扳机和灯效可能都不生效。
 
 **有震动但没声音**
+
 手柄扬声器的音量独立于系统音量，由游戏通过输出报告设置；游戏没有提供相关选项时保持上一次的值。确认配置里 `audio=1`。
 
 **音频断续**
+
 把 `buffer` 调大，例如 96 或 128。
 
 **Steam 游戏识别异常**
+
 关闭 Steam Input。它会接管手柄，绕过本工具的虚拟设备。
 
 **怎么排查连接问题**
+
 日志在 `%LOCALAPPDATA%\OpenDS\logs\opends.log`，自启和手动启动共用同一个文件，记录连接、断线、桥接错误和音频统计。单文件上限 1 MiB，保留 `opends.log.1`、`opends.log.2` 两份历史。每行开头是 Unix 秒级时间戳。
 
 ## 兼容性
@@ -143,12 +150,12 @@ cargo test --locked --offline
 
 每个版本提供四个附件：
 
-| 文件 | 内容 |
-| --- | --- |
-| `OpenDS-<版本>-windows-x64.zip` | 可执行文件、DLL 和脚本 |
-| `OpenDS-<版本>-source.zip` | 完整源码：Rust 源码、`vendor/viiper-source`、依赖许可证清单 |
-| `SHA256SUMS.txt` | 全部附件的校验和 |
-| `TAG-SIGNATURE.json` | 签名标签的回执 |
+| 文件                            | 内容                                          |
+| ----------------------------- | ------------------------------------------- |
+| `OpenDS-<版本>-windows-x64.zip` | 可执行文件、DLL 和脚本                               |
+| `OpenDS-<版本>-source.zip`      | 完整源码：Rust 源码、`vendor/viiper-source`、依赖许可证清单 |
+| `SHA256SUMS.txt`              | 全部附件的校验和                                    |
+| `TAG-SIGNATURE.json`          | 签名标签的回执                                     |
 
 GitHub 页面上的 "Source code (zip)" 和 "Source code (tar.gz)" 是平台自动生成的，只含 Git 跟踪的文件，缺少依赖许可证清单和 VIIPER 源码归档。**需要源码请下载 `source.zip`**。
 
@@ -164,6 +171,7 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 
 - [使用指南](docs/guides/user-guide.md)
 - [实时监视](docs/guides/monitor.md)
+- [常规设置](docs/guides/settings.md)
 - [麦克风](docs/guides/microphone.md)
 - [开发者指南](docs/guides/developer-guide.md)
 - [协议说明](docs/guides/protocol.md)
@@ -173,13 +181,13 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 
 **运行时依赖**
 
-| 项目 | 作用 |
-| --- | --- |
-| [VIIPER](https://github.com/DualSenseClient/VIIPER) | 虚拟 USB DualSense 设备（GPL-3.0-or-later） |
-| [USB/IP Win2](https://github.com/vadimgrn/usbip-win2) | 创建虚拟 USB 设备 |
-| [HidHide](https://github.com/nefarius/HidHide) | 隐藏物理手柄 |
-| [Opus](https://opus-codec.org/) | 音频编解码（BSD-3-Clause） |
-| [native-windows-gui](https://github.com/gabdube/native-windows-gui) | 设置界面（MIT） |
+| 项目                                                                  | 作用                                    |
+| ------------------------------------------------------------------- | ------------------------------------- |
+| [VIIPER](https://github.com/DualSenseClient/VIIPER)                 | 虚拟 USB DualSense 设备（GPL-3.0-or-later） |
+| [USB/IP Win2](https://github.com/vadimgrn/usbip-win2)               | 创建虚拟 USB 设备                           |
+| [HidHide](https://github.com/nefarius/HidHide)                      | 隐藏物理手柄                                |
+| [Opus](https://opus-codec.org/)                                     | 音频编解码（BSD-3-Clause）                   |
+| [native-windows-gui](https://github.com/gabdube/native-windows-gui) | 设置界面（MIT）                             |
 
 **设计参考**
 
