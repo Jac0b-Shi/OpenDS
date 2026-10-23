@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    monitor::{neutral, Bucket, Monitor},
+    monitor::{neutral, wave_state, Bucket, Monitor, WaveState},
 };
 #[path = "monitor_plot.rs"]
 mod plotting;
@@ -608,7 +608,7 @@ struct ViewState {
     pulse: [u64; 24],
     plot: Vec<Bucket>,
     last: [u64; 10],
-    peak: [u16; 10],
+    nonzero: [u64; 10],
     input_time: u64,
     error: String,
     recording_error_shown: bool,
@@ -651,7 +651,7 @@ impl MonitorView {
                 pulse: [0; 24],
                 plot: vec![],
                 last: [0; 10],
-                peak: [0; 10],
+                nonzero: [0; 10],
                 input_time: 0,
                 error: String::new(),
                 recording_error_shown: false,
@@ -1217,7 +1217,7 @@ impl ViewState {
             self.input = history.input;
             self.input_time = history.input_time;
             self.last = history.last;
-            self.peak = history.peak;
+            self.nonzero = history.nonzero;
             pressed = history.pressed;
             history.pressed = [0; 3];
             self.plot = history.plot(
@@ -1373,25 +1373,16 @@ impl ViewState {
         let channels = if group == 2 { 1 } else { 2 };
         let source = self.hub.source.load(Relaxed);
         let forwarded = self.hub.forwarded.load(Relaxed);
-        let last = (if source { self.last[offset] } else { 0 }).max(if forwarded {
-            self.last[offset + 5]
-        } else {
-            0
-        });
-        let peak = (if source { self.peak[offset] } else { 0 }).max(if forwarded {
-            self.peak[offset + 5]
-        } else {
-            0
-        });
+        let activity = wave_state(group, [source, forwarded], &self.last, &self.nonzero, now);
         let status = if group == 2 && !self.hub.microphone.load(Relaxed) {
             "麦克风未启用".into()
-        } else if !source && !forwarded {
+        } else if activity == WaveState::NoSignal {
             "未选择音频信号".into()
-        } else if last == 0 {
+        } else if activity == WaveState::Waiting {
             "尚未收到数据".into()
-        } else if now.saturating_sub(last) > 500_000_000 {
+        } else if activity == WaveState::Interrupted {
             "数据中断 > 500 ms".into()
-        } else if peak == 0 {
+        } else if activity == WaveState::Silent {
             "静音 · 已收到有效的零振幅 PCM".into()
         } else if group == 0 {
             format!(

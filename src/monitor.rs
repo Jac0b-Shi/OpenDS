@@ -16,6 +16,51 @@ pub const GAME_QUEUE_CAPACITY: usize = 2048;
 const CHUNK: usize = 960;
 const LEVELS: usize = 6;
 pub const CACHE_LIMIT: usize = 32 * 1024 * 1024;
+const SILENCE_HOLD_NS: u64 = 750_000_000;
+const DATA_TIMEOUT_NS: u64 = 500_000_000;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum WaveState {
+    NoSignal,
+    Waiting,
+    Interrupted,
+    Silent,
+    Active,
+}
+
+pub fn wave_state(
+    group: usize,
+    stages: [bool; 2],
+    last: &[u64; 10],
+    nonzero: &[u64; 10],
+    now: u64,
+) -> WaveState {
+    if !stages.iter().any(|enabled| *enabled) {
+        return WaveState::NoSignal;
+    }
+    let offset = [0, 2, 4][group];
+    let channels = if group == 2 { 1 } else { 2 };
+    let mut received = 0;
+    let mut active = 0;
+    for (stage, enabled) in stages.into_iter().enumerate() {
+        if enabled {
+            for ch in 0..channels {
+                let lane = offset + stage * 5 + ch;
+                received = received.max(last[lane]);
+                active = active.max(nonzero[lane]);
+            }
+        }
+    }
+    if received == 0 {
+        WaveState::Waiting
+    } else if now.saturating_sub(received) > DATA_TIMEOUT_NS {
+        WaveState::Interrupted
+    } else if active != 0 && now.saturating_sub(active) < SILENCE_HOLD_NS {
+        WaveState::Active
+    } else {
+        WaveState::Silent
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Ticket {
@@ -124,7 +169,7 @@ pub struct History {
     pub input_time: u64,
     input_samples: VecDeque<(u64, ParsedState)>,
     pub last: [u64; 10],
-    pub peak: [u16; 10],
+    pub nonzero: [u64; 10],
     pub now: u64,
     mask: u16,
 }
@@ -158,7 +203,7 @@ impl History {
             input_time: 0,
             input_samples: VecDeque::new(),
             last: [0; 10],
-            peak: [0; 10],
+            nonzero: [0; 10],
             now: 0,
             mask: 1023,
         }
@@ -207,6 +252,10 @@ impl History {
             )
         });
         if reset {
+            let offset = [0, 5, 7, 4, 9][stream];
+            for ch in 0..channels {
+                self.nonzero[offset + ch] = 0;
+            }
             self.clocks[stream] = Some(Clock {
                 generation: p.generation,
                 anchor: p.time.saturating_sub(duration),
@@ -245,9 +294,6 @@ impl History {
                 self.insert(start.saturating_sub(1), offset + ch, 0, 0, true);
             }
         }
-        for ch in 0..channels {
-            self.peak[offset + ch] = 0;
-        }
         // Split at bucket boundaries; never reduce a whole USB batch to one point.
         let mut i = 0;
         while i < frames {
@@ -274,9 +320,11 @@ impl History {
             for ch in 0..channels {
                 self.insert(t, offset + ch, min[ch], max[ch], false);
                 self.last[offset + ch] = p.time;
-                self.peak[offset + ch] = self.peak[offset + ch]
-                    .max(min[ch].unsigned_abs())
-                    .max(max[ch].unsigned_abs());
+                // Retain short activity even if later chunks are zero before
+                // the UI gets a chance to paint. PCM/buckets remain unchanged.
+                if min[ch] != 0 || max[ch] != 0 {
+                    self.nonzero[offset + ch] = p.time;
+                }
             }
         }
     }
@@ -565,7 +613,7 @@ impl Monitor {
             for i in 0..10 {
                 if mask & (1 << i) != 0 {
                     h.last[i] = 0;
-                    h.peak[i] = 0;
+                    h.nonzero[i] = 0;
                 }
             }
         }
@@ -880,6 +928,154 @@ pub fn demo(m: Arc<Monitor>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn wave_chunk(time: u64, index: u64) -> Chunk {
+        Chunk {
+            epoch: 0,
+            generation: 0,
+            signal_epoch: 0,
+            time,
+            index,
+            rate: 1000,
+            channels: 4,
+            len: 40,
+            samples: [0; CHUNK],
+        }
+    }
+    #[test]
+    fn waveform_activity_retains_brief_right_channel_pulses_until_continuous_silence() {
+        let mut h = History::new(100);
+        let mut p = wave_chunk(1_000_000_000, 0);
+        p.samples[1] = i16::MIN; // Right only; a following zero batch used to erase this.
+        h.consume(0, p);
+        for n in 1..=74 {
+            let now = 1_000_000_000 + n * 10_000_000;
+            h.consume(0, wave_chunk(now, n * 10));
+            assert_eq!(
+                wave_state(0, [true, false], &h.last, &h.nonzero, now),
+                WaveState::Active
+            );
+        }
+        h.consume(0, wave_chunk(1_750_000_000, 750));
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, 1_750_000_000),
+            WaveState::Silent
+        );
+        let bins = h.plot(30, 3000, 1_750_000_000);
+        assert!(bins
+            .iter()
+            .any(|b| b.valid & 2 != 0 && b.min[1] == i16::MIN));
+        assert!(bins
+            .iter()
+            .any(|b| b.valid & 2 != 0 && b.min[1] == 0 && b.max[1] == 0));
+        // Real activity is shown immediately, with no attack delay.
+        let mut p = wave_chunk(1_760_000_000, 760);
+        p.samples[0] = 1;
+        h.consume(0, p);
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, p.time),
+            WaveState::Active
+        );
+    }
+    #[test]
+    fn wave_status_combines_both_channels_of_only_the_selected_signal_stages() {
+        let now = 2_000_000_000;
+        let mut last = [0; 10];
+        let mut nonzero = [0; 10];
+        for (group, right) in [(0, 1), (1, 3), (2, 4)] {
+            last.fill(0);
+            nonzero.fill(0);
+            last[right] = now;
+            nonzero[right] = now;
+            assert_eq!(
+                wave_state(group, [true, false], &last, &nonzero, now),
+                WaveState::Active
+            );
+            assert_eq!(
+                wave_state(group, [false, true], &last, &nonzero, now),
+                WaveState::Waiting
+            );
+            last[right + 5] = now;
+            assert_eq!(
+                wave_state(group, [false, true], &last, &nonzero, now),
+                WaveState::Silent
+            );
+            nonzero[right] = 0;
+            nonzero[right + 5] = now;
+            assert_eq!(
+                wave_state(group, [false, true], &last, &nonzero, now),
+                WaveState::Active
+            );
+            assert_eq!(
+                wave_state(group, [true, true], &last, &nonzero, now),
+                WaveState::Active
+            );
+            assert_eq!(
+                wave_state(group, [false, false], &last, &nonzero, now),
+                WaveState::NoSignal
+            );
+        }
+    }
+    #[test]
+    fn wave_activity_hold_never_hides_a_transport_interruption_or_invents_initial_activity() {
+        let mut h = History::new(100);
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, 0),
+            WaveState::Waiting
+        );
+        let mut p = wave_chunk(1_000_000_000, 0);
+        h.consume(0, p);
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, p.time),
+            WaveState::Silent
+        );
+        p.samples[0] = 3;
+        h.consume(0, p);
+        assert_eq!(
+            wave_state(
+                0,
+                [true, false],
+                &h.last,
+                &h.nonzero,
+                p.time + DATA_TIMEOUT_NS + 1
+            ),
+            WaveState::Interrupted
+        );
+        // A new connection must not inherit the preceding session's activity.
+        let mut next = wave_chunk(p.time + 20_000_000, 0);
+        next.generation = 1;
+        h.consume(0, next);
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, next.time),
+            WaveState::Silent
+        );
+    }
+    #[test]
+    fn changing_signal_selection_clears_held_activity() {
+        let m = observer();
+        {
+            let mut h = m.history.lock().unwrap();
+            h.last.fill(1_000_000_000);
+            h.nonzero.fill(1_000_000_000);
+        }
+        m.signal(false, false);
+        m.signal(false, true);
+        let h = m.history.lock().unwrap();
+        assert_eq!(
+            wave_state(0, [true, false], &h.last, &h.nonzero, 1_000_000_000),
+            WaveState::Waiting
+        );
+        assert_eq!(
+            wave_state(0, [false, true], &h.last, &h.nonzero, 1_000_000_000),
+            WaveState::Active
+        );
+        drop(h);
+        m.clear();
+        let h = m.history.lock().unwrap();
+        assert_eq!(
+            wave_state(0, [true, true], &h.last, &h.nonzero, 1_000_000_000),
+            WaveState::Waiting
+        );
+    }
     fn observer() -> Arc<Monitor> {
         let m = Monitor::new();
         m.queues.get_or_init(|| Queues {
