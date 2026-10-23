@@ -251,7 +251,7 @@ impl Localizer {
         )
         .unwrap_or_else(|_| bundle("en-US", include_str!("../locales/en-US.ftl")).unwrap());
         if std::env::args().nth(1).as_deref() == Some("ui-smoke-test")
-            && std::env::var_os("OPENDS_UI_SMOKE_EXPAND").is_some()
+            && std::env::var("OPENDS_UI_SMOKE_EXPAND").as_deref() == Ok("1")
         {
             selected.set_transform(Some(|s| {
                 std::borrow::Cow::Owned(

@@ -4,6 +4,8 @@ use crate::{
     config::{CloseAction, Config, ThemeMode},
     gui_theme as theme,
 };
+#[path = "theme_validation.rs"]
+mod theme_validation;
 use native_windows_gui as nwg;
 use std::{
     cell::{Cell, RefCell},
@@ -2112,6 +2114,12 @@ fn run_inner(
     }
     app.update();
     app.layout();
+    if smoke && std::env::var("OPENDS_UI_SMOKE_THEME_STRESS").as_deref() == Ok("1") {
+        app.test_themes()?;
+        app.smoke_deadline.set(Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        ));
+    }
     nwg::dispatch_thread_events();
     #[cfg(debug_assertions)]
     if let Some((stop, worker)) = demo {

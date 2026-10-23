@@ -38,6 +38,9 @@ jobs:
       - name: Validate language catalogs, DPI layouts and restart handoff
         shell: pwsh
         run: ./scripts/Test-Localization.ps1
+      - name: Validate themes and live switching without device access
+        shell: pwsh
+        run: ./scripts/Test-Themes.ps1
       - name: Keep binary and matching source archives together
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (node24)
         with:

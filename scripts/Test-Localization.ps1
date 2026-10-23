@@ -19,8 +19,8 @@ function Invoke-UiCheck([string]$Path, [string]$Locale, [int]$Dpi, [bool]$Expand
     $env:OPENDS_UI_SMOKE_DPI = $Dpi.ToString()
     $env:OPENDS_UI_SMOKE_SECONDS = '2'
     $env:OPENDS_UI_SMOKE_PAGE = '5'
-    [Environment]::SetEnvironmentVariable('OPENDS_UI_SMOKE_EXPAND', $(if ($Expand) { '1' } else { $null }))
-    [Environment]::SetEnvironmentVariable('OPENDS_UI_SMOKE_SKIP_DIALOGS', $(if ($Dpi -eq 96 -and !$Expand -and !$Restart) { $null } else { '1' }))
+    if ($Expand) { $env:OPENDS_UI_SMOKE_EXPAND = '1' } else { Remove-Item Env:OPENDS_UI_SMOKE_EXPAND -ErrorAction SilentlyContinue }
+    if ($Dpi -eq 96 -and !$Expand -and !$Restart) { Remove-Item Env:OPENDS_UI_SMOKE_SKIP_DIALOGS -ErrorAction SilentlyContinue } else { $env:OPENDS_UI_SMOKE_SKIP_DIALOGS = '1' }
     $case = $Locale + '-' + $Dpi + '-' + $Expand + '-' + $Restart
     $stdout = Join-Path $fixture ($case + '-out.txt')
     $stderr = Join-Path $fixture ($case + '-err.txt')
@@ -70,6 +70,6 @@ try {
     New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
     $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $reportDir 'localization-validation.json') -Encoding utf8
 } finally {
-    foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $original[$name]) }
+    foreach ($name in $names) { if ($null -eq $original[$name]) { Remove-Item -LiteralPath ('Env:'+$name) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($name, $original[$name]) } }
     if ($fixture.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $fixture)) { Remove-Item -LiteralPath $fixture -Recurse -Force }
 }
