@@ -7,11 +7,21 @@ on:
         description: Published signed version, e.g. v0.2.0
         required: true
         type: string
+      runner:
+        description: Network route for release uploads
+        required: true
+        type: choice
+        options: [ubuntu-latest, macos-15]
+        default: ubuntu-latest
   workflow_call:
     inputs:
       tag:
         required: true
         type: string
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
     secrets:
       GITEE_TOKEN:
         required: true
@@ -25,7 +35,7 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'macos-15' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Check credential availability
