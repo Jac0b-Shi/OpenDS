@@ -105,6 +105,9 @@ export async function synchronize({ tag, verification, token, request = requeste
   try { target = await json(`${API}/releases/tags/${encodeURIComponent(tag)}`); }
   catch (error) {
     if (!(error instanceof HttpError) || error.status !== 404) throw error;
+  }
+  // Gitee also returns HTTP 200 with JSON null for an absent release.
+  if (target == null) {
     target = await json(`${API}/releases`, { body: new URLSearchParams({ access_token: token, tag_name: tag,
       name: release.name || tag, body: release.body || `https://github.com/${GITHUB}/releases/tag/${tag}`,
       target_commitish: verification.commit, prerelease: String(release.prerelease) }) });

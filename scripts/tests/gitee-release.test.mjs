@@ -55,7 +55,7 @@ function fixture() {
     if (download) return assets.find(a => a.id === Number(download[1])).bytes;
     throw new Error(`Unexpected request: ${url}`);
   };
-  return { files, assets, calls, setTarget: value => { target = value; },
+  return { files, assets, calls, request, setTarget: value => { target = value; },
     failUpload: name => { failUpload = name; }, moveTag: () => { moved = true; },
     run: (overrides = {}) => synchronize({ tag, verification, token: 'fixture-secret', request,
       remoteTag: async () => moved ? 'c'.repeat(40) : verification.tag_object, ...overrides }) };
@@ -75,6 +75,14 @@ test('rerun verifies existing files without uploading or deleting them', async (
   f.calls.length = 0;
   await f.run();
   assert.equal(f.calls.filter(c => c.body).length, 0);
+});
+
+test('Gitee HTTP 200 null for an absent release is handled like HTTP 404', async () => {
+  const f = fixture();
+  assert.match(await f.run({ request: async (url, options) => {
+    if (url === `${api}/releases/tags/${tag}`) return Buffer.from('null');
+    return f.request(url, options);
+  } }), /four matching attachments/);
 });
 
 test('partial upload fails the job and a rerun only fills missing assets', async () => {
