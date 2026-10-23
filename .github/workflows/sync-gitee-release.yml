@@ -59,4 +59,4 @@ jobs:
           SYNC_TAG: ${{ inputs.tag }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/sync-gitee-release.mjs --tag "$SYNC_TAG" --verification "$RUNNER_TEMP/gitee-tag-verification.json"
+        run: node --dns-result-order=ipv4first scripts/sync-gitee-release.mjs --tag "$SYNC_TAG" --verification "$RUNNER_TEMP/gitee-tag-verification.json"

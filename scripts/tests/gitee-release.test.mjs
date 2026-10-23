@@ -230,7 +230,7 @@ test('curl upload keeps token in stdin, refuses redirects and parses the HTTP re
     child.kill = () => {};
     child.stdin = new Writable({ write(chunk, encoding, callback) { payload = Buffer.from(chunk); callback(); } });
     child.stdin.on('finish', () => {
-      child.stdout.write('{"id":42}\n201');
+      child.stdout.write('{"id":42}\nOPENDS_CURL:201:999:1000:0.1:0.2:0.3:0.4:0.5\n');
       child.emit('close', 0);
     });
     return child;
@@ -240,7 +240,55 @@ test('curl upload keeps token in stdin, refuses redirects and parses the HTTP re
   assert.match(payload.toString(), /fixture-file/);
   assert.doesNotMatch(argumentsUsed.join(' '), /fixture-private-token/);
   assert.ok(!argumentsUsed.some(a => a === '-L' || a === '--location'));
+  assert.ok(argumentsUsed.includes('--ipv4'));
   await assert.rejects(curlUpload('https://example.com/upload', form, {spawnImpl}), /Invalid Gitee/);
+});
+
+test('transient GET failures retry once but POST and validation failures never replay', async () => {
+  let calls = 0, pauses = 0;
+  const request = requester({pause:async () => {pauses++;}, fetchImpl:async () => {
+    calls++;
+    if (calls === 1) throw new Error('connection failed');
+    return new Response('ok');
+  }});
+  assert.equal((await request(`${api}/releases`)).toString(), 'ok');
+  assert.equal(calls, 2);
+  assert.equal(pauses, 1);
+  let posts = 0;
+  const failure = requester({pause:async () => {},fetchImpl:async () => {posts++; throw new Error('failed');}});
+  await assert.rejects(failure(`${api}/releases`, {body:new URLSearchParams({access_token:'fixture'})}), /network request/);
+  assert.equal(posts, 1);
+  posts = 0;
+  await assert.rejects(failure(`${api}/releases`), /network request/);
+  assert.equal(posts, 2);
+  let forbidden = 0;
+  const denied = requester({pause:async () => {},fetchImpl:async () => {forbidden++; return new Response('',{status:403});}});
+  await assert.rejects(denied(`${api}/releases`), /HTTP 403/);
+  assert.equal(forbidden, 1);
+});
+
+test('curl timeout diagnostics distinguish a completed upload waiting for the server without exposing stderr', async () => {
+  const logs = [];
+  const form = new FormData();
+  form.set('access_token','fixture-secret-token');
+  const spawnImpl = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill=()=>{};
+    child.stdin = new Writable({write(chunk, encoding, callback) {callback();}});
+    child.stdin.on('finish', () => {
+      child.stderr.write('fixture-secret-token https://example.com/?signed-url=secret');
+      child.stdout.write('\nOPENDS_CURL:000:999999:1000:0.1:0.2:0.3:0:45\n');
+      child.emit('close',28);
+    });
+    return child;
+  };
+  await assert.rejects(curlUpload(`${api}/releases/1/attach_files`,form,{spawnImpl,log:l=>logs.push(l)}),error=>{
+    assert.match(error.message,/phase=server response/);
+    assert.doesNotMatch(error.message,/fixture-secret-token|signed-url/);
+    return true;
+  });
+  assert.match(logs.join(' '), /sent=999999/);
+  assert.doesNotMatch(logs.join(' '), /fixture-secret-token|signed-url/);
 });
 
 test('requester uses upload transport only for Gitee multipart bodies', async () => {
@@ -257,7 +305,7 @@ test('requester uses upload transport only for Gitee multipart bodies', async ()
 
 test('request diagnostics identify the original endpoint and safe error code without query secrets', async () => {
   const logs = [];
-  const request = requester({ log: line => logs.push(line), fetchImpl: async () => {
+  const request = requester({ pause:async () => {}, log: line => logs.push(line), fetchImpl: async () => {
     throw Object.assign(new Error('secret-token signed-url'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } });
   } });
   await assert.rejects(request(`${api}/releases?secret-token=signed-url`), error => {
@@ -266,8 +314,8 @@ test('request diagnostics identify the original endpoint and safe error code wit
     assert.doesNotMatch(error.message, /secret-token|signed-url/);
     return true;
   });
-  assert.equal(logs.length, 1);
-  assert.doesNotMatch(logs[0], /secret-token|signed-url|\?/);
+  assert.equal(logs.filter(line => line.startsWith('GET ')).length, 2);
+  assert.doesNotMatch(logs.join(' '), /secret-token|signed-url|\?/);
 });
 
 test('actual published v0.2.0 fixtures can be checked locally when present', async t => {

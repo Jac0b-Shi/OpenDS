@@ -17,18 +17,20 @@ export class HttpError extends Error {
 }
 export class NetworkError extends Error {}
 
-export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spawn } = {}) {
+export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spawn, log = () => {} } = {}) {
   ensure(url.startsWith(`${API}/`) && body instanceof FormData, 'Invalid Gitee upload destination or payload.');
   const multipart = new Request(url, { method: 'POST', body });
   const bytes = Buffer.from(await multipart.arrayBuffer());
   ensure(bytes.length <= 64 * 1024 * 1024, 'Release upload exceeds 64 MiB.');
   // Feed the multipart payload through stdin. The token is never placed in
   // process arguments, a temporary file, curl output or a redirect request.
-  const args = ['--disable', '--silent', '--show-error', '--http1.1', '--proto', '=https',
+  const report = '\nOPENDS_CURL:%{http_code}:%{size_upload}:%{speed_upload}:%{time_namelookup}:%{time_connect}:%{time_appconnect}:%{time_starttransfer}:%{time_total}\n';
+  const args = ['--disable', '--silent', '--show-error', '--ipv4', '--http1.1', '--proto', '=https',
     '--connect-timeout', '15', '--max-time', String(timeout / 1000),
+    '--speed-limit', '1024', '--speed-time', '45',
     '--request', 'POST', '--header', 'User-Agent: OpenDS-release-sync',
     '--header', `Content-Type: ${multipart.headers.get('content-type')}`,
-    '--header', 'Expect:', '--data-binary', '@-', '--write-out', '\n%{http_code}', url];
+    '--header', 'Expect:', '--data-binary', '@-', '--write-out', report, url];
   return new Promise((resolve, reject) => {
     let child;
     try { child = spawnImpl('curl', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
@@ -49,9 +51,12 @@ export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spaw
     child.on('close', code => {
       clearTimeout(timer);
       if (tooLarge) { reject(new Error('Release response exceeds 64 MiB.')); return; }
-      if (code !== 0) { reject(new NetworkError(`curl upload failed (exit ${Number.isInteger(code) ? code : 'signal'}); no automatic retry.`)); return; }
       const result = Buffer.concat(chunks);
-      const status = /\n(\d{3})$/.exec(result.toString('utf8'));
+      const status = /\nOPENDS_CURL:(\d{3}):(\d+):([\d.]+):([\d.]+):([\d.]+):([\d.]+):([\d.]+):([\d.]+)\n$/.exec(result.toString('utf8'));
+      const phase = !status ? 'unknown' : Number(status[6]) === 0 ? 'connection/TLS'
+        : Number(status[2]) < bytes.length ? 'upload' : Number(status[7]) === 0 ? 'server response' : 'response download';
+      if (status) log(`Gitee upload: phase=${phase}, sent=${status[2]}/${bytes.length} B, speed=${status[3]} B/s, DNS=${status[4]} s, TCP=${status[5]} s, TLS=${status[6]} s, first-byte=${status[7]} s, total=${status[8]} s`);
+      if (code !== 0) { reject(new NetworkError(`curl upload failed (exit ${Number.isInteger(code) ? code : 'signal'}, phase=${phase}); no automatic POST retry.`)); return; }
       if (!status) { reject(new NetworkError('curl upload returned no HTTP status.')); return; }
       const value = Number(status[1]);
       if (value < 200 || value >= 300) { reject(new HttpError(value)); return; }
@@ -61,8 +66,9 @@ export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spaw
   });
 }
 
-export function requester({ fetchImpl = fetch, githubToken = '', log = () => {}, uploadImpl } = {}) {
-  return async (url, { body, timeout = 30000 } = {}) => {
+export function requester({ fetchImpl = fetch, githubToken = '', log = () => {}, uploadImpl,
+  pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  const once = async (url, { body, timeout = 30000 } = {}) => {
     ensure(!body || url.startsWith(`${API}/`), 'Credentials may only be sent to the Gitee repository API.');
     const headers = { 'User-Agent': 'OpenDS-release-sync' };
     if (url.startsWith(`${GH_API}/`) && githubToken) headers.Authorization = `Bearer ${githubToken}`;
@@ -73,7 +79,7 @@ export function requester({ fetchImpl = fetch, githubToken = '', log = () => {},
     const operation = `${body ? 'POST' : 'GET'} ${endpoint.hostname}${endpoint.pathname}`;
     log(operation);
     try {
-      if (uploadImpl && body instanceof FormData) return await uploadImpl(url, body, { timeout });
+      if (uploadImpl && body instanceof FormData) return await uploadImpl(url, body, { timeout, log });
       const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', body, headers,
         redirect: body || headers.Authorization ? 'error' : 'follow', signal: AbortSignal.timeout(timeout) });
       if (!response.ok) throw new HttpError(response.status);
@@ -90,7 +96,18 @@ export function requester({ fetchImpl = fetch, githubToken = '', log = () => {},
       // Never log response bodies, redirected URLs, request options, or credentials.
       const code = error.name === 'TimeoutError' ? `timeout after ${timeout} ms`
         : /^[A-Z][A-Z0-9_]{1,39}$/.test(error.cause?.code ?? '') ? error.cause.code : 'connection or response failure';
-      throw new NetworkError(`Release network request failed: ${operation} (${code}); no automatic retry.`);
+      throw new NetworkError(`Release network request failed: ${operation} (${code}).`);
+    }
+  };
+  return async (url, options = {}) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await once(url, options); }
+      catch (error) {
+        const transient = error instanceof NetworkError || error instanceof HttpError && [429, 502, 503, 504].includes(error.status);
+        if (options.body || attempt === 1 || !transient) throw error;
+        log('Transient read failure; retrying this GET once after 2 seconds.');
+        await pause(2000);
+      }
     }
   };
 }
