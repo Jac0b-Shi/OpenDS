@@ -53,8 +53,12 @@ jobs:
           persist-credentials: false
       - name: Test release signature gate with isolated fixture keys
         run: python scripts/tests/test_release_tag.py
-      - name: Test Gitee attachment preparation without network or real credentials
-        run: python scripts/tests/test_gitee_runner.py
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0 (node24)
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test release synchronization without network or credentials
+        run: node --test scripts/tests/gitee-release.test.mjs
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 (node24)
         with:
           go-version-file: vendor/viiper-source/go.mod

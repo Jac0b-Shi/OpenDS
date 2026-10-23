@@ -1,0 +1,61 @@
+name: Sync signed release to Gitee
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published signed version, e.g. v0.2.0
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      GITEE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check credential availability
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        shell: bash
+        run: |
+          test -n "$GITEE_TOKEN" || { echo 'Configure the GitHub repository secret GITEE_TOKEN first.' >&2; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0 (node24)
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify the existing owner-signed tag
+        env:
+          SYNC_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SYNC_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || { echo 'Invalid version tag.' >&2; exit 1; }
+          curl --fail --silent --show-error --location --max-time 30 https://github.com/Jac0b-Shi.gpg --output "$RUNNER_TEMP/owner-public-keys.gpg"
+          python scripts/verify_release_tag.py --tag "$SYNC_TAG" \
+            --event-sha "$(git rev-parse "refs/tags/$SYNC_TAG^{}")" \
+            --key-file "$RUNNER_TEMP/owner-public-keys.gpg" > "$RUNNER_TEMP/gitee-tag-verification.json"
+      - name: Synchronize this version and verify all four attachments
+        env:
+          SYNC_TAG: ${{ inputs.tag }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/sync-gitee-release.mjs --tag "$SYNC_TAG" --verification "$RUNNER_TEMP/gitee-tag-verification.json"
