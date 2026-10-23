@@ -65,6 +65,10 @@ struct Controls {
     mic_gain: nwg::TrackBar,
     mic_buffer: nwg::ComboBox<String>,
     close_action: nwg::ComboBox<String>,
+    language: nwg::ComboBox<String>,
+    import_language: nwg::Button,
+    language_folder: nwg::Button,
+    language_notice: nwg::Label,
     active: nwg::CheckBox,
     whitelist: nwg::ListBox<String>,
     app_path: nwg::TextInput,
@@ -84,6 +88,9 @@ struct App {
     path: PathBuf,
     devices: RefCell<Vec<String>>,
     mic_buffers: Vec<u16>,
+    languages: RefCell<Vec<crate::i18n::Language>>,
+    initial_language: String,
+    language_files_changed: Cell<bool>,
     exiting: Cell<bool>,
     close_prompt_open: Cell<bool>,
     page: Cell<u8>,
@@ -122,8 +129,8 @@ fn checked(c: &nwg::CheckBox) -> bool {
 fn mic_buffer_label(ms: u16) -> String {
     crate::tr!(
         gui_ms_samples,
-        milliseconds = format!("{}", ms),
-        samples = format!("{}", ms as u32 * 48)
+        milliseconds = crate::i18n_arg!(ms),
+        samples = crate::i18n_arg!(ms as u32 * 48)
     )
 }
 fn selected_mic_buffer(combo: &nwg::ComboBox<String>, values: &[u16]) -> u16 {
@@ -141,7 +148,7 @@ impl App {
         background: bool,
     ) -> Result<Rc<Self>, String> {
         nwg::init().map_err(|e| e.to_string())?;
-        let dpi = unsafe { GetDpiForSystem() }.max(96);
+        let dpi = unsafe { crate::gui_theme::system_dpi() }.max(96);
         let fonts = theme::Fonts::new(dpi)?;
         let mut a = Self {
             ui: Controls::default(),
@@ -150,6 +157,9 @@ impl App {
             path,
             devices: RefCell::new(vec![]),
             mic_buffers: vec![],
+            languages: RefCell::new(vec![]),
+            initial_language: cfg.language.clone(),
+            language_files_changed: Cell::new(false),
             exiting: Cell::new(false),
             close_prompt_open: Cell::new(false),
             page: Cell::new(0),
@@ -235,6 +245,12 @@ impl App {
             button!(restore, crate::tr!(gui_restore_controller_visibility));
             button!(minimize_to_tray, crate::tr!(gui_minimize_to_tray));
             button!(quit, crate::tr!(gui_exit_opends));
+            button!(import_language, crate::tr!(language_import));
+            button!(language_folder, crate::tr!(language_open_folder));
+            nwg::ComboBox::builder()
+                .parent(window)
+                .collection(Vec::<String>::new())
+                .build(&mut ui.language)?;
             for label in [
                 &mut ui.status,
                 &mut ui.count_input,
@@ -242,6 +258,7 @@ impl App {
                 &mut ui.count_audio,
                 &mut ui.dependencies,
                 &mut ui.install_status,
+                &mut ui.language_notice,
             ] {
                 nwg::Label::builder()
                     .parent(window)
@@ -379,6 +396,7 @@ impl App {
                 crate::tr!(gui_connection_feedback),
                 crate::tr!(gui_device_hiding),
                 crate::tr!(gui_diagnostics_logs),
+                crate::tr!(language_settings_title),
             ] {
                 let mut b = Default::default();
                 nwg::Button::builder()
@@ -432,7 +450,7 @@ impl App {
         })();
         build.map_err(|e| e.to_string())?;
         a.dpi
-            .set(unsafe { GetDpiForWindow(theme::hwnd(&a.window.handle)) }.max(96));
+            .set(unsafe { crate::gui_theme::window_dpi(theme::hwnd(&a.window.handle)) }.max(96));
         unsafe {
             let h = theme::hwnd(&a.window.handle);
             let style = GetWindowLongPtrW(h, GWL_STYLE);
@@ -454,6 +472,7 @@ impl App {
             SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_BORDER as isize));
         }
         a.refresh();
+        a.refresh_languages();
         if !crate::dependencies::ready() {
             a.page.set(4);
             a.controller.borrow().state.log_message(
@@ -464,7 +483,7 @@ impl App {
         a.layout();
         if let Some(e) = error {
             a.controller.borrow().state.error(e);
-        } else if cfg.auto_start || background {
+        } else if crate::restart::startup_override().unwrap_or(cfg.auto_start || background) {
             a.start_bridge();
         }
         Ok(a)
@@ -502,6 +521,10 @@ impl App {
             &self.mic_gain.handle,
             &self.mic_buffer.handle,
             &self.close_action.handle,
+            &self.language.handle,
+            &self.import_language.handle,
+            &self.language_folder.handle,
+            &self.language_notice.handle,
             &self.active.handle,
             &self.whitelist.handle,
             &self.app_path.handle,
@@ -612,18 +635,9 @@ impl App {
                     cw / 3 - 24,
                     220,
                 );
-                put(&self.auto_start.handle, x + 24, 511, cw / 2 - 32, 28);
-                put(
-                    &self.start_on_login.handle,
-                    x + cw / 2,
-                    511,
-                    cw / 2 - 24,
-                    28,
-                );
-                put(&self.reconnect.handle, x + 24, 552, cw / 2 - 32, 28);
-                put(&self.hide.handle, x + cw / 2, 552, cw / 2 - 24, 28);
+                put(&self.reconnect.handle, x + 24, 511, cw - 48, 28);
+                put(&self.hide.handle, x + 24, 552, cw - 48, 28);
                 put(&self.refresh.handle, x, h - 62, 136, 38);
-                put(&self.close_action.handle, x + 244, h - 62, 176, 180);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
             3 => {
@@ -635,13 +649,23 @@ impl App {
                 put(&self.add_self.handle, x + 276, 497, 176, 36);
                 put(&self.restore.handle, x, 580, 176, 38);
             }
-            _ => {
+            4 => {
                 put(&self.dependencies.handle, x + 24, 136, cw - 48, 110);
                 put(&self.doctor.handle, x + 24, 259, 120, 36);
                 put(&self.usbip.handle, x + 156, 259, 176, 36);
                 put(&self.hidhide_link.handle, x + 344, 259, 150, 36);
                 put(&self.install_status.handle, x + 24, 304, cw - 48, 28);
                 put(&self.logs.handle, x + 24, 400, cw - 48, (h - 448).max(88));
+            }
+            _ => {
+                put(&self.language.handle, x + 24, 164, cw - 48, 240);
+                put(&self.import_language.handle, x + 24, 212, 208, 38);
+                put(&self.language_folder.handle, x + 248, 212, 208, 38);
+                put(&self.language_notice.handle, x + 24, 266, cw - 48, 52);
+                put(&self.auto_start.handle, x + 24, 340, cw - 48, 38);
+                put(&self.start_on_login.handle, x + 24, 388, cw - 48, 38);
+                put(&self.close_action.handle, x + 24, 488, 280, 220);
+                put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
         }
         unsafe {
@@ -712,6 +736,7 @@ impl App {
             crate::tr!(gui_connection_feedback),
             crate::tr!(gui_device_hiding),
             crate::tr!(gui_diagnostics_logs),
+            crate::tr!(language_settings_title),
         ];
         let descriptions = [
             crate::tr!(gui_connection_status_and_feedback_at_a_glance),
@@ -719,6 +744,7 @@ impl App {
             crate::tr!(gui_choose_your_controller_and_adjust_audio_haptics),
             crate::tr!(gui_let_games_see_only_the_virtual_controller),
             crate::tr!(gui_check_dependencies_and_review_connection_and_recovery),
+            crate::tr!(language_settings_description),
         ];
         let p = self.page.get() as usize;
         text(x, 28, cw, 42, titles[p], &f.title, theme::INK);
@@ -791,15 +817,6 @@ impl App {
             1 => {}
             2 => {
                 card(x, 112, cw, 490);
-                text(
-                    x + 148,
-                    h - 62,
-                    88,
-                    24,
-                    crate::tr!(gui_on_close),
-                    &f.small,
-                    theme::MUTED,
-                );
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, crate::tr!(gui_physical_controller)),
                     (x + 24, 296, cw - 48, crate::tr!(gui_audio_output)),
@@ -821,7 +838,7 @@ impl App {
                         cw / 3 - 24,
                         &crate::tr!(
                             gui_microphone_db_0_50,
-                            gain = format!("{}", self.mic_gain.pos())
+                            gain = crate::i18n_arg!(self.mic_gain.pos())
                         ),
                     ),
                     (x + 24, 432, cw / 3 - 40, crate::tr!(gui_local_service_port)),
@@ -871,7 +888,7 @@ impl App {
                     theme::MUTED,
                 );
             }
-            _ => {
+            4 => {
                 card(x, 112, cw, 226);
                 card(x, 358, cw, h - 382);
                 text(
@@ -880,6 +897,27 @@ impl App {
                     cw - 48,
                     25,
                     crate::tr!(gui_application_log),
+                    &f.strong,
+                    theme::INK,
+                );
+            }
+            _ => {
+                card(x, 112, cw, 442);
+                text(
+                    x + 24,
+                    130,
+                    cw - 48,
+                    24,
+                    crate::tr!(language_label),
+                    &f.strong,
+                    theme::INK,
+                );
+                text(
+                    x + 24,
+                    452,
+                    cw - 48,
+                    24,
+                    crate::tr!(gui_on_close),
                     &f.strong,
                     theme::INK,
                 );
@@ -1005,6 +1043,138 @@ impl App {
         let e = e.into();
         self.controller.borrow().state.error_message(id, e.clone());
         nwg::modal_error_message(&self.window, "OpenDS", &e);
+    }
+    fn refresh_languages(&self) {
+        let mut languages = crate::i18n::languages_in(&crate::i18n::directory());
+        let requested = self.config.borrow().language.clone();
+        if requested != "auto" && !languages.iter().any(|l| l.code == requested) {
+            languages.push(crate::i18n::Language {
+                code: requested.clone(),
+                name: requested.clone(),
+                local: false,
+                translated: 0,
+                total: 1,
+            });
+        }
+        let mut labels = vec![crate::tr!(language_auto).to_owned()];
+        labels.extend(languages.iter().map(|l| {
+            crate::tr!(
+                language_option,
+                name = l.name.as_str(),
+                source = if l.translated == 0 {
+                    crate::tr!(language_unavailable)
+                } else if l.local {
+                    crate::tr!(language_local)
+                } else {
+                    crate::tr!(language_builtin)
+                },
+                coverage = l.translated * 100 / l.total.max(1)
+            )
+        }));
+        self.language.set_collection(labels);
+        self.language.set_selection(Some(
+            languages
+                .iter()
+                .position(|l| l.code == requested)
+                .map_or(0, |i| i + 1),
+        ));
+        *self.languages.borrow_mut() = languages;
+        self.language_notice.set_text(
+            if requested != self.initial_language || self.language_files_changed.get() {
+                crate::tr!(language_pending)
+            } else {
+                ""
+            },
+        );
+    }
+    fn select_language(&self) -> Result<(), String> {
+        let code = self
+            .language
+            .selection()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| self.languages.borrow().get(i).map(|l| l.code.clone()))
+            .unwrap_or_else(|| "auto".into());
+        if code == self.config.borrow().language && !self.language_files_changed.get() {
+            return Ok(());
+        }
+        let result = Config::load(&self.path).and_then(|mut c| {
+            c.language = code.clone();
+            c.save(&self.path)
+        });
+        if let Err(e) = result {
+            self.refresh_languages();
+            return Err(e);
+        }
+        self.config.borrow_mut().language = code.clone();
+        self.refresh_languages();
+        self.offer_language_restart(&code)
+    }
+    fn offer_language_restart(&self, code: &str) -> Result<(), String> {
+        let target = crate::i18n::Localizer::load(
+            code,
+            crate::i18n::system_language().as_deref(),
+            &crate::i18n::directory(),
+        );
+        let name = self
+            .languages
+            .borrow()
+            .iter()
+            .find(|l| l.code == target.code)
+            .map(|l| l.name.clone())
+            .unwrap_or_else(|| target.code.clone());
+        let bridging = self
+            .controller
+            .borrow()
+            .state
+            .running
+            .load(Ordering::Acquire);
+        // No RefCell borrow may cross the native dialog's nested message loop.
+        if crate::gui_language::restart_prompt(
+            theme::hwnd(&self.window.handle),
+            &target,
+            &name,
+            bridging,
+        )? {
+            crate::restart::request(bridging);
+            self.request_exit();
+        }
+        Ok(())
+    }
+    fn import_language(&self) -> Result<(), String> {
+        let hwnd = theme::hwnd(&self.window.handle);
+        let Some(path) = crate::gui_language::choose_file(hwnd)? else {
+            return Ok(());
+        };
+        let (catalog, text) = crate::i18n::read_pack(&path)
+            .map_err(|e| crate::tr!(language_import_error, error = e))?;
+        if crate::i18n::languages_in(&crate::i18n::directory())
+            .iter()
+            .any(|l| l.code == catalog.code)
+            && !crate::gui_language::confirm_replace(hwnd, &catalog.name)
+        {
+            return Ok(());
+        }
+        let imported = crate::i18n::install_text(catalog, &text, &crate::i18n::directory())
+            .map_err(|e| crate::tr!(language_import_error, error = e))?;
+        let requested = self.config.borrow().language.clone();
+        let resolved = crate::i18n::resolve(
+            &requested,
+            crate::i18n::system_language().as_deref(),
+            &crate::i18n::languages_in(&crate::i18n::directory()),
+        );
+        if resolved == imported.code {
+            self.language_files_changed.set(true);
+        }
+        self.refresh_languages();
+        if resolved == imported.code {
+            return self.offer_language_restart(&requested);
+        }
+        nwg::modal_info_message(
+            &self.window,
+            crate::tr!(language_import_title),
+            &crate::tr!(language_import_done, language = imported.name),
+        );
+        Ok(())
     }
     fn read_config(&self) -> Result<Config, String> {
         let mut c = self.config.borrow().clone();
@@ -1154,15 +1324,15 @@ impl App {
         let job = crate::dependencies::install(component)?;
         let message = crate::tr!(
             gui_preparing_complete_the_installation_in_the_official,
-            component = format!("{}", job.component)
+            component = crate::i18n_arg!(job.component)
         );
         self.install_status.set_text(&message);
         self.controller.borrow().state.log_message(
             crate::i18n::MessageId::gui_installation_log,
             crate::tr!(
                 gui_installation_log,
-                message = format!("{}", message),
-                path = format!("{}", job.log_path.display())
+                message = crate::i18n_arg!(message),
+                path = crate::i18n_arg!(job.log_path.display())
             ),
         );
         *self.installation.borrow_mut() = Some(job);
@@ -1193,18 +1363,18 @@ impl App {
                 if crate::dependencies::ready() {
                     crate::tr!(
                         gui_installed_dependencies_are_ready,
-                        component = format!("{}", job.component)
+                        component = crate::i18n_arg!(job.component)
                     )
                 } else {
                     crate::tr!(
                         gui_wizard_finished_but_dependencies_are_not_ready,
-                        component = format!("{}", job.component)
+                        component = crate::i18n_arg!(job.component)
                     )
                 }
             } else {
                 crate::tr!(
                     gui_installation_failed_or_was_cancelled_see_the,
-                    component = format!("{}", job.component)
+                    component = crate::i18n_arg!(job.component)
                 )
             };
             self.install_status.set_text(&message);
@@ -1249,7 +1419,7 @@ impl App {
                 .map(|e| {
                     crate::tr!(
                         gui_bridge_stopped,
-                        error = format!("{}", e.chars().take(64).collect::<String>())
+                        error = crate::i18n_arg!(e.chars().take(64).collect::<String>())
                     )
                 })
                 .unwrap_or_else(|| crate::tr!(gui_bridge_not_started).to_string())
@@ -1400,6 +1570,12 @@ impl App {
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
+        if event == E::OnComboxBoxSelection && handle == self.language {
+            if let Err(e) = self.select_language() {
+                self.error(e);
+            }
+            return;
+        }
         if event == E::OnComboxBoxSelection && handle == self.close_action {
             let action = match self.close_action.selection() {
                 Some(1) => CloseAction::Tray,
@@ -1591,6 +1767,19 @@ impl App {
         } else if handle == self.minimize_to_tray {
             self.minimize_to_tray();
             return;
+        } else if handle == self.import_language {
+            self.import_language()
+        } else if handle == self.language_folder {
+            let folder = crate::i18n::directory();
+            std::fs::create_dir_all(&folder)
+                .map_err(|e| e.to_string())
+                .and_then(|_| {
+                    std::process::Command::new("explorer.exe")
+                        .arg(folder)
+                        .spawn()
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                })
         } else if handle == self.save {
             self.save_settings().map(|_| {
                 self.controller.borrow().state.log_message(
@@ -1704,11 +1893,7 @@ fn run_inner(
         let state = app.controller.borrow().state.clone();
         state.running.store(true, Ordering::Release);
         app.update();
-        if !app
-            .status
-            .text()
-            .contains(crate::tr!(gui_waiting_for_controller))
-        {
+        if app.status.text() != crate::tr!(gui_bridge_started_waiting_for_controller) {
             return Err(crate::tr!(gui_tray_startup_did_not_display_the_waiting).into());
         }
         state.running.store(false, Ordering::Release);
@@ -1746,6 +1931,7 @@ fn run_inner(
             return Err(crate::tr!(gui_restoring_from_tray_did_not_restore_the).into());
         }
         crate::gui_close::smoke_test(hwnd)?;
+        crate::gui_language::smoke(hwnd)?;
         app.apply_close_choice(crate::gui_close::Choice::Cancel);
         if app.exiting.get() || unsafe { IsWindowVisible(hwnd) } == 0 {
             return Err(crate::tr!(gui_cancelling_close_changed_the_window_or_exit).into());

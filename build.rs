@@ -24,7 +24,15 @@ fn languages() {
         let text = std::fs::read_to_string(&p).unwrap();
         let c = language_pack::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         assert_eq!(p.file_stem().unwrap().to_str().unwrap(), c.code);
+        assert_eq!(
+            c.code
+                .parse::<unic_langid::LanguageIdentifier>()
+                .expect("valid BCP 47 language code")
+                .to_string(),
+            c.code
+        );
         let count = language_pack::compare(&c, &english).unwrap();
+        language_pack::require_restart_messages(&c).unwrap();
         if ["en-US", "zh-CN"].contains(&c.code.as_str()) {
             assert_eq!(
                 count,

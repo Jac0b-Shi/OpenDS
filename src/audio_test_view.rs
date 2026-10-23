@@ -41,7 +41,7 @@ impl Dialog {
             }));
             let ptr = &*state as *const RefCell<State>;
             let mut s = state.borrow_mut();
-            let dpi = GetDpiForWindow(parent).max(96);
+            let dpi = crate::gui_theme::window_dpi(parent).max(96);
             let p = |v| crate::gui_theme::px(v, dpi);
             s.hwnd = CreateWindowExW(
                 WS_EX_DLGMODALFRAME,
@@ -77,7 +77,7 @@ impl Dialog {
                 0,
                 CLEARTYPE_QUALITY as u32,
                 0,
-                wide("Microsoft YaHei UI").as_ptr(),
+                wide(crate::gui_theme::font_family()).as_ptr(),
             );
             for (i, (class, text, x, y, w, h)) in [
                 (
@@ -220,7 +220,7 @@ impl State {
             0,
             CLEARTYPE_QUALITY as u32,
             0,
-            wide("Microsoft YaHei UI").as_ptr(),
+            wide(crate::gui_theme::font_family()).as_ptr(),
         );
         for (control, (x, y, w, h)) in self.controls.iter().zip([
             (20, 22, 520, 38),
@@ -259,14 +259,14 @@ impl State {
             self.controls[5],
             wide(&crate::tr!(
                 audio_test_view_bluetooth_opus_packets_decoded_samples_usb_frames,
-                status = format!("{}", status.message),
-                packets = format!("{}", self.monitor.mic_packets.load(Relaxed)),
-                samples = format!("{}", self.monitor.mic_samples.load(Relaxed)),
-                frames = format!("{}", self.monitor.mic_usb_frames.load(Relaxed)),
-                underruns = format!("{}", self.monitor.mic_underruns.load(Relaxed)),
-                dropped = format!("{}", self.monitor.mic_dropped.load(Relaxed) / 48),
-                buffered = format!("{}", self.monitor.mic_buffered.load(Relaxed) / 48),
-                target = format!("{}", self.monitor.microphone_buffer_ms.load(Relaxed))
+                status = crate::i18n_arg!(status.message),
+                packets = crate::i18n_arg!(self.monitor.mic_packets.load(Relaxed)),
+                samples = crate::i18n_arg!(self.monitor.mic_samples.load(Relaxed)),
+                frames = crate::i18n_arg!(self.monitor.mic_usb_frames.load(Relaxed)),
+                underruns = crate::i18n_arg!(self.monitor.mic_underruns.load(Relaxed)),
+                dropped = crate::i18n_arg!(self.monitor.mic_dropped.load(Relaxed) / 48),
+                buffered = crate::i18n_arg!(self.monitor.mic_buffered.load(Relaxed) / 48),
+                target = crate::i18n_arg!(self.monitor.microphone_buffer_ms.load(Relaxed))
             ))
             .as_ptr(),
         );

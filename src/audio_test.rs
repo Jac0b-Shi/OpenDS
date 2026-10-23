@@ -67,7 +67,7 @@ fn countdown(shared: &Mutex<State>, cancel: &AtomicBool) -> bool {
     for second in (1..=3).rev() {
         status(
             shared,
-            crate::tr!(audio_test_starting_in, second = format!("{}", second)),
+            crate::tr!(audio_test_starting_in, second = crate::i18n_arg!(second)),
             true,
         );
         for _ in 0..50 {
@@ -179,8 +179,8 @@ impl Test {
                     match result {
                         Ok(Some((pcm, source))) => {
                             let (zero_frames, longest, interior) = zero_runs(&pcm);
-                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_test_captured_frames_stereo_zero_frames, &crate::tr!(audio_test_microphone_test_captured_frames_stereo_zero_frames, frames = format!("{}", pcm.len() / 2), silent = format!("{}", zero_frames), longest = format!("{}", longest), bursts = format!("{}", interior)));
-                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_source_decoded_frames_longest_packet_gap, &crate::tr!(audio_test_microphone_source_decoded_frames_longest_packet_gap, frames = format!("{}", source.pcm.len() / 2), gap = format!("{:.1}", source.longest_gap_ms), gaps = format!("{}", source.dropped), device = format!("{}", pcm.len() / 2)));
+                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_test_captured_frames_stereo_zero_frames, &crate::tr!(audio_test_microphone_test_captured_frames_stereo_zero_frames, frames = crate::i18n_arg!(pcm.len() / 2), silent = crate::i18n_arg!(zero_frames), longest = crate::i18n_arg!(longest), bursts = crate::i18n_arg!(interior)));
+                            crate::logging::record_message(crate::i18n::MessageId::audio_test_microphone_source_decoded_frames_longest_packet_gap, &crate::tr!(audio_test_microphone_source_decoded_frames_longest_packet_gap, frames = crate::i18n_arg!(source.pcm.len() / 2), gap = format!("{:.1}", source.longest_gap_ms), gaps = crate::i18n_arg!(source.dropped), device = crate::i18n_arg!(pcm.len() / 2)));
                             let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                             let seconds = pcm.len() as f32 / (RATE * 2) as f32;
                             if let Ok(mut s) = shared.lock() {
@@ -190,7 +190,7 @@ impl Test {
                                 s.pcm = pcm.into();
                                 s.source_pcm = source.pcm.into();
                                 s.status = Status {
-                                    message: crate::tr!(audio_test_recorded_s_peak, seconds = format!("{:.1}", seconds), peak = format!("{:.1}", peak as f32 / 327.68), hint = format!("{}", if peak == 0 {
+                                    message: crate::tr!(audio_test_recorded_s_peak, seconds = format!("{:.1}", seconds), peak = format!("{:.1}", peak as f32 / 327.68), hint = crate::i18n_arg!(if peak == 0 {
                                             crate::tr!(audio_test_no_audible_signal_recorded_check_mute_and)
                                         } else {
                                             crate::tr!(audio_test_ready_to_play_back)
@@ -267,9 +267,9 @@ fn check(code: u32, operation: &str) -> Result<(), String> {
             .unwrap_or(message.len());
         Err(crate::tr!(
             audio_test_failed,
-            operation = format!("{}", operation),
-            error = format!("{}", String::from_utf16_lossy(&message[..end])),
-            code = format!("{}", code)
+            operation = crate::i18n_arg!(operation),
+            error = crate::i18n_arg!(String::from_utf16_lossy(&message[..end])),
+            code = crate::i18n_arg!(code)
         ))
     }
 }
@@ -334,8 +334,7 @@ fn capture(
                 shared,
                 crate::tr!(
                     audio_test_recording_seconds_remaining,
-                    seconds = format!(
-                        "{}",
+                    seconds = crate::i18n_arg!(
                         SECONDS.saturating_sub(started.elapsed().as_secs() as usize)
                     )
                 ),

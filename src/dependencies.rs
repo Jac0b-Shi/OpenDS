@@ -75,45 +75,33 @@ impl Status {
     pub fn summary(&self) -> String {
         crate::tr!(
             dependencies_usb_ip_win2_ude_hidhide_libviiper_opus,
-            usbip = format!(
-                "{}",
-                if self.usbip_service {
-                    if self.usbip_tool {
-                        crate::tr!(dependencies_service_and_attachment_tool_available)
-                    } else {
-                        crate::tr!(dependencies_service_running_usbip_exe_is_missing)
-                    }
+            usbip = crate::i18n_arg!(if self.usbip_service {
+                if self.usbip_tool {
+                    crate::tr!(dependencies_service_and_attachment_tool_available)
                 } else {
-                    crate::tr!(dependencies_not_running_or_not_installed_install_reboot)
+                    crate::tr!(dependencies_service_running_usbip_exe_is_missing)
                 }
-            ),
-            hidhide = format!(
-                "{}",
-                match self.hidhide {
-                    HidHideStatus::InUse =>
-                        crate::tr!(dependencies_enabled_hiding_the_physical_controller),
-                    HidHideStatus::Accessible => crate::tr!(dependencies_accessible),
-                    HidHideStatus::Unavailable =>
-                        crate::tr!(dependencies_not_accessible_check_driver_and_permissions),
-                }
-            ),
-            viiper = format!(
-                "{}",
-                if self.viiper {
-                    crate::tr!(dependencies_available)
-                } else {
-                    crate::tr!(dependencies_matching_dll_missing_place_it_beside_opends)
-                }
-            ),
-            opus = format!(
-                "{}",
-                if self.opus {
-                    crate::tr!(dependencies_available)
-                } else {
-                    crate::tr!(dependencies_libopus_0_dll_missing_audio_and_native)
-                }
-            ),
-            path = format!("{}", crate::config::Config::path().display())
+            } else {
+                crate::tr!(dependencies_not_running_or_not_installed_install_reboot)
+            }),
+            hidhide = crate::i18n_arg!(match self.hidhide {
+                HidHideStatus::InUse =>
+                    crate::tr!(dependencies_enabled_hiding_the_physical_controller),
+                HidHideStatus::Accessible => crate::tr!(dependencies_accessible),
+                HidHideStatus::Unavailable =>
+                    crate::tr!(dependencies_not_accessible_check_driver_and_permissions),
+            }),
+            viiper = crate::i18n_arg!(if self.viiper {
+                crate::tr!(dependencies_available)
+            } else {
+                crate::tr!(dependencies_matching_dll_missing_place_it_beside_opends)
+            }),
+            opus = crate::i18n_arg!(if self.opus {
+                crate::tr!(dependencies_available)
+            } else {
+                crate::tr!(dependencies_libopus_0_dll_missing_audio_and_native)
+            }),
+            path = crate::i18n_arg!(crate::config::Config::path().display())
         )
     }
 
@@ -143,7 +131,7 @@ impl Installation {
         self.child.try_wait().map_err(|e| {
             crate::tr!(
                 dependencies_could_not_read_installation_result,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )
         })
     }
@@ -217,7 +205,7 @@ pub fn install(component: &str) -> Result<Installation, String> {
         .map_err(|e| {
             crate::tr!(
                 dependencies_could_not_start_installer,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )
         })?;
     Ok(Installation {
@@ -246,9 +234,9 @@ mod tests {
             opus: true,
         };
         assert!(status.ready());
-        assert!(status
-            .summary()
-            .contains("HidHide：已启用，正在隐藏物理手柄"));
+        assert!(status.summary().contains(crate::tr!(
+            dependencies_enabled_hiding_the_physical_controller
+        )));
         status.hidhide = HidHideStatus::Unavailable;
         assert!(!status.ready());
     }

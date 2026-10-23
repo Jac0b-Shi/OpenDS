@@ -3,6 +3,13 @@ use fluent_syntax::{ast::*, parser};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
+pub const RESTART_MESSAGES: &[&str] = &[
+    "language-restart-title",
+    "language-restart-message",
+    "language-restart-bridge",
+    "language-restart-later",
+    "language-restart-now",
+];
 #[derive(Debug, Clone)]
 pub struct Catalog {
     pub code: String,
@@ -76,7 +83,11 @@ fn variables(
     key: &str,
     defs: &BTreeMap<String, Definition>,
     stack: &mut Vec<String>,
+    cache: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<BTreeSet<String>, String> {
+    if let Some(value) = cache.get(key) {
+        return Ok(value.clone());
+    }
     if stack.len() >= 64 || stack.iter().any(|s| s == key) {
         return Err(format!("Cyclic or excessively nested reference: {key}"));
     }
@@ -87,12 +98,13 @@ fn variables(
     let mut vars = d.variables.clone();
     for (reference, bound) in &d.references {
         vars.extend(
-            variables(reference, defs, stack)?
+            variables(reference, defs, stack, cache)?
                 .difference(bound)
                 .cloned(),
         );
     }
     stack.pop();
+    cache.insert(key.to_owned(), vars.clone());
     Ok(vars)
 }
 pub fn parse(text: &str) -> Result<Catalog, String> {
@@ -160,8 +172,9 @@ pub fn parse(text: &str) -> Result<Catalog, String> {
         return Err("Unsupported language schema version".into());
     }
     let mut all = BTreeMap::new();
+    let mut cache = BTreeMap::new();
     for key in defs.keys() {
-        let v = variables(key, &defs, &mut vec![])?;
+        let v = variables(key, &defs, &mut vec![], &mut cache)?;
         if !key.starts_with(['-', '.']) && !key.starts_with("meta-") && !key.contains('.') {
             all.insert(key.clone(), v);
         }
@@ -185,4 +198,12 @@ pub fn compare(c: &Catalog, english: &Catalog) -> Result<usize, String> {
         }
     }
     Ok(found)
+}
+pub fn require_restart_messages(c: &Catalog) -> Result<(), String> {
+    for key in RESTART_MESSAGES {
+        if !c.variables.contains_key(*key) {
+            return Err(format!("Missing required restart message: {key}"));
+        }
+    }
+    Ok(())
 }

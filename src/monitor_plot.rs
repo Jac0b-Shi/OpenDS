@@ -108,10 +108,11 @@ impl Backend<'_> {
             } else {
                 (text.chars().count() as u32 * 7, 15)
             };
-            self.renderer
-                .text_sizes
-                .borrow_mut()
-                .insert(text.to_owned(), size);
+            let mut cache = self.renderer.text_sizes.borrow_mut();
+            if cache.len() >= 256 {
+                cache.clear();
+            }
+            cache.insert(text.to_owned(), size);
             size
         }
     }

@@ -70,7 +70,7 @@ impl std::fmt::Display for InstanceError {
                 "{}",
                 crate::tr!(
                     persistence_could_not_create_process_lock,
-                    error = format!("{}", e)
+                    error = crate::i18n_arg!(e)
                 )
             ),
         }

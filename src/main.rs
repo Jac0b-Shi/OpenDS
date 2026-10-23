@@ -14,6 +14,7 @@ mod config;
 mod dependencies;
 mod gui;
 mod gui_close;
+mod gui_language;
 mod gui_theme;
 mod hid;
 mod hidhide;
@@ -32,6 +33,7 @@ mod opus;
 mod output;
 mod persistence;
 mod report;
+mod restart;
 mod startup;
 mod viiper;
 
@@ -112,14 +114,11 @@ fn cli() -> Result<(), String> {
                 "{}",
                 crate::tr!(
                     main_windows_sign_in_startup,
-                    state = format!(
-                        "{}",
-                        if startup::enabled()? {
-                            crate::tr!(main_enabled)
-                        } else {
-                            crate::tr!(main_disabled)
-                        }
-                    )
+                    state = crate::i18n_arg!(if startup::enabled()? {
+                        crate::tr!(main_enabled)
+                    } else {
+                        crate::tr!(main_disabled)
+                    })
                 )
             );
             return Ok(());
@@ -176,7 +175,7 @@ fn cli() -> Result<(), String> {
         _ => {
             return Err(crate::tr!(
                 main_unknown_command_use_opends_help,
-                command = format!("{}", command)
+                command = crate::i18n_arg!(command)
             ))
         }
     }
@@ -265,7 +264,9 @@ fn main() {
             }
         }
     }
-    if let Err(e) = cli() {
+    if let Err(e) = cli().and_then(|_| {
+        restart::launch_pending().map_err(|e| crate::tr!(language_restart_error, error = e))
+    }) {
         eprintln!("OpenDS：{e}");
         if gui {
             native_windows_gui::simple_message("OpenDS", &e);

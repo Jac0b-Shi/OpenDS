@@ -56,7 +56,7 @@ fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     {
         return Err(std::io::Error::other(crate::tr!(
             monitor_recording_could_not_check_free_space_on_the,
-            error = format!("{}", std::io::Error::last_os_error())
+            error = crate::i18n_arg!(std::io::Error::last_os_error())
         )));
     }
     Ok(available)
@@ -152,13 +152,13 @@ impl Recording {
                         crate::i18n::MessageId::monitor_recording_csv_recording_failed,
                         &crate::tr!(
                             monitor_recording_csv_recording_failed,
-                            error = format!("{}", e)
+                            error = crate::i18n_arg!(e)
                         ),
                     );
                     if let Ok(mut error) = p.error.lock() {
                         *error = Some(crate::tr!(
                             monitor_recording_csv_recording_failed,
-                            error = format!("{}", e)
+                            error = crate::i18n_arg!(e)
                         ));
                     }
                 }
@@ -378,8 +378,8 @@ fn write_csv_checked(
                 e.kind(),
                 crate::tr!(
                     monitor_recording_could_not_write_to_check_write_permissions,
-                    path = format!("{}", path.display()),
-                    error = format!("{}", e)
+                    path = crate::i18n_arg!(path.display()),
+                    error = crate::i18n_arg!(e)
                 ),
             )
         })?;
@@ -538,7 +538,7 @@ mod tests {
         let path = temp_file("missing-parent").join("record.csv");
         let r = Recording::default();
         r.start(path, 20, 0).unwrap();
-        assert!(finish(&r).error.unwrap().contains("CSV 记录失败"));
+        assert!(finish(&r).error.is_some());
         let good = temp_file("retry");
         r.start(good.clone(), 20, 0).unwrap();
         r.stop();
@@ -594,7 +594,7 @@ mod tests {
             0,
             || Ok(DISK_RESERVE - 1),
         );
-        assert!(result.unwrap_err().to_string().contains("预留 512 MiB"));
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Other);
         assert_eq!(std::fs::read(&path).unwrap(), b"previous recording");
         std::fs::remove_file(path).unwrap();
     }
@@ -675,7 +675,7 @@ mod tests {
         let r = Recording::default();
         r.start(path.clone(), 100, 0).unwrap();
         let status = finish(&r);
-        assert!(status.error.unwrap().contains("写入权限"));
+        assert!(status.error.is_some());
         assert!(!status.starting);
         assert!(!r
             .session

@@ -58,7 +58,7 @@ fn hkcu() -> Hkey {
 fn error(code: i32) -> String {
     crate::tr!(
         startup_windows_sign_in_startup_setup_failed,
-        error = format!("{}", std::io::Error::from_raw_os_error(code))
+        error = crate::i18n_arg!(std::io::Error::from_raw_os_error(code))
     )
 }
 pub fn command(exe: &Path) -> Result<String, String> {

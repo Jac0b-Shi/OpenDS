@@ -135,7 +135,7 @@ impl BridgeController {
                 })
                 .map_err(|e| {
                     self.state.running.store(false, Ordering::Release);
-                    crate::tr!(bridge_could_not_start_bridge_thread, error = format!("{}", e))
+                    crate::tr!(bridge_could_not_start_bridge_thread, error = crate::i18n_arg!(e))
                 })?,
         );
         Ok(())
@@ -399,7 +399,7 @@ fn run_session(
                     crate::tr!(
                         bridge_could_not_read_feature_0x_retrying,
                         report = format!("{:02X}", id),
-                        error = format!("{}", e)
+                        error = crate::i18n_arg!(e)
                     ),
                 ),
             }
@@ -456,15 +456,10 @@ fn run_session(
         crate::i18n::MessageId::bridge_physical_controller_firmware_audio_protocol,
         crate::tr!(
             bridge_physical_controller_firmware_audio_protocol,
-            firmware = format!(
-                "{}",
-                firmware
-                    .map(|v| format!("{}.{:02}", v >> 8, v & 255))
-                    .unwrap_or_else(
-                        || crate::tr!(bridge_read_failed_using_compatibility_mode).into()
-                    )
-            ),
-            protocol = format!("{}", if vibration_v2 { "v2" } else { "v1" })
+            firmware = crate::i18n_arg!(firmware
+                .map(|v| format!("{}.{:02}", v >> 8, v & 255))
+                .unwrap_or_else(|| crate::tr!(bridge_read_failed_using_compatibility_mode).into())),
+            protocol = crate::i18n_arg!(if vibration_v2 { "v2" } else { "v1" })
         ),
     );
     let mut session = Session {
@@ -508,7 +503,7 @@ fn run_session(
         physical.write_result(&r, 200).map_err(|e| {
             crate::tr!(
                 bridge_could_not_enable_full_input_mode,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )
         })?;
     }
@@ -543,7 +538,7 @@ fn run_session(
         .map_err(|e| {
             crate::tr!(
                 bridge_could_not_start_output_thread,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )
         })?,
     );
@@ -626,7 +621,7 @@ fn run_session(
                             crate::i18n::MessageId::bridge_microphone_safety_buffer_changed_to_ms,
                             crate::tr!(
                                 bridge_microphone_safety_buffer_changed_to_ms,
-                                milliseconds = format!("{}", wanted)
+                                milliseconds = crate::i18n_arg!(wanted)
                             ),
                         );
                     }
@@ -707,7 +702,7 @@ fn run_session(
             Err(e) => {
                 return Err(crate::tr!(
                     bridge_could_not_read_bluetooth_controller,
-                    error = format!("{}", e)
+                    error = crate::i18n_arg!(e)
                 ))
             }
         }
@@ -736,7 +731,7 @@ fn run_session(
             old_outputs = outputs;
             last_stats = Instant::now();
             if diagnostic.elapsed() >= Duration::from_secs(60) {
-                state.log_message(crate::i18n::MessageId::bridge_microphone_audio_flags_header_opus_packets_decoded, crate::tr!(bridge_microphone_audio_flags_header_opus_packets_decoded, flags = format!("{}", state.monitor.mic_tagged.load(Ordering::Relaxed)), header = format!("{:02X}", state.monitor.mic_prefix.load(Ordering::Relaxed)), packets = format!("{}", state.monitor.mic_packets.load(Ordering::Relaxed)), samples = format!("{}", state.monitor.mic_samples.load(Ordering::Relaxed)), frames = format!("{}", state.monitor.mic_usb_frames.load(Ordering::Relaxed))));
+                state.log_message(crate::i18n::MessageId::bridge_microphone_audio_flags_header_opus_packets_decoded, crate::tr!(bridge_microphone_audio_flags_header_opus_packets_decoded, flags = crate::i18n_arg!(state.monitor.mic_tagged.load(Ordering::Relaxed)), header = format!("{:02X}", state.monitor.mic_prefix.load(Ordering::Relaxed)), packets = crate::i18n_arg!(state.monitor.mic_packets.load(Ordering::Relaxed)), samples = crate::i18n_arg!(state.monitor.mic_samples.load(Ordering::Relaxed)), frames = crate::i18n_arg!(state.monitor.mic_usb_frames.load(Ordering::Relaxed))));
                 let raw = audio
                     .stats
                     .last_output
@@ -746,29 +741,32 @@ fn run_session(
                     crate::i18n::MessageId::bridge_diagnostics_full_input_simple_input_gyro_game,
                     crate::tr!(
                         bridge_diagnostics_full_input_simple_input_gyro_game,
-                        full = format!("{}", full),
-                        simple = format!("{}", simple),
+                        full = crate::i18n_arg!(full),
+                        simple = crate::i18n_arg!(simple),
                         gyro = format!("{:?}", gyro),
-                        callbacks = format!("{}", callbacks),
-                        rumble = format!("{}", audio.stats.rumble_updates.load(Ordering::Relaxed)),
+                        callbacks = crate::i18n_arg!(callbacks),
+                        rumble =
+                            crate::i18n_arg!(audio.stats.rumble_updates.load(Ordering::Relaxed)),
                         haptics =
-                            format!("{}", audio.stats.haptics_nonzero.load(Ordering::Relaxed)),
-                        audio = format!("{}", audio.stats.pcm_callbacks.load(Ordering::Relaxed)),
+                            crate::i18n_arg!(audio.stats.haptics_nonzero.load(Ordering::Relaxed)),
+                        audio = crate::i18n_arg!(audio.stats.pcm_callbacks.load(Ordering::Relaxed)),
                         flags = format!("{:02X}", raw[0]),
-                        motor_left = format!("{}", raw[3]),
-                        motor_right = format!("{}", raw[2]),
-                        outputs = format!("{}", outputs),
-                        failures = format!("{}", audio.stats.write_fail.load(Ordering::Relaxed))
+                        motor_left = crate::i18n_arg!(raw[3]),
+                        motor_right = crate::i18n_arg!(raw[2]),
+                        outputs = crate::i18n_arg!(outputs),
+                        failures = crate::i18n_arg!(audio.stats.write_fail.load(Ordering::Relaxed))
                     ),
                 );
                 state.log_message(
                     crate::i18n::MessageId::bridge_audio_batches_max_b_rejected_nonzero_encoding,
                     crate::tr!(
                         bridge_audio_batches_max_b_rejected_nonzero_encoding,
-                        bytes = format!("{}", audio.stats.pcm_max_bytes.load(Ordering::Relaxed)),
-                        rejected = format!("{}", audio.stats.pcm_rejected.load(Ordering::Relaxed)),
-                        nonzero = format!("{}", audio.stats.pcm_nonzero.load(Ordering::Relaxed)),
-                        failures = format!("{}", audio.stats.encode_fail.load(Ordering::Relaxed))
+                        bytes = crate::i18n_arg!(audio.stats.pcm_max_bytes.load(Ordering::Relaxed)),
+                        rejected =
+                            crate::i18n_arg!(audio.stats.pcm_rejected.load(Ordering::Relaxed)),
+                        nonzero = crate::i18n_arg!(audio.stats.pcm_nonzero.load(Ordering::Relaxed)),
+                        failures =
+                            crate::i18n_arg!(audio.stats.encode_fail.load(Ordering::Relaxed))
                     ),
                 );
                 diagnostic = Instant::now();

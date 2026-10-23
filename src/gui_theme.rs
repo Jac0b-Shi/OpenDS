@@ -81,12 +81,59 @@ pub struct Fonts {
     pub value: nwg::Font,
     pub strong: nwg::Font,
 }
+pub fn font_family() -> &'static str {
+    static FAMILY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FAMILY.get_or_init(|| unsafe {
+        let mut metrics: NONCLIENTMETRICSW = std::mem::zeroed();
+        metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+        if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            &mut metrics as *mut _ as *mut _,
+            0,
+        ) != 0
+        {
+            let end = metrics
+                .lfMessageFont
+                .lfFaceName
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(32);
+            String::from_utf16_lossy(&metrics.lfMessageFont.lfFaceName[..end])
+        } else {
+            "Segoe UI".into()
+        }
+    })
+}
+fn smoke_dpi() -> Option<u32> {
+    static DPI: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *DPI.get_or_init(|| {
+        if std::env::args().nth(1).as_deref() != Some("ui-smoke-test") {
+            return None;
+        }
+        std::env::var("OPENDS_UI_SMOKE_DPI")
+            .ok()?
+            .parse::<u32>()
+            .ok()
+            .filter(|d| [96, 144, 192].contains(d))
+    })
+}
+pub fn window_dpi(hwnd: HWND) -> u32 {
+    smoke_dpi()
+        .unwrap_or_else(|| unsafe { GetDpiForWindow(hwnd) })
+        .max(96)
+}
+pub fn system_dpi() -> u32 {
+    smoke_dpi()
+        .unwrap_or_else(|| unsafe { GetDpiForSystem() })
+        .max(96)
+}
 impl Fonts {
     pub fn new(dpi: u32) -> Result<Self, String> {
         fn font(size: i32, weight: u32, dpi: u32) -> Result<nwg::Font, String> {
             let mut f = Default::default();
             nwg::Font::builder()
-                .family("Microsoft YaHei UI")
+                .family(font_family())
                 .size_absolute(px(size, dpi) as u32)
                 .weight(weight)
                 .build(&mut f)
@@ -124,7 +171,28 @@ pub unsafe fn text(dc: HDC, r: &RECT, s: &str, font: &nwg::Font, color: u32, fla
     SetTextColor(dc, color);
     let mut rect = *r;
     let s = wide(s);
-    DrawTextW(dc, s.as_ptr(), -1, &mut rect, flags);
+    let mut measured = rect;
+    DrawTextW(
+        dc,
+        s.as_ptr(),
+        -1,
+        &mut measured,
+        DT_CALCRECT | DT_SINGLELINE,
+    );
+    let mut metrics: TEXTMETRICW = std::mem::zeroed();
+    GetTextMetricsW(dc, &mut metrics);
+    let mut actual_flags = flags;
+    if measured.right - measured.left > rect.right - rect.left
+        && rect.bottom - rect.top >= metrics.tmHeight * 2
+    {
+        actual_flags = (flags & !(DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER)) | DT_WORDBREAK;
+        let mut wrapped = rect;
+        DrawTextW(dc, s.as_ptr(), -1, &mut wrapped, actual_flags | DT_CALCRECT);
+        if flags & DT_VCENTER != 0 {
+            rect.top += ((rect.bottom - rect.top - (wrapped.bottom - wrapped.top)) / 2).max(0);
+        }
+    }
+    DrawTextW(dc, s.as_ptr(), -1, &mut rect, actual_flags);
     SelectObject(dc, old);
 }
 pub unsafe fn draw_button(

@@ -162,7 +162,7 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(crate::tr!(
                 config_could_not_read_configuration,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )),
         }
     }
@@ -186,7 +186,7 @@ impl Config {
             let (key, value) = line.split_once('=').ok_or_else(|| {
                 crate::tr!(
                     config_configuration_line_is_missing,
-                    line = format!("{}", i + 1)
+                    line = crate::i18n_arg!(i + 1)
                 )
             })?;
             let value = value.trim();
@@ -195,8 +195,8 @@ impl Config {
                     cfg.$field = value.parse().map_err(|_| {
                         crate::tr!(
                             config_invalid_configuration,
-                            key = format!("{}", key.trim()),
-                            value = format!("{}", value)
+                            key = crate::i18n_arg!(key.trim()),
+                            value = crate::i18n_arg!(value)
                         )
                     })?
                 };
@@ -209,7 +209,7 @@ impl Config {
                         _ => {
                             return Err(crate::tr!(
                                 config_configuration_must_be_0_1_or_true,
-                                key = format!("{}", key.trim())
+                                key = crate::i18n_arg!(key.trim())
                             ))
                         }
                     }
@@ -298,7 +298,7 @@ impl Config {
         crate::persistence::atomic_write(path, s.as_bytes()).map_err(|e| {
             crate::tr!(
                 config_could_not_save_configuration,
-                error = format!("{}", e)
+                error = crate::i18n_arg!(e)
             )
         })
     }
@@ -340,6 +340,30 @@ impl fmt::Display for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn language_defaults_to_system_and_round_trips_unknown_preferences() {
+        assert_eq!(Config::default().language, "auto");
+        let path =
+            std::env::temp_dir().join(format!("opends-language-config-{}.ini", std::process::id()));
+        for code in ["auto", "en-US", "zh-CN", "de-DE"] {
+            let cfg = Config {
+                language: code.into(),
+                microphone_gain_db: 29,
+                ..Default::default()
+            };
+            cfg.save(&path).unwrap();
+            let loaded = Config::load(&path).unwrap();
+            assert_eq!(loaded.language, code);
+            assert_eq!(loaded.microphone_gain_db, 29);
+        }
+        let cfg = Config {
+            language: "de-DE\nport=1".into(),
+            ..Default::default()
+        };
+        assert!(cfg.save(&path).is_err());
+        assert_eq!(Config::load(&path).unwrap().language, "de-DE");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn close_action_defaults_to_asking_and_round_trips() {

@@ -33,7 +33,7 @@ fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| crate::tr!(attach_could_not_start_usb_ip, error = format!("{}", e)))?;
+        .map_err(|e| crate::tr!(attach_could_not_start_usb_ip, error = crate::i18n_arg!(e)))?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -44,8 +44,8 @@ fn run(
                 }
                 return Err(crate::tr!(
                     attach_usb_ip_failed,
-                    output = format!("{}", String::from_utf8_lossy(&output.stdout)),
-                    error = format!("{}", String::from_utf8_lossy(&output.stderr))
+                    output = crate::i18n_arg!(String::from_utf8_lossy(&output.stdout)),
+                    error = crate::i18n_arg!(String::from_utf8_lossy(&output.stderr))
                 ));
             }
             Err(e) => {

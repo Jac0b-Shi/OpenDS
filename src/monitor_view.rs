@@ -141,6 +141,7 @@ struct Renderer {
     title: Com<IDWriteTextFormat>,
     paths: RefCell<Vec<((u32, u32), Com<ID2D1PathGeometry>)>>,
     text_sizes: RefCell<std::collections::HashMap<String, (u32, u32)>>,
+    layouts: RefCell<std::collections::HashMap<(String, u8, u32, u32), Com<IDWriteTextLayout>>>,
 }
 impl Renderer {
     unsafe fn new(hwnd: HWND) -> Result<Self, String> {
@@ -159,7 +160,7 @@ impl Renderer {
         ))?;
         let mut r: RECT = std::mem::zeroed();
         GetClientRect(hwnd, &mut r);
-        let dpi = GetDpiForWindow(hwnd).max(96) as f32;
+        let dpi = crate::gui_theme::window_dpi(hwnd).max(96) as f32;
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             _type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -186,13 +187,13 @@ impl Renderer {
         let make = |size| -> Result<Com<IDWriteTextFormat>, String> {
             let mut f = Com::empty();
             hr((*dw.0).CreateTextFormat(
-                wide("Microsoft YaHei UI").as_ptr(),
+                wide(crate::gui_theme::font_family()).as_ptr(),
                 null_mut(),
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 size,
-                wide("zh-CN").as_ptr(),
+                wide(&crate::i18n::current().code).as_ptr(),
                 f.out(),
             ))?;
             Ok(f)
@@ -210,30 +211,65 @@ impl Renderer {
             title,
             paths: RefCell::new(Vec::new()),
             text_sizes: RefCell::new(std::collections::HashMap::new()),
+            layouts: RefCell::new(std::collections::HashMap::new()),
         })
     }
     unsafe fn text(&self, x: f32, y: f32, w: f32, h: f32, s: &str, size: u8, c: D2D1_COLOR_F) {
+        if s.is_empty() || w <= 0. || h <= 0. {
+            return;
+        }
         (*self.brush.0).SetColor(&c);
+        let key = (s.to_owned(), size, w.to_bits(), h.to_bits());
+        if let Some(layout) = self.layouts.borrow().get(&key) {
+            (*self.target.0).DrawTextLayout(
+                D2D1_POINT_2F { x, y },
+                layout.0,
+                self.brush.0 as _,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            );
+            return;
+        }
         let t = wide(s);
         let f = match size {
             0 => self.small.0,
             2 => self.title.0,
             _ => self.body.0,
         };
-        (*self.target.0).DrawText(
-            t.as_ptr(),
-            (t.len() - 1) as u32,
-            f,
-            &D2D1_RECT_F {
-                left: x,
-                top: y,
-                right: x + w,
-                bottom: y + h,
-            },
+        let mut layout = Com::empty();
+        if (*self._dw.0).CreateTextLayout(t.as_ptr(), (t.len() - 1) as u32, f, w, h, layout.out())
+            < 0
+        {
+            return;
+        }
+        let mut font_size = (*f).GetFontSize();
+        for _ in 0..4 {
+            let mut metrics: DWRITE_TEXT_METRICS = std::mem::zeroed();
+            if (*layout.0).GetMetrics(&mut metrics) < 0
+                || metrics.height <= h + 0.5
+                || font_size <= 8.
+            {
+                break;
+            }
+            font_size = (font_size * (h / metrics.height).min(0.9)).max(8.);
+            (*layout.0).SetFontSize(
+                font_size,
+                DWRITE_TEXT_RANGE {
+                    startPosition: 0,
+                    length: (t.len() - 1) as u32,
+                },
+            );
+        }
+        (*self.target.0).DrawTextLayout(
+            D2D1_POINT_2F { x, y },
+            layout.0,
             self.brush.0 as _,
             D2D1_DRAW_TEXT_OPTIONS_CLIP,
-            winapi::um::dcommon::DWRITE_MEASURING_MODE_NATURAL,
         );
+        let mut cache = self.layouts.borrow_mut();
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, layout);
     }
     unsafe fn rect(&self, x: f32, y: f32, w: f32, h: f32, r: f32, c: D2D1_COLOR_F) {
         (*self.brush.0).SetColor(&c);
@@ -780,7 +816,7 @@ impl MonitorView {
             ] {
                 for v in &options {
                     let text = if idx == 8 {
-                        crate::tr!(monitor_view_seconds, seconds = format!("{}", v))
+                        crate::tr!(monitor_view_seconds, seconds = crate::i18n_arg!(v))
                     } else if idx == 7 {
                         format!("{v} FPS")
                     } else {
@@ -908,7 +944,7 @@ unsafe fn register(name: &str, proc: WNDPROC) {
 }
 impl ViewState {
     unsafe fn layout(&mut self) {
-        let dpi = GetDpiForWindow(self.root).max(96);
+        let dpi = crate::gui_theme::window_dpi(self.root).max(96);
         let p = |v: i32| crate::gui_theme::px(v, dpi);
         let mut r: RECT = std::mem::zeroed();
         GetClientRect(self.root, &mut r);
@@ -928,7 +964,7 @@ impl ViewState {
             0,
             CLEARTYPE_QUALITY as u32,
             0,
-            wide("Microsoft YaHei UI").as_ptr(),
+            wide(crate::gui_theme::font_family()).as_ptr(),
         );
         for c in &self.controls {
             SendMessageW(*c, WM_SETFONT, font as usize, 1);
@@ -1030,7 +1066,7 @@ impl ViewState {
                     crate::i18n::MessageId::monitor_view_could_not_save_monitor_preferences,
                     &crate::tr!(
                         monitor_view_could_not_save_monitor_preferences,
-                        error = format!("{}", e)
+                        error = crate::i18n_arg!(e)
                     ),
                 );
             }
@@ -1041,7 +1077,7 @@ impl ViewState {
             return;
         }
         self.renderer = None;
-        let dpi = GetDpiForWindow(self.parent).max(96) as i32;
+        let dpi = crate::gui_theme::window_dpi(self.parent).max(96) as i32;
         self.popup = CreateWindowExW(
             WS_EX_APPWINDOW
                 | if SendMessageW(self.controls[5], BM_GETCHECK, 0, 0) == BST_CHECKED as isize {
@@ -1236,7 +1272,7 @@ impl ViewState {
                 if recording.dropped > 0 {
                     crate::tr!(
                         monitor_view_dropped,
-                        count = format!("{}", recording.dropped)
+                        count = crate::i18n_arg!(recording.dropped)
                     )
                 } else {
                     String::new()
@@ -1250,28 +1286,22 @@ impl ViewState {
         } else {
             crate::tr!(
                 monitor_view_dropped_decode_errors_stream_resets_cache_mib,
-                capture = format!(
-                    "{}",
-                    if self.hub.active.load(Relaxed) {
-                        crate::tr!(monitor_view_capturing)
-                    } else if !self.has_collected {
-                        crate::tr!(monitor_view_waiting_for_manual_start)
-                    } else {
-                        crate::tr!(monitor_view_stopped_history_retained)
-                    }
-                ),
-                connection = format!(
-                    "{}",
-                    if self.hub.connected.load(Relaxed) {
-                        crate::tr!(monitor_view_connected)
-                    } else {
-                        crate::tr!(monitor_view_waiting_for_controller)
-                    }
-                ),
-                recording = format!("{}", record_status),
-                drops = format!("{}", self.hub.dropped()),
-                errors = format!("{}", self.hub.decode_failures.load(Relaxed)),
-                resets = format!("{}", self.hub.resets.load(Relaxed)),
+                capture = crate::i18n_arg!(if self.hub.active.load(Relaxed) {
+                    crate::tr!(monitor_view_capturing)
+                } else if !self.has_collected {
+                    crate::tr!(monitor_view_waiting_for_manual_start)
+                } else {
+                    crate::tr!(monitor_view_stopped_history_retained)
+                }),
+                connection = crate::i18n_arg!(if self.hub.connected.load(Relaxed) {
+                    crate::tr!(monitor_view_connected)
+                } else {
+                    crate::tr!(monitor_view_waiting_for_controller)
+                }),
+                recording = crate::i18n_arg!(record_status),
+                drops = crate::i18n_arg!(self.hub.dropped()),
+                errors = crate::i18n_arg!(self.hub.decode_failures.load(Relaxed)),
+                resets = crate::i18n_arg!(self.hub.resets.load(Relaxed)),
                 cache = format!("{:.1}", self.hub.allocated_bytes() as f32 / 1048576.)
             )
         };
@@ -1288,7 +1318,7 @@ impl ViewState {
         }
         let mut rc: RECT = std::mem::zeroed();
         GetClientRect(self.canvas, &mut rc);
-        let dpi = GetDpiForWindow(self.canvas).max(96) as f32;
+        let dpi = crate::gui_theme::window_dpi(self.canvas).max(96) as f32;
         let w = rc.right as f32 * 96. / dpi;
         let h = rc.bottom as f32 * 96. / dpi;
         let now = self.hub.display_time();
@@ -1470,28 +1500,22 @@ impl ViewState {
         } else if group == 0 {
             crate::tr!(
                 monitor_view_volume,
-                route = format!(
-                    "{}",
-                    if self.hub.route.load(Relaxed) == 0x96 {
-                        crate::tr!(monitor_view_headphone_route)
-                    } else {
-                        crate::tr!(gui_controller_speaker)
-                    }
-                ),
-                volume = format!("{}", self.hub.volume.load(Relaxed))
+                route = crate::i18n_arg!(if self.hub.route.load(Relaxed) == 0x96 {
+                    crate::tr!(monitor_view_headphone_route)
+                } else {
+                    crate::tr!(gui_controller_speaker)
+                }),
+                volume = crate::i18n_arg!(self.hub.volume.load(Relaxed))
             )
         } else if group == 2 {
             crate::tr!(
                 monitor_view_source_original_level_forwarded_db,
-                gain = format!("{}", self.hub.microphone_gain_db.load(Relaxed)),
-                limiter = format!(
-                    "{}",
-                    if self.hub.microphone_gain_db.load(Relaxed) > 0 {
-                        crate::tr!(monitor_view_limited)
-                    } else {
-                        ""
-                    }
-                )
+                gain = crate::i18n_arg!(self.hub.microphone_gain_db.load(Relaxed)),
+                limiter = crate::i18n_arg!(if self.hub.microphone_gain_db.load(Relaxed) > 0 {
+                    crate::tr!(monitor_view_limited)
+                } else {
+                    ""
+                })
             )
         } else {
             crate::tr!(monitor_view_blue_source_orange_forwarded_fixed_100).into()

@@ -64,6 +64,7 @@ pub fn read_pack(path: &Path) -> Result<(Catalog, String), String> {
         return Err("Language code must be canonical BCP 47 (for example, de-DE)".into());
     }
     language_pack::compare(&c, &english_catalog())?;
+    language_pack::require_restart_messages(&c)?;
     Ok((c, text))
 }
 pub fn directory() -> PathBuf {
@@ -128,14 +129,30 @@ pub fn resolve(requested: &str, system: Option<&str>, available: &[Language]) ->
     if let Some(exact) = available.iter().find(|l| l.code == id.to_string()) {
         return exact.code.clone();
     }
+    let mut desired = id.clone();
+    desired.maximize();
+    let mut candidates = vec![];
     for l in available {
-        if let Ok(candidate) = l.code.parse::<LanguageIdentifier>() {
-            if id.language == candidate.language
-                && id.script.zip(candidate.script).is_none_or(|(a, b)| a == b)
-            {
-                return l.code.clone();
+        if let Ok(mut candidate) = l.code.parse::<LanguageIdentifier>() {
+            let generic = candidate.region.is_none() && candidate.script.is_none();
+            candidate.maximize();
+            if desired.language == candidate.language && desired.script == candidate.script {
+                candidates.push((
+                    if generic {
+                        0
+                    } else if desired.region == candidate.region {
+                        1
+                    } else {
+                        2
+                    },
+                    &l.code,
+                ));
             }
         }
+    }
+    candidates.sort();
+    if let Some((_, code)) = candidates.first() {
+        return (*code).clone();
     }
     match id.language.as_str() {
         "zh" => "zh-CN",
@@ -179,11 +196,28 @@ impl Localizer {
             .find(|(c, _)| *c == code)
             .map(|(_, t)| *t)
             .unwrap_or(include_str!("../locales/en-US.ftl"));
-        let selected = bundle(
+        let mut selected = bundle(
             &code,
             local.as_ref().map(|(_, t)| t.as_str()).unwrap_or(builtin),
         )
         .unwrap_or_else(|_| bundle("en-US", include_str!("../locales/en-US.ftl")).unwrap());
+        if std::env::args().nth(1).as_deref() == Some("ui-smoke-test")
+            && std::env::var_os("OPENDS_UI_SMOKE_EXPAND").is_some()
+        {
+            selected.set_transform(Some(|s| {
+                std::borrow::Cow::Owned(
+                    s.chars()
+                        .flat_map(|c| {
+                            if "aeiouAEIOU".contains(c) {
+                                vec![c, c]
+                            } else {
+                                vec![c]
+                            }
+                        })
+                        .collect(),
+                )
+            }));
+        }
         let mut result = Self {
             code,
             english,
@@ -238,15 +272,38 @@ pub fn text(id: MessageId) -> &'static str {
 pub fn format(id: MessageId, args: &FluentArgs<'_>) -> String {
     current().format_key(id.key(), Some(args))
 }
+pub struct DisplayArg<'a, T: ?Sized>(pub &'a T);
+pub trait ArgValue {
+    fn fluent_value(self) -> fluent_bundle::FluentValue<'static>;
+}
+impl<T: std::fmt::Display + ?Sized> ArgValue for &&DisplayArg<'_, T> {
+    fn fluent_value(self) -> fluent_bundle::FluentValue<'static> {
+        self.0.to_string().into()
+    }
+}
+macro_rules! numeric_argument {
+    ($($ty:ty),*) => { $(impl ArgValue for &DisplayArg<'_, $ty> {
+        fn fluent_value(self) -> fluent_bundle::FluentValue<'static> {
+            // Fluent numbers use f64; preserve exact large diagnostic counters as text.
+            if (*self.0 as f64).abs() <= 9_007_199_254_740_991.0 { (*self.0).into() }
+            else { self.0.to_string().into() }
+        }
+    })* };
+}
+numeric_argument!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64);
 pub fn import(path: &Path, dir: &Path) -> Result<Language, String> {
     let (c, text) = read_pack(path)?;
+    install_text(c, &text, dir)
+}
+pub fn install_text(c: Catalog, text: &str, dir: &Path) -> Result<Language, String> {
+    let count = language_pack::compare(&c, &english_catalog())?;
     crate::persistence::atomic_write(&dir.join(format!("{}.ftl", c.code)), text.as_bytes())
         .map_err(|e| e.to_string())?;
     Ok(Language {
         code: c.code,
         name: c.name,
         local: true,
-        translated: c.variables.len(),
+        translated: count,
         total: english_catalog().variables.len(),
     })
 }
@@ -267,7 +324,23 @@ mod tests {
         p
     }
     fn german(body: &str) -> String {
-        format!("meta-language-code = de-DE\nmeta-language-name = Deutsch\nmeta-schema-version = 1\n{body}\n")
+        let required = [
+            "language-restart-title = Sprache anwenden",
+            "language-restart-message = OpenDS neu starten, um { $language } zu verwenden.",
+            "language-restart-bridge = Der virtuelle Controller wird kurz getrennt; Aufzeichnungen werden beendet.",
+            "language-restart-later = &Später", "language-restart-now = Jetzt &neu starten",
+        ];
+        let defaults = required
+            .iter()
+            .filter(|line| {
+                !body.lines().any(|l| {
+                    l.split_once(" = ").map(|(k, _)| k) == line.split_once(" = ").map(|(k, _)| k)
+                })
+            })
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("meta-language-code = de-DE\nmeta-language-name = Deutsch\nmeta-schema-version = 1\n{defaults}\n{body}\n")
     }
     #[test]
     fn locale_selection_respects_user_choice_scripts_and_english_fallback() {
@@ -296,6 +369,7 @@ mod tests {
             ("en-US", Some("zh-CN"), "en-US"),
             ("de-DE", Some("en-US"), "de-DE"),
             ("fr-CA", None, "fr-FR"),
+            ("zh-Hant", None, "zh-TW"),
             ("zh-TW", None, "zh-TW"),
             ("invalid_!", None, "en-US"),
         ] {
@@ -310,7 +384,7 @@ mod tests {
         let source = dir.join("trial.ftl");
         std::fs::write(&source, german("language-label = Sprache")).unwrap();
         let info = import(&source, &dir).unwrap();
-        assert_eq!(info.translated, 1);
+        assert_eq!(info.translated, 6);
         let l = Localizer::load("de-DE", None, &dir);
         assert_eq!(l.text(MessageId::language_label), "Sprache");
         assert_eq!(l.text(MessageId::language_import), "Import language file…");
@@ -331,7 +405,7 @@ mod tests {
     fn fluent_selectors_and_references_work_and_cycles_or_wrong_parameters_are_rejected() {
         let text = german("-product = OpenDS\nlanguage-restart-message = { -product }: { $language }\nitems = { $count ->\n    [one] One item\n   *[other] { $count } items\n    }");
         let c = language_pack::parse(&text).unwrap();
-        assert_eq!(language_pack::compare(&c, &english_catalog()).unwrap(), 1);
+        assert_eq!(language_pack::compare(&c, &english_catalog()).unwrap(), 5);
         let b = bundle("de-DE", &text).unwrap();
         let mut args = FluentArgs::new();
         args.set("count", 2);
@@ -390,6 +464,48 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn numeric_arguments_allow_plural_rules_and_preserve_large_counters_exactly() {
+        use fluent_bundle::FluentValue;
+        assert!(matches!(crate::i18n_arg!(2u64), FluentValue::Number(_)));
+        let maximum = crate::i18n_arg!(u64::MAX);
+        assert!(matches!(maximum, FluentValue::String(ref s) if s == "18446744073709551615"));
+        assert!(
+            matches!(crate::i18n_arg!("C:\\测试\\device"), FluentValue::String(ref s) if s == "C:\\测试\\device")
+        );
+    }
+    #[test]
+    fn selecting_other_script_does_not_pick_an_incompatible_regional_pack() {
+        let dir = temp();
+        let mut a = languages_in(&dir);
+        a.push(Language {
+            code: "sr-Cyrl-RS".into(),
+            name: "Српски".into(),
+            local: true,
+            translated: 1,
+            total: 1,
+        });
+        assert_eq!(resolve("sr-Latn", None, &a), "en-US");
+        assert_eq!(resolve("sr-RS", None, &a), "sr-Cyrl-RS");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn restart_dialog_messages_are_required_even_for_partial_translations() {
+        let dir = temp();
+        let p = dir.join("de-DE.ftl");
+        std::fs::write(
+            &p,
+            german("language-label = Sprache")
+                .lines()
+                .filter(|l| !l.starts_with("language-restart-now ="))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        assert!(read_pack(&p).is_err());
+        assert_eq!(Localizer::load("de-DE", None, &dir).code, "en-US");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[macro_export]
@@ -399,5 +515,12 @@ macro_rules! tr {
         let mut args = fluent_bundle::FluentArgs::new();
         $(args.set(stringify!($name), $value);)+
         $crate::i18n::format($crate::i18n::MessageId::$id, &args)
+    }};
+}
+#[macro_export]
+macro_rules! i18n_arg {
+    ($value:expr) => {{
+        use $crate::i18n::ArgValue as _;
+        (&$crate::i18n::DisplayArg(&$value)).fluent_value()
     }};
 }

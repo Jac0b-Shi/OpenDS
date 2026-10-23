@@ -340,7 +340,7 @@ pub fn load_backup() -> Result<Option<Backup>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(crate::tr!(
             hidhide_could_not_read_hidhide_recovery_journal,
-            error = format!("{}", e)
+            error = crate::i18n_arg!(e)
         )),
     }
 }
@@ -448,7 +448,7 @@ fn restore_journal(h: &impl HideDriver, b: &Backup, path: &std::path::Path) -> R
     std::fs::remove_file(path).map_err(|e| {
         crate::tr!(
             hidhide_hidhide_restored_but_its_recovery_journal_could,
-            error = format!("{}", e)
+            error = crate::i18n_arg!(e)
         )
     })
 }
@@ -509,7 +509,7 @@ impl Hider {
             |e| {
                 crate::tr!(
                     hidhide_could_not_save_recovery_journal_driver_unchanged,
-                    error = format!("{}", e)
+                    error = crate::i18n_arg!(e)
                 )
             },
         )?;
@@ -539,12 +539,9 @@ impl Hider {
             let rollback = guard.restore();
             return Err(crate::tr!(
                 hidhide_could_not_hide_the_physical_controller,
-                result = format!(
-                    "{}",
-                    rollback
-                        .err()
-                        .unwrap_or_else(|| crate::tr!(hidhide_rolled_back).into())
-                )
+                result = crate::i18n_arg!(rollback
+                    .err()
+                    .unwrap_or_else(|| crate::tr!(hidhide_rolled_back).into()))
             ));
         }
         Ok(guard)
@@ -619,7 +616,7 @@ pub fn application_path(path: &str) -> Result<String, String> {
     let full = std::fs::canonicalize(path).map_err(|e| {
         crate::tr!(
             hidhide_application_path_unavailable,
-            error = format!("{}", e)
+            error = crate::i18n_arg!(e)
         )
     })?;
     let s = full.display().to_string();
@@ -632,7 +629,7 @@ pub fn application_path(path: &str) -> Result<String, String> {
     if unsafe { QueryDosDeviceW(drive.as_ptr(), target.as_mut_ptr(), target.len() as u32) } == 0 {
         return Err(crate::tr!(
             hidhide_could_not_convert_application_path,
-            error = format!("{}", std::io::Error::last_os_error())
+            error = crate::i18n_arg!(std::io::Error::last_os_error())
         ));
     }
     let n = target
