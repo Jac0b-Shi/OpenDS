@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { FINGERPRINT, GITHUB, GITEE, HttpError, NetworkError, requester, synchronize, verifyAssets } from '../sync-gitee-release.mjs';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
+import { FINGERPRINT, GITHUB, GITEE, HttpError, NetworkError, curlUpload, requester, synchronize, verifyAssets } from '../sync-gitee-release.mjs';
 
 const tag = 'v0.2.0';
 const verification = { tag, version: '0.2.0', commit: 'a'.repeat(40), tag_object: 'b'.repeat(40),
@@ -212,6 +214,45 @@ test('network errors do not print credentials or signed redirect URLs', async ()
     assert.doesNotMatch(error.message, /secret-token|signed-url/);
     return /network request failed/.test(error.message);
   });
+});
+
+test('curl upload keeps token in stdin, refuses redirects and parses the HTTP result', async () => {
+  const form = new FormData();
+  form.set('access_token', 'fixture-private-token');
+  form.set('file', new Blob(['fixture-file']), 'source.zip');
+  let payload, argumentsUsed;
+  const spawnImpl = (program, args) => {
+    assert.equal(program, 'curl');
+    argumentsUsed = args;
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    child.stdin = new Writable({ write(chunk, encoding, callback) { payload = Buffer.from(chunk); callback(); } });
+    child.stdin.on('finish', () => {
+      child.stdout.write('{"id":42}\n201');
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  assert.deepEqual(JSON.parse(await curlUpload(`${api}/releases/1/attach_files`, form, { spawnImpl })), {id:42});
+  assert.match(payload.toString(), /fixture-private-token/);
+  assert.match(payload.toString(), /fixture-file/);
+  assert.doesNotMatch(argumentsUsed.join(' '), /fixture-private-token/);
+  assert.ok(!argumentsUsed.some(a => a === '-L' || a === '--location'));
+  await assert.rejects(curlUpload('https://example.com/upload', form, {spawnImpl}), /Invalid Gitee/);
+});
+
+test('requester uses upload transport only for Gitee multipart bodies', async () => {
+  let uploads = 0;
+  const request = requester({ uploadImpl: async () => { uploads++; return Buffer.from('uploaded'); },
+    fetchImpl: async () => new Response('read') });
+  const form = new FormData();
+  form.set('access_token', 'fixture-token');
+  assert.equal((await request(`${api}/releases/1/attach_files`, {body:form})).toString(), 'uploaded');
+  assert.equal((await request(`${api}/releases/tags/${tag}`)).toString(), 'read');
+  await assert.rejects(request('https://example.com/upload', {body:form}), /Credentials may only/);
+  assert.equal(uploads, 1);
 });
 
 test('request diagnostics identify the original endpoint and safe error code without query secrets', async () => {

@@ -1,6 +1,6 @@
 // Runs on GitHub after publication. Never builds software or writes Git tags.
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +17,51 @@ export class HttpError extends Error {
 }
 export class NetworkError extends Error {}
 
-export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} } = {}) {
+export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spawn } = {}) {
+  ensure(url.startsWith(`${API}/`) && body instanceof FormData, 'Invalid Gitee upload destination or payload.');
+  const multipart = new Request(url, { method: 'POST', body });
+  const bytes = Buffer.from(await multipart.arrayBuffer());
+  ensure(bytes.length <= 64 * 1024 * 1024, 'Release upload exceeds 64 MiB.');
+  // Feed the multipart payload through stdin. The token is never placed in
+  // process arguments, a temporary file, curl output or a redirect request.
+  const args = ['--disable', '--silent', '--show-error', '--http1.1', '--proto', '=https',
+    '--connect-timeout', '15', '--max-time', String(timeout / 1000),
+    '--request', 'POST', '--header', 'User-Agent: OpenDS-release-sync',
+    '--header', `Content-Type: ${multipart.headers.get('content-type')}`,
+    '--header', 'Expect:', '--data-binary', '@-', '--write-out', '\n%{http_code}', url];
+  return new Promise((resolve, reject) => {
+    let child;
+    try { child = spawnImpl('curl', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
+    catch { reject(new NetworkError('curl upload could not start.')); return; }
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    const timer = setTimeout(() => child.kill(), timeout + 5000);
+    timer.unref();
+    child.stdout.on('data', chunk => {
+      size += chunk.length;
+      if (size > 64 * 1024 * 1024) { tooLarge = true; child.kill(); }
+      else chunks.push(chunk);
+    });
+    child.stderr.resume(); // curl errors can include URLs; never publish them.
+    child.stdin.on('error', () => {}); // Early HTTP rejection may close the pipe.
+    child.on('error', () => { clearTimeout(timer); reject(new NetworkError('curl upload could not start.')); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (tooLarge) { reject(new Error('Release response exceeds 64 MiB.')); return; }
+      if (code !== 0) { reject(new NetworkError(`curl upload failed (exit ${Number.isInteger(code) ? code : 'signal'}); no automatic retry.`)); return; }
+      const result = Buffer.concat(chunks);
+      const status = /\n(\d{3})$/.exec(result.toString('utf8'));
+      if (!status) { reject(new NetworkError('curl upload returned no HTTP status.')); return; }
+      const value = Number(status[1]);
+      if (value < 200 || value >= 300) { reject(new HttpError(value)); return; }
+      resolve(result.subarray(0, result.length - status[0].length));
+    });
+    child.stdin.end(bytes);
+  });
+}
+
+export function requester({ fetchImpl = fetch, githubToken = '', log = () => {}, uploadImpl } = {}) {
   return async (url, { body, timeout = 30000 } = {}) => {
     ensure(!body || url.startsWith(`${API}/`), 'Credentials may only be sent to the Gitee repository API.');
     const headers = { 'User-Agent': 'OpenDS-release-sync' };
@@ -29,6 +73,7 @@ export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} 
     const operation = `${body ? 'POST' : 'GET'} ${endpoint.hostname}${endpoint.pathname}`;
     log(operation);
     try {
+      if (uploadImpl && body instanceof FormData) return await uploadImpl(url, body, { timeout });
       const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', body, headers,
         redirect: body || headers.Authorization ? 'error' : 'follow', signal: AbortSignal.timeout(timeout) });
       if (!response.ok) throw new HttpError(response.status);
@@ -41,7 +86,7 @@ export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} 
       }
       return Buffer.concat(chunks);
     } catch (error) {
-      if (error instanceof HttpError) throw error;
+      if (error instanceof HttpError || error instanceof NetworkError) throw error;
       // Never log response bodies, redirected URLs, request options, or credentials.
       const code = error.name === 'TimeoutError' ? `timeout after ${timeout} ms`
         : /^[A-Z][A-Z0-9_]{1,39}$/.test(error.cause?.code ?? '') ? error.cause.code : 'connection or response failure';
@@ -165,7 +210,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const args = process.argv.slice(2);
     ensure(args.length === 4 && args[0] === '--tag' && args[2] === '--verification', 'Usage: --tag VERSION --verification FILE');
     console.log(await synchronize({ tag: args[1], verification: JSON.parse(await readFile(args[3], 'utf8')),
-      token: process.env.GITEE_TOKEN, request: requester({ githubToken: process.env.GH_TOKEN, log: console.log }) }));
+      token: process.env.GITEE_TOKEN, request: requester({ githubToken: process.env.GH_TOKEN, log: console.log, uploadImpl: curlUpload }) }));
   } catch (error) {
     console.error(error instanceof SyntaxError ? 'Invalid release metadata JSON.' : error.message);
     process.exitCode = 1;
