@@ -13,6 +13,7 @@ mod bridge;
 mod config;
 mod dependencies;
 mod gui;
+mod gui_close;
 mod gui_theme;
 mod hid;
 mod hidhide;

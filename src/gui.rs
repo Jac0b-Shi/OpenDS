@@ -1,5 +1,9 @@
 //! NWG 原生控件 + 按显示器 DPI 布局；UI 不参与实时数据处理。
-use crate::{bridge::BridgeController, config::Config, gui_theme as theme};
+use crate::{
+    bridge::BridgeController,
+    config::{CloseAction, Config},
+    gui_theme as theme,
+};
 use native_windows_gui as nwg;
 use std::{
     cell::{Cell, RefCell},
@@ -34,6 +38,7 @@ struct Controls {
     save: nwg::Button,
     refresh: nwg::Button,
     restore: nwg::Button,
+    minimize_to_tray: nwg::Button,
     quit: nwg::Button,
     status: nwg::Label,
     count_input: nwg::Label,
@@ -59,6 +64,7 @@ struct Controls {
     haptic_gain: nwg::TextInput,
     mic_gain: nwg::TrackBar,
     mic_buffer: nwg::ComboBox<String>,
+    close_action: nwg::ComboBox<String>,
     active: nwg::CheckBox,
     whitelist: nwg::ListBox<String>,
     app_path: nwg::TextInput,
@@ -78,6 +84,7 @@ struct App {
     path: PathBuf,
     devices: RefCell<Vec<String>>,
     exiting: Cell<bool>,
+    close_prompt_open: Cell<bool>,
     page: Cell<u8>,
     dpi: Cell<u32>,
     fonts: RefCell<theme::Fonts>,
@@ -138,6 +145,7 @@ impl App {
             path,
             devices: RefCell::new(vec![]),
             exiting: Cell::new(false),
+            close_prompt_open: Cell::new(false),
             page: Cell::new(0),
             dpi: Cell::new(dpi),
             fonts: RefCell::new(fonts),
@@ -170,7 +178,8 @@ impl App {
                         } else {
                             nwg::WindowFlags::VISIBLE
                         }
-                        | nwg::WindowFlags::RESIZABLE,
+                        | nwg::WindowFlags::RESIZABLE
+                        | nwg::WindowFlags::MINIMIZE_BOX,
                 )
                 .icon(Some(&a.ui.icon))
                 .build(&mut a.ui.window)?;
@@ -218,6 +227,7 @@ impl App {
             button!(refresh, "刷新设备");
             button!(audio_test, "麦克风测试…");
             button!(restore, "恢复手柄可见性");
+            button!(minimize_to_tray, "最小化到托盘");
             button!(quit, "退出 OpenDS");
             for label in [
                 &mut ui.status,
@@ -253,6 +263,19 @@ impl App {
             cb!(audio, "转发游戏扬声器音频", cfg.audio_enabled);
             cb!(haptics, "转发左右独立的原生触觉", cfg.haptics_enabled);
             cb!(microphone, "转发手柄麦克风", cfg.microphone_enabled);
+            nwg::ComboBox::builder()
+                .parent(window)
+                .collection(vec![
+                    "询问".into(),
+                    "最小化到托盘".into(),
+                    "直接退出".into(),
+                ])
+                .selected_index(Some(match cfg.close_action {
+                    CloseAction::Ask => 0,
+                    CloseAction::Tray => 1,
+                    CloseAction::Exit => 2,
+                }))
+                .build(&mut ui.close_action)?;
             nwg::ComboBox::builder()
                 .parent(window)
                 .collection(vec!["自动选择蓝牙 DualSense".into()])
@@ -417,6 +440,7 @@ impl App {
             &self.save.handle,
             &self.refresh.handle,
             &self.restore.handle,
+            &self.minimize_to_tray.handle,
             &self.quit.handle,
             &self.status.handle,
             &self.count_input.handle,
@@ -441,6 +465,7 @@ impl App {
             &self.haptic_gain.handle,
             &self.mic_gain.handle,
             &self.mic_buffer.handle,
+            &self.close_action.handle,
             &self.active.handle,
             &self.whitelist.handle,
             &self.app_path.handle,
@@ -506,6 +531,7 @@ impl App {
         for (i, b) in self.nav.iter().enumerate() {
             put(&b.handle, 16, 156 + i as i32 * 54, 176, 42);
         }
+        put(&self.minimize_to_tray.handle, 16, h - 102, 176, 36);
         put(&self.quit.handle, 16, h - 58, 176, 36);
         match page {
             0 => {
@@ -561,6 +587,7 @@ impl App {
                 put(&self.reconnect.handle, x + 24, 552, cw / 2 - 32, 28);
                 put(&self.hide.handle, x + cw / 2, 552, cw / 2 - 24, 28);
                 put(&self.refresh.handle, x, h - 62, 136, 38);
+                put(&self.close_action.handle, x + 244, h - 62, 176, 180);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
             3 => {
@@ -627,7 +654,7 @@ impl App {
         );
         text(
             28,
-            h - 145,
+            h - 189,
             154,
             25,
             "蓝牙连接 · USB 体验",
@@ -636,7 +663,7 @@ impl App {
         );
         text(
             28,
-            h - 116,
+            h - 160,
             154,
             22,
             concat!("v", env!("CARGO_PKG_VERSION")),
@@ -708,6 +735,15 @@ impl App {
             1 => {}
             2 => {
                 card(x, 112, cw, 490);
+                text(
+                    x + 148,
+                    h - 62,
+                    88,
+                    24,
+                    "关闭时行为",
+                    &f.small,
+                    theme::MUTED,
+                );
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, "物理手柄"),
                     (x + 24, 296, cw - 48, "声音输出"),
@@ -773,14 +809,14 @@ impl App {
                         .get()
                         .is_some_and(|t| std::time::Instant::now() >= t)
                     {
-                        self.exiting.set(true);
-                        self.controller.borrow().stop();
+                        self.confirm_close();
                     }
                     self.update();
                     SetTimer(
                         hwnd,
                         0x4f44,
-                        if IsWindowVisible(hwnd) != 0 || self.exiting.get() {
+                        if (IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0) || self.exiting.get()
+                        {
                             500
                         } else {
                             5000
@@ -1104,7 +1140,8 @@ impl App {
         if self.status.text() != phase {
             self.status.set_text(&phase);
         }
-        if unsafe { IsWindowVisible(theme::hwnd(&self.window.handle)) } == 0 {
+        let hwnd = theme::hwnd(&self.window.handle);
+        if unsafe { IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 } {
             return;
         }
         if self.dependency_check.get().elapsed() >= std::time::Duration::from_secs(5) {
@@ -1160,14 +1197,101 @@ impl App {
     }
     fn show_window(&self) {
         self.window.set_visible(true);
+        // Showing a hidden iconic window alone leaves it minimized on the taskbar.
+        if unsafe { IsIconic(theme::hwnd(&self.window.handle)) } != 0 {
+            self.window.restore();
+        }
         self.update();
         unsafe {
             SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 500, None);
         }
         self.window.set_focus();
     }
+    fn minimize_to_tray(&self) {
+        if let Some(dialog) = self.audio_test_view.borrow().as_ref() {
+            dialog.hide();
+        }
+        self.window.set_visible(false);
+        unsafe {
+            SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 5000, None);
+        }
+    }
+    fn request_exit(&self) {
+        self.exiting.set(true);
+        self.controller.borrow().stop();
+        self.update();
+    }
+    fn apply_close_choice(&self, choice: crate::gui_close::Choice) {
+        match choice {
+            crate::gui_close::Choice::Tray => self.minimize_to_tray(),
+            crate::gui_close::Choice::Exit => self.request_exit(),
+            crate::gui_close::Choice::Cancel => {}
+        }
+    }
+    fn confirm_close(&self) {
+        if self.exiting.get() || self.close_prompt_open.replace(true) {
+            return;
+        }
+        let saved = self.config.borrow().close_action;
+        if saved != CloseAction::Ask {
+            self.close_prompt_open.set(false);
+            self.apply_close_choice(match saved {
+                CloseAction::Tray => crate::gui_close::Choice::Tray,
+                CloseAction::Exit => crate::gui_close::Choice::Exit,
+                CloseAction::Ask => unreachable!(),
+            });
+            return;
+        }
+        // The modal dialog pumps timer messages; hold no controller/view borrow.
+        let result = crate::gui_close::ask(theme::hwnd(&self.window.handle));
+        self.close_prompt_open.set(false);
+        match result {
+            Ok(decision) => {
+                if decision.remember {
+                    let action = match decision.choice {
+                        crate::gui_close::Choice::Tray => CloseAction::Tray,
+                        crate::gui_close::Choice::Exit => CloseAction::Exit,
+                        crate::gui_close::Choice::Cancel => CloseAction::Ask,
+                    };
+                    if let Err(error) = self.set_close_action(action) {
+                        self.error(error);
+                        return;
+                    }
+                }
+                self.apply_close_choice(decision.choice);
+            }
+            Err(error) => self.error(error),
+        }
+    }
+    fn set_close_action(&self, action: CloseAction) -> Result<(), String> {
+        let result = Config::load(&self.path).and_then(|mut c| {
+            c.close_action = action;
+            c.save(&self.path)
+        });
+        if result.is_ok() {
+            self.config.borrow_mut().close_action = action;
+        }
+        self.close_action
+            .set_selection(Some(match self.config.borrow().close_action {
+                CloseAction::Ask => 0,
+                CloseAction::Tray => 1,
+                CloseAction::Exit => 2,
+            }));
+        result
+    }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
+        if event == E::OnComboxBoxSelection && handle == self.close_action {
+            let action = match self.close_action.selection() {
+                Some(1) => CloseAction::Tray,
+                Some(2) => CloseAction::Exit,
+                _ => CloseAction::Ask,
+            };
+            if let Err(error) = self.set_close_action(action) {
+                self.error(error);
+            }
+            return;
+        }
         if event == E::OnComboxBoxSelection && handle == self.mic_buffer {
             let ms = selected_mic_buffer(&self.mic_buffer);
             let result = Config::load(&self.path).and_then(|mut c| {
@@ -1264,8 +1388,7 @@ impl App {
                 .get()
                 .is_some_and(|t| std::time::Instant::now() >= t)
             {
-                self.exiting.set(true);
-                self.controller.borrow().stop();
+                self.confirm_close();
             }
             self.update();
             return;
@@ -1287,10 +1410,7 @@ impl App {
             if let nwg::EventData::OnWindowClose(v) = data {
                 v.close(false);
             }
-            self.window.set_visible(false);
-            unsafe {
-                SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 5000, None);
-            }
+            self.confirm_close();
             return;
         }
         if event == E::OnContextMenu && handle == self.tray {
@@ -1311,9 +1431,7 @@ impl App {
             } else if handle == self.show_menu {
                 self.show_window();
             } else if handle == self.exit_menu {
-                self.exiting.set(true);
-                self.controller.borrow().stop();
-                self.update();
+                self.request_exit();
             }
             return;
         }
@@ -1338,9 +1456,11 @@ impl App {
             self.controller.borrow().stop();
             Ok(())
         } else if handle == self.quit {
-            self.exiting.set(true);
-            self.controller.borrow().stop();
-            Ok(())
+            self.request_exit();
+            return;
+        } else if handle == self.minimize_to_tray {
+            self.minimize_to_tray();
+            return;
         } else if handle == self.save {
             self.save_settings().map(|_| {
                 self.controller
@@ -1467,6 +1587,44 @@ fn run_inner(
         if app.status.text() != "○ 桥接尚未启动" {
             return Err("从托盘打开时状态未立即刷新".into());
         }
+        let hwnd = theme::hwnd(&app.window.handle);
+        if unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } & WS_MINIMIZEBOX as isize == 0 {
+            return Err("主窗口缺少任务栏最小化按钮".into());
+        }
+        app.window.minimize();
+        if unsafe { IsIconic(hwnd) == 0 || IsWindowVisible(hwnd) == 0 } {
+            return Err("最小化没有保留任务栏窗口".into());
+        }
+        app.apply_close_choice(crate::gui_close::Choice::Tray);
+        if unsafe { IsWindowVisible(hwnd) } != 0 || app.exiting.get() {
+            return Err("最小化到托盘没有隐藏窗口或错误触发了退出".into());
+        }
+        app.show_window();
+        if unsafe { IsIconic(hwnd) != 0 || IsWindowVisible(hwnd) == 0 } {
+            return Err("托盘恢复没有还原最小化窗口".into());
+        }
+        crate::gui_close::smoke_test(hwnd)?;
+        app.apply_close_choice(crate::gui_close::Choice::Cancel);
+        if app.exiting.get() || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return Err("取消关闭改变了窗口或退出状态".into());
+        }
+        app.set_close_action(CloseAction::Tray)?;
+        if Config::load(&app.path)?.close_action != CloseAction::Tray
+            || app.close_action.selection() != Some(1)
+        {
+            return Err("关闭偏好未持久化或未同步设置页".into());
+        }
+        app.confirm_close();
+        if unsafe { IsWindowVisible(hwnd) } != 0 || app.exiting.get() {
+            return Err("已记住的托盘选项未生效".into());
+        }
+        app.show_window();
+        app.set_close_action(CloseAction::Ask)?;
+        if Config::load(&app.path)?.close_action != CloseAction::Ask
+            || app.close_action.selection() != Some(0)
+        {
+            return Err("无法恢复关闭时询问".into());
+        }
         app.window.set_visible(true);
         app.page.set(1);
         app.layout();
@@ -1479,6 +1637,8 @@ fn run_inner(
                 return Err("窗口或任务栏图标未加载".into());
             }
         }
+        // The deadline follows the saved exit path through confirm_close.
+        app.set_close_action(CloseAction::Exit)?;
         app.smoke_deadline.set(Some(
             std::time::Instant::now()
                 + std::time::Duration::from_secs(

@@ -7,6 +7,24 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CloseAction {
+    #[default]
+    Ask,
+    Tray,
+    Exit,
+}
+
+impl fmt::Display for CloseAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Ask => "ask",
+            Self::Tray => "tray",
+            Self::Exit => "exit",
+        })
+    }
+}
+
 /// 配置项，对应配置结构布局。
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -33,6 +51,7 @@ pub struct Config {
     /// USB 外观：0 = DualSense，1 = Xbox One，2 = PS4。
     pub usb_face: u8,
     pub auto_start: bool,
+    pub close_action: CloseAction,
     pub reconnect: bool,
     pub hide_device: bool,
     pub audio_enabled: bool,
@@ -66,6 +85,7 @@ impl Default for Config {
             edge_as_ds: false,
             usb_face: 0,
             auto_start: false,
+            close_action: CloseAction::Ask,
             reconnect: true,
             hide_device: true,
             audio_enabled: true,
@@ -183,6 +203,13 @@ impl Config {
                 "edge_as_ds" => boolean!(edge_as_ds),
                 "usb_face" => number!(usb_face),
                 "auto_start" => boolean!(auto_start),
+                "close_action" => {
+                    cfg.close_action = match value {
+                        "tray" => CloseAction::Tray,
+                        "exit" => CloseAction::Exit,
+                        _ => CloseAction::Ask,
+                    }
+                }
                 "reconnect" => boolean!(reconnect),
                 "hide_device" => boolean!(hide_device),
                 "audio_enabled" => boolean!(audio_enabled),
@@ -220,6 +247,7 @@ impl Config {
             edge_as_ds,
             usb_face,
             auto_start,
+            close_action,
             reconnect,
             hide_device,
             audio_enabled,
@@ -279,6 +307,29 @@ impl fmt::Display for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_action_defaults_to_asking_and_round_trips() {
+        assert_eq!(Config::default().close_action, CloseAction::Ask);
+        assert_eq!(
+            Config::parse("close_action=unknown").unwrap().close_action,
+            CloseAction::Ask
+        );
+        let path =
+            std::env::temp_dir().join(format!("opends-close-action-{}.ini", std::process::id()));
+        for action in [CloseAction::Tray, CloseAction::Exit, CloseAction::Ask] {
+            let cfg = Config {
+                close_action: action,
+                microphone_gain_db: 29,
+                ..Default::default()
+            };
+            cfg.save(&path).unwrap();
+            let saved = Config::load(&path).unwrap();
+            assert_eq!(saved.close_action, action);
+            assert_eq!(saved.microphone_gain_db, 29);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn runtime_defaults_use_local_bridge_and_shallow_buffer() {
