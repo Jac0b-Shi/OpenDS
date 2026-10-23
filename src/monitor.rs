@@ -16,7 +16,7 @@ pub const GAME_QUEUE_CAPACITY: usize = 2048;
 const CHUNK: usize = 960;
 const LEVELS: usize = 6;
 pub const CACHE_LIMIT: usize = 32 * 1024 * 1024;
-const SILENCE_HOLD_NS: u64 = 750_000_000;
+const SILENCE_HOLD_NS: u64 = 1_500_000_000;
 const DATA_TIMEOUT_NS: u64 = 500_000_000;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -947,7 +947,7 @@ mod tests {
         let mut p = wave_chunk(1_000_000_000, 0);
         p.samples[1] = i16::MIN; // Right only; a following zero batch used to erase this.
         h.consume(0, p);
-        for n in 1..=74 {
+        for n in 1..=149 {
             let now = 1_000_000_000 + n * 10_000_000;
             h.consume(0, wave_chunk(now, n * 10));
             assert_eq!(
@@ -955,12 +955,12 @@ mod tests {
                 WaveState::Active
             );
         }
-        h.consume(0, wave_chunk(1_750_000_000, 750));
+        h.consume(0, wave_chunk(2_500_000_000, 1500));
         assert_eq!(
-            wave_state(0, [true, false], &h.last, &h.nonzero, 1_750_000_000),
+            wave_state(0, [true, false], &h.last, &h.nonzero, 2_500_000_000),
             WaveState::Silent
         );
-        let bins = h.plot(30, 3000, 1_750_000_000);
+        let bins = h.plot(30, 3000, 2_500_000_000);
         assert!(bins
             .iter()
             .any(|b| b.valid & 2 != 0 && b.min[1] == i16::MIN));
@@ -968,7 +968,7 @@ mod tests {
             .iter()
             .any(|b| b.valid & 2 != 0 && b.min[1] == 0 && b.max[1] == 0));
         // Real activity is shown immediately, with no attack delay.
-        let mut p = wave_chunk(1_760_000_000, 760);
+        let mut p = wave_chunk(2_510_000_000, 1510);
         p.samples[0] = 1;
         h.consume(0, p);
         assert_eq!(
