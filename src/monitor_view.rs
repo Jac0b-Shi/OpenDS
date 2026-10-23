@@ -106,30 +106,25 @@ fn hr(v: i32) -> Result<(), String> {
 fn color(r: f32, g: f32, b: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a: 1.0 }
 }
-const INK: D2D1_COLOR_F = D2D1_COLOR_F {
-    r: 0.09,
-    g: 0.13,
-    b: 0.20,
-    a: 1.0,
-};
-const MUTED: D2D1_COLOR_F = D2D1_COLOR_F {
-    r: 0.43,
-    g: 0.48,
-    b: 0.55,
-    a: 1.0,
-};
-const BLUE: D2D1_COLOR_F = D2D1_COLOR_F {
-    r: 0.16,
-    g: 0.38,
-    b: 0.88,
-    a: 1.0,
-};
-const ORANGE: D2D1_COLOR_F = D2D1_COLOR_F {
-    r: 0.90,
-    g: 0.40,
-    b: 0.12,
-    a: 1.0,
-};
+fn palette_color(value: u32) -> D2D1_COLOR_F {
+    color(
+        (value & 255) as f32 / 255.,
+        ((value >> 8) & 255) as f32 / 255.,
+        ((value >> 16) & 255) as f32 / 255.,
+    )
+}
+fn ink_color() -> D2D1_COLOR_F {
+    palette_color(crate::appearance::palette().text)
+}
+fn muted_color() -> D2D1_COLOR_F {
+    palette_color(crate::appearance::palette().muted)
+}
+fn blue_color() -> D2D1_COLOR_F {
+    palette_color(crate::appearance::palette().source)
+}
+fn orange_color() -> D2D1_COLOR_F {
+    palette_color(crate::appearance::palette().forwarded)
+}
 
 struct Renderer {
     factory: Com<ID2D1Factory>,
@@ -183,7 +178,7 @@ impl Renderer {
         let mut target: Com<ID2D1HwndRenderTarget> = Com::empty();
         hr((*factory.0).CreateHwndRenderTarget(&props, &hp, target.out()))?;
         let mut brush = Com::empty();
-        hr((*target.0).CreateSolidColorBrush(&INK, null(), brush.out()))?;
+        hr((*target.0).CreateSolidColorBrush(&ink_color(), null(), brush.out()))?;
         let make = |size| -> Result<Com<IDWriteTextFormat>, String> {
             let mut f = Com::empty();
             hr((*dw.0).CreateTextFormat(
@@ -394,7 +389,7 @@ impl Renderer {
             58.,
             9.,
             if s.buttons2 & 2 != 0 {
-                BLUE
+                blue_color()
             } else {
                 color(0.21, 0.25, 0.32)
             },
@@ -415,7 +410,16 @@ impl Renderer {
         let b2 = s.buttons2 | press[2];
         let button = |x: f32, y: f32, label: &str, on: bool, r: f32| {
             self.ellipse(x, y + 2., r, color(0.06, 0.08, 0.12));
-            self.ellipse(x, y, r, if on { BLUE } else { color(0.20, 0.24, 0.30) });
+            self.ellipse(
+                x,
+                y,
+                r,
+                if on {
+                    blue_color()
+                } else {
+                    color(0.20, 0.24, 0.30)
+                },
+            );
             self.text(
                 x - r + 5.,
                 y - 10.,
@@ -451,7 +455,7 @@ impl Renderer {
                 170. + (ly as f32 - 128.) / 128. * 12.,
                 17.,
                 if b1 & mask != 0 {
-                    BLUE
+                    blue_color()
                 } else {
                     color(0.12, 0.15, 0.21)
                 },
@@ -465,7 +469,7 @@ impl Renderer {
             7.,
             3.,
             if b2 & 4 != 0 {
-                ORANGE
+                orange_color()
             } else {
                 color(0.32, 0.38, 0.45)
             },
@@ -477,7 +481,7 @@ impl Renderer {
             20.,
             crate::tr!(monitor_view_muted),
             0,
-            MUTED,
+            muted_color(),
         );
         button(137., 83., "C", b1 & 16 != 0, 9.);
         button(301., 75., "≡", b1 & 32 != 0, 9.);
@@ -489,7 +493,7 @@ impl Renderer {
                 15.,
                 5.,
                 if b1 & mask != 0 {
-                    BLUE
+                    blue_color()
                 } else {
                     color(0.21, 0.25, 0.32)
                 },
@@ -504,7 +508,7 @@ impl Renderer {
                 color(1., 1., 1.),
             );
             self.rect(xx, 0., 72., 13., 4., color(0.8, 0.83, 0.88));
-            self.rect(xx, 0., 72. * val as f32 / 255., 13., 4., BLUE);
+            self.rect(xx, 0., 72. * val as f32 / 255., 13., 4., blue_color());
             (*self.target.0).SetTransform(&identity());
             self.text(
                 x + xx * scale,
@@ -513,7 +517,7 @@ impl Renderer {
                 20.,
                 &format!("{label}2 {:3}%", val as u32 * 100 / 255),
                 0,
-                MUTED,
+                muted_color(),
             );
             (*self.target.0).SetTransform(&mat);
         }
@@ -534,7 +538,7 @@ impl Renderer {
                     27.,
                     6.,
                     if b2 & mask != 0 {
-                        BLUE
+                        blue_color()
                     } else {
                         color(0.91, 0.93, 0.97)
                     },
@@ -547,7 +551,7 @@ impl Renderer {
                     22.,
                     label,
                     0,
-                    INK,
+                    ink_color(),
                 );
                 (*self.target.0).SetTransform(&mat);
             }
@@ -740,6 +744,7 @@ impl MonitorView {
                 return Err(crate::tr!(monitor_view_could_not_create_monitor_window).into());
             }
             SetWindowLongPtrW(state_ref.root, GWLP_USERDATA, ptr as isize);
+            crate::appearance::install(state_ref.root);
             for (id, cls, text, style) in [
                 (
                     1,
@@ -795,7 +800,15 @@ impl MonitorView {
                     0,
                     wide(cls).as_ptr(),
                     wide(text).as_ptr(),
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+                    WS_CHILD
+                        | WS_VISIBLE
+                        | WS_TABSTOP
+                        | style
+                        | if cls == "COMBOBOX" {
+                            CBS_OWNERDRAWFIXED | CBS_HASSTRINGS
+                        } else {
+                            0
+                        },
                     0,
                     0,
                     100,
@@ -857,6 +870,7 @@ impl MonitorView {
             SetWindowLongPtrW(state_ref.canvas, GWLP_USERDATA, ptr as isize);
             state_ref.layout();
             drop(data);
+            crate::appearance::install(state.borrow().root);
             Ok(Self { state })
         }
     }
@@ -937,7 +951,7 @@ unsafe fn register(name: &str, proc: WNDPROC) {
     wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleW(null());
     wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-    wc.hbrBackground = (COLOR_WINDOW + 1) as HBRUSH;
+    wc.hbrBackground = null_mut();
     let n = wide(name);
     wc.lpszClassName = n.as_ptr();
     RegisterClassW(&wc);
@@ -1114,12 +1128,17 @@ impl ViewState {
                 SendMessageW(self.parent, WM_GETICON, kind as usize, 0),
             );
         }
+        crate::appearance::install(self.popup);
         SetParent(self.root, self.popup);
         let mut r: RECT = std::mem::zeroed();
         GetClientRect(self.popup, &mut r);
         MoveWindow(self.root, 0, 0, r.right, r.bottom, 1);
         ShowWindow(self.root, SW_SHOWNA);
-        ShowWindow(self.popup, SW_SHOWNOACTIVATE);
+        if std::env::args().nth(1).as_deref() != Some("ui-smoke-test")
+            || std::env::var("OPENDS_UI_SMOKE_THEME_STRESS").as_deref() != Ok("1")
+        {
+            ShowWindow(self.popup, SW_SHOWNOACTIVATE);
+        }
         SetWindowTextW(
             self.controls[4],
             wide(crate::tr!(monitor_view_dock_window)).as_ptr(),
@@ -1355,7 +1374,7 @@ impl ViewState {
             (*r.target.0).SetDpi(dpi, dpi);
             (*r.target.0).BeginDraw();
             (*r.target.0).SetTransform(&identity());
-            (*r.target.0).Clear(&color(0.969, 0.973, 0.984));
+            (*r.target.0).Clear(&palette_color(crate::appearance::palette().bg));
             let offset = self.scroll as f32;
             let narrow = w < 680.;
             let left = if narrow { w } else { w * 0.41 };
@@ -1383,7 +1402,7 @@ impl ViewState {
                     h.max(model_height)
                 },
                 12.,
-                color(1., 1., 1.),
+                palette_color(crate::appearance::palette().surface),
             );
             r.text(
                 16.,
@@ -1396,7 +1415,7 @@ impl ViewState {
                     "DualSense"
                 },
                 2,
-                INK,
+                ink_color(),
             );
             r.text(
                 16.,
@@ -1413,7 +1432,7 @@ impl ViewState {
                     crate::tr!(monitor_view_live_input_buttons_sticks_and_touchpad)
                 },
                 0,
-                MUTED,
+                muted_color(),
             );
             r.controller(
                 4.,
@@ -1437,7 +1456,7 @@ impl ViewState {
                         ry = format!("{:3}", self.input.ry)
                     ),
                     0,
-                    MUTED,
+                    muted_color(),
                 );
                 r.text(
                     18.,
@@ -1446,7 +1465,7 @@ impl ViewState {
                     24.,
                     crate::tr!(monitor_view_blue_source_orange_dots_forwarded),
                     0,
-                    MUTED,
+                    muted_color(),
                 );
             }
             for group in 0..3 {
@@ -1468,7 +1487,14 @@ impl ViewState {
         EndPaint(self.canvas, &ps);
     }
     unsafe fn wave(&self, r: &Renderer, group: usize, x: f32, y: f32, w: f32, h: f32, now: u64) {
-        r.rect(x, y, w, h, 12., color(1., 1., 1.));
+        r.rect(
+            x,
+            y,
+            w,
+            h,
+            12.,
+            palette_color(crate::appearance::palette().surface),
+        );
         r.text(
             x + 14.,
             y + 10.,
@@ -1480,7 +1506,7 @@ impl ViewState {
                 crate::tr!(monitor_view_microphone_mono),
             ][group],
             1,
-            INK,
+            ink_color(),
         );
         let offset = [0, 2, 4][group];
         let channels = if group == 2 { 1 } else { 2 };
@@ -1520,7 +1546,7 @@ impl ViewState {
         } else {
             crate::tr!(monitor_view_blue_source_orange_forwarded_fixed_100).into()
         };
-        r.text(x + 14., y + 34., w - 28., 20., &status, 0, MUTED);
+        r.text(x + 14., y + 34., w - 28., 20., &status, 0, muted_color());
         let track = (h - 60.) / channels as f32;
         let phase = (now as f64 / 1e9 * self.hz as f64).fract() as f32 * self.plot.len() as f32
             / (self.seconds * self.hz) as f32;
@@ -1539,7 +1565,7 @@ impl ViewState {
                     "R"
                 },
                 0,
-                MUTED,
+                muted_color(),
             );
             plotting::wave(
                 r,
@@ -1560,9 +1586,9 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX
     ) {
         let dc = w as HDC;
-        SetBkColor(dc, 0x00ffffff);
-        SetTextColor(dc, 0x00302217);
-        return GetStockObject(WHITE_BRUSH as i32) as LRESULT;
+        SetBkColor(dc, crate::appearance::palette().surface);
+        SetTextColor(dc, crate::appearance::palette().text);
+        return crate::appearance::surface_brush() as LRESULT;
     }
     // Native controls can enter a nested message loop in DefWindowProcW. Never
     // hold the state borrow across it: the main window refreshes on that loop.
@@ -1583,11 +1609,10 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             .ok()
             .and_then(|s| s.hub.recording.status().error);
         if let Some(error) = error {
-            MessageBoxW(
+            crate::theme_dialog::message(
                 GetAncestor(hwnd, GA_ROOT),
-                wide(&error).as_ptr(),
-                wide(crate::tr!(monitor_view_opends_file_recording_stopped)).as_ptr(),
-                MB_OK | MB_ICONWARNING,
+                crate::tr!(monitor_view_opends_file_recording_stopped),
+                &error,
             );
         }
         return 0;

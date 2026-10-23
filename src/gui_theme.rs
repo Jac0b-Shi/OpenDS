@@ -5,12 +5,6 @@ use winapi::{
     shared::windef::*,
     um::{wingdi::*, winuser::*},
 };
-pub const BG: u32 = rgb(247, 248, 250);
-pub const WHITE: u32 = rgb(255, 255, 255);
-pub const INK: u32 = rgb(23, 32, 49);
-pub const MUTED: u32 = rgb(103, 114, 133);
-pub const BLUE: u32 = rgb(42, 95, 225);
-pub const LINE: u32 = rgb(226, 231, 239);
 pub const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
@@ -206,14 +200,29 @@ pub unsafe fn draw_button(
 ) {
     let disabled = item.itemState & ODS_DISABLED != 0;
     let pressed = item.itemState & ODS_SELECTED != 0;
-    let hot = item.itemState & ODS_HOTLIGHT != 0;
+    let mut cursor: POINT = std::mem::zeroed();
+    GetCursorPos(&mut cursor);
+    ScreenToClient(item.hwndItem, &mut cursor);
+    let hot = item.itemState & ODS_HOTLIGHT != 0 || PtInRect(&item.rcItem, cursor) != 0;
     let (bg, fg, border) = if disabled {
         (palette().disabled, palette().disabled_text, palette().line)
     } else if primary {
-        (palette().primary, palette().primary_text, palette().primary)
+        (
+            crate::appearance::button_color(palette().primary, pressed, hot),
+            palette().primary_text,
+            palette().primary,
+        )
     } else if nav {
         if selected {
-            (palette().selected, palette().accent, palette().selected)
+            (
+                palette().selected,
+                if palette().kind == crate::appearance::Kind::Contrast {
+                    palette().primary_text
+                } else {
+                    palette().accent
+                },
+                palette().selected,
+            )
         } else {
             (
                 if hot { palette().bg } else { palette().surface },
@@ -223,7 +232,9 @@ pub unsafe fn draw_button(
         }
     } else {
         (
-            if pressed || hot {
+            if pressed {
+                palette().selected
+            } else if hot {
                 palette().hover
             } else {
                 palette().surface

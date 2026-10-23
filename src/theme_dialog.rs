@@ -5,6 +5,12 @@ use winapi::{
     shared::{minwindef::*, windef::*},
     um::{libloaderapi::GetModuleHandleW, wingdi::*, winuser::*},
 };
+#[derive(Clone, Copy)]
+pub enum TestAction {
+    Select(i32, bool),
+    Key(u32),
+    Accelerator(char),
+}
 pub struct Request<'a> {
     pub title: &'a str,
     pub message: &'a str,
@@ -12,7 +18,7 @@ pub struct Request<'a> {
     pub default: i32,
     pub cancel: i32,
     pub verification: Option<&'a str>,
-    pub test: Option<(i32, bool)>,
+    pub test: Option<TestAction>,
 }
 #[derive(Debug)]
 pub struct Response {
@@ -241,20 +247,32 @@ pub fn show(parent: HWND, request: Request<'_>) -> Result<Response, String> {
         if was_enabled {
             EnableWindow(parent, 0);
         }
-        ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
-        if let Some((_, button, _)) = state
-            .buttons
-            .iter()
-            .find(|(id, _, _)| *id == request.default)
-        {
-            SetFocus(*button);
-        }
-        if let Some((id, checked)) = request.test {
-            if checked && !state.verify.is_null() {
-                SendMessageW(state.verify, BM_SETCHECK, BST_CHECKED as usize, 0);
+        if request.test.is_none() {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            if let Some((_, button, _)) = state
+                .buttons
+                .iter()
+                .find(|(id, _, _)| *id == request.default)
+            {
+                SetFocus(*button);
             }
-            PostMessageW(hwnd, WM_COMMAND, id as usize, 0);
+        }
+        if let Some(action) = request.test {
+            match action {
+                TestAction::Select(id, checked) => {
+                    if checked && !state.verify.is_null() {
+                        SendMessageW(state.verify, BM_SETCHECK, BST_CHECKED as usize, 0);
+                    }
+                    PostMessageW(hwnd, WM_COMMAND, id as usize, 0);
+                }
+                TestAction::Key(key) => {
+                    PostMessageW(hwnd, WM_KEYDOWN, key as usize, 0);
+                }
+                TestAction::Accelerator(key) => {
+                    PostMessageW(hwnd, WM_SYSCHAR, key as usize, 0);
+                }
+            }
         }
         let mut quit = None;
         let mut msg: MSG = std::mem::zeroed();

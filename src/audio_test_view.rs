@@ -30,7 +30,7 @@ impl Dialog {
             wc.lpfnWndProc = Some(proc);
             wc.lpszClassName = class.as_ptr();
             wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-            wc.hbrBackground = GetStockObject(WHITE_BRUSH as i32) as _;
+            wc.hbrBackground = null_mut();
             RegisterClassW(&wc);
             let state = Box::new(RefCell::new(State {
                 hwnd: null_mut(),
@@ -51,7 +51,7 @@ impl Dialog {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 p(570),
-                p(320),
+                p(360),
                 parent,
                 null_mut(),
                 wc.hInstance,
@@ -170,6 +170,8 @@ impl Dialog {
                     SendMessageW(parent, WM_GETICON, kind as usize, 0),
                 );
             }
+            s.layout(dpi);
+            crate::appearance::install(s.hwnd);
             s.refresh();
             drop(s);
             Ok(Self { state })
@@ -222,17 +224,55 @@ impl State {
             0,
             wide(crate::gui_theme::font_family()).as_ptr(),
         );
-        for (control, (x, y, w, h)) in self.controls.iter().zip([
-            (20, 22, 520, 38),
-            (20, 72, 110, 34),
-            (138, 72, 65, 34),
-            (319, 72, 110, 34),
-            (437, 72, 100, 34),
-            (20, 130, 520, 110),
-            (211, 72, 100, 34),
-        ]) {
-            SendMessageW(*control, WM_SETFONT, font as usize, 1);
-            MoveWindow(*control, p(x), p(y), p(w), p(h), 1);
+        let mut client: RECT = std::mem::zeroed();
+        GetClientRect(self.hwnd, &mut client);
+        let width = (client.right - p(40)).max(p(200));
+        for control in self.controls {
+            SendMessageW(control, WM_SETFONT, font as usize, 1);
+        }
+        MoveWindow(self.controls[0], p(20), p(22), width, p(42), 1);
+        let dc = GetDC(self.hwnd);
+        let old = SelectObject(dc, font as _);
+        let mut x = p(20);
+        let mut y = p(76);
+        for index in [1, 2, 6, 3, 4] {
+            let control = self.controls[index];
+            let length = GetWindowTextLengthW(control).max(0) as usize;
+            let mut label = vec![0u16; length + 1];
+            GetWindowTextW(control, label.as_mut_ptr(), label.len() as i32);
+            let mut measured: RECT = std::mem::zeroed();
+            DrawTextW(
+                dc,
+                label.as_ptr(),
+                -1,
+                &mut measured,
+                DT_CALCRECT | DT_SINGLELINE,
+            );
+            let button_width = (measured.right + p(28)).max(p(80)).min(width);
+            if x > p(20) && x + button_width > p(20) + width {
+                x = p(20);
+                y += p(44);
+            }
+            MoveWindow(control, x, y, button_width, p(34), 1);
+            x += button_width + p(10);
+        }
+        SelectObject(dc, old);
+        ReleaseDC(self.hwnd, dc);
+        let status_y = y + p(58);
+        MoveWindow(self.controls[5], p(20), status_y, width, p(110), 1);
+        let wanted = (status_y + p(132)).max(p(310));
+        if client.bottom < wanted {
+            let mut window: RECT = std::mem::zeroed();
+            GetWindowRect(self.hwnd, &mut window);
+            SetWindowPos(
+                self.hwnd,
+                null_mut(),
+                0,
+                0,
+                window.right - window.left,
+                wanted + (window.bottom - window.top - client.bottom),
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         DeleteObject(self.font as _);
         self.font = font;
@@ -291,9 +331,9 @@ impl State {
 }
 unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> LRESULT {
     if matches!(msg, WM_CTLCOLORSTATIC | WM_CTLCOLORBTN) {
-        SetBkColor(w as HDC, 0xffffff);
-        SetTextColor(w as HDC, 0x302217);
-        return GetStockObject(WHITE_BRUSH as i32) as LRESULT;
+        SetBkColor(w as HDC, crate::appearance::palette().surface);
+        SetTextColor(w as HDC, crate::appearance::palette().text);
+        return crate::appearance::surface_brush() as LRESULT;
     }
     // DefWindowProcW can pump timers during a native move/size/menu loop.
     if !matches!(msg, WM_CLOSE | WM_COMMAND | WM_TIMER | WM_DPICHANGED) {

@@ -1,9 +1,9 @@
 //! Language dialogs use an explicit catalog, independently of the active UI language.
 use crate::i18n::{Localizer, MessageId as M};
-use std::{path::PathBuf, ptr::null_mut};
+use std::path::PathBuf;
 use winapi::{
     shared::windef::HWND,
-    um::{commctrl::*, commdlg::*, winuser::*},
+    um::{commdlg::*, winuser::*},
 };
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -39,14 +39,22 @@ pub fn choose_file(parent: HWND) -> Result<Option<PathBuf>, String> {
     Ok(Some(std::ffi::OsString::from_wide(&filename[..end]).into()))
 }
 pub fn confirm_replace(parent: HWND, name: &str) -> bool {
-    unsafe {
-        MessageBoxW(
-            parent,
-            wide(&crate::tr!(language_replace_message, language = name)).as_ptr(),
-            wide(crate::tr!(language_replace_title)).as_ptr(),
-            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
-        ) == IDYES
-    }
+    crate::theme_dialog::show(
+        parent,
+        crate::theme_dialog::Request {
+            title: crate::tr!(language_replace_title),
+            message: &crate::tr!(language_replace_message, language = name),
+            buttons: &[
+                (IDYES, crate::tr!(dialog_yes)),
+                (IDNO, crate::tr!(dialog_no)),
+            ],
+            default: IDNO,
+            cancel: IDNO,
+            verification: None,
+            test: None,
+        },
+    )
+    .is_ok_and(|r| r.button == IDYES)
 }
 pub fn restart_prompt(
     parent: HWND,
@@ -63,7 +71,6 @@ fn restart_dialog(
     bridging: bool,
     test_button: Option<i32>,
 ) -> Result<bool, String> {
-    let title = wide(language.text(M::language_restart_title));
     let mut args = fluent_bundle::FluentArgs::new();
     args.set("language", name);
     let mut content = language.format_key(M::language_restart_message.key(), Some(&args));
@@ -71,54 +78,24 @@ fn restart_dialog(
         content += "\n\n";
         content += language.text(M::language_restart_bridge);
     }
-    let content = wide(&content);
-    let later = wide(language.text(M::language_restart_later));
-    let now = wide(language.text(M::language_restart_now));
-    let buttons = [
-        TASKDIALOG_BUTTON {
-            nButtonID: IDCANCEL,
-            pszButtonText: later.as_ptr(),
+    let response = crate::theme_dialog::show(
+        parent,
+        crate::theme_dialog::Request {
+            title: language.text(M::language_restart_title),
+            message: &content,
+            buttons: &[
+                (IDCANCEL, language.text(M::language_restart_later)),
+                (100, language.text(M::language_restart_now)),
+            ],
+            default: IDCANCEL,
+            cancel: IDCANCEL,
+            verification: None,
+            test: test_button.map(|id| crate::theme_dialog::TestAction::Select(id, false)),
         },
-        TASKDIALOG_BUTTON {
-            nButtonID: 100,
-            pszButtonText: now.as_ptr(),
-        },
-    ];
-    let mut c: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
-    c.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
-    c.hwndParent = parent;
-    c.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-    c.pszWindowTitle = title.as_ptr();
-    c.pszContent = content.as_ptr();
-    c.cButtons = buttons.len() as u32;
-    c.pButtons = buttons.as_ptr();
-    c.nDefaultButton = IDCANCEL;
-    unsafe extern "system" fn click(
-        hwnd: HWND,
-        message: u32,
-        _: usize,
-        _: isize,
-        data: isize,
-    ) -> i32 {
-        if message == TDN_CREATED {
-            PostMessageW(hwnd, TDM_CLICK_BUTTON, data as usize, 0);
-        }
-        0
-    }
-    if let Some(button) = test_button {
-        c.pfCallback = Some(click);
-        c.lpCallbackData = button as isize;
-    }
-    let mut selected = 0;
-    let result = unsafe { TaskDialogIndirect(&c, &mut selected, null_mut(), null_mut()) };
-    if result < 0 {
-        return Err(crate::tr!(
-            language_restart_dialog_error,
-            code = format!("0x{:08X}", result as u32)
-        ));
-    }
-    Ok(selected == 100)
+    )?;
+    Ok(response.button == 100)
 }
+
 pub fn smoke(parent: HWND) -> Result<(), String> {
     for code in ["zh-CN", "en-US"] {
         let language = Localizer::load(

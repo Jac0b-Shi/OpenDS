@@ -274,7 +274,12 @@ fn main() {
     }) {
         eprintln!("OpenDS：{e}");
         if gui {
-            native_windows_gui::simple_message("OpenDS", &e);
+            appearance::initialize(
+                config::Config::load(&config::Config::path())
+                    .map(|c| c.theme)
+                    .unwrap_or_default(),
+            );
+            theme_dialog::message(std::ptr::null_mut(), "OpenDS", &e);
         }
         std::process::exit(1);
     }

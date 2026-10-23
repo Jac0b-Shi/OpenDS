@@ -94,7 +94,7 @@ impl Palette {
             accent: GetSysColor(COLOR_HIGHLIGHT),
             primary: GetSysColor(COLOR_HIGHLIGHT),
             primary_text: GetSysColor(COLOR_HIGHLIGHTTEXT),
-            hover: GetSysColor(COLOR_BTNFACE),
+            hover: bg,
             selected: GetSysColor(COLOR_HIGHLIGHT),
             disabled: bg,
             disabled_text: GetSysColor(COLOR_GRAYTEXT),
@@ -151,6 +151,25 @@ thread_local! { static STATE: RefCell<State> = RefCell::new(State {
 pub fn palette() -> Palette {
     STATE.with(|s| s.borrow().palette)
 }
+pub fn button_color(base: u32, pressed: bool, hot: bool) -> u32 {
+    if palette().kind == Kind::Contrast {
+        return base;
+    }
+    let component = |shift: u32| -> u32 {
+        let v = (base >> shift) & 255u32;
+        if pressed {
+            v * 85 / 100
+        } else if hot {
+            v + (255 - v) * 5 / 100
+        } else {
+            v
+        }
+    };
+    rgb(component(0), component(8), component(16))
+}
+pub fn registered_windows() -> usize {
+    STATE.with(|s| s.borrow().windows.len())
+}
 pub fn mode() -> ThemeMode {
     STATE.with(|s| s.borrow().mode)
 }
@@ -175,6 +194,17 @@ fn detect(mode: ThemeMode) -> Palette {
     }
 }
 fn system_settings() -> (Option<bool>, bool) {
+    if std::env::args().nth(1).as_deref() == Some("ui-smoke-test") {
+        if let Ok(value) = std::env::var("OPENDS_UI_SMOKE_SYSTEM_THEME") {
+            match value.as_str() {
+                "light" => return (Some(true), false),
+                "dark" => return (Some(false), false),
+                "contrast" => return (None, true),
+                "missing" => return (None, false),
+                _ => {}
+            }
+        }
+    }
     #[link(name = "advapi32")]
     extern "system" {
         fn RegGetValueW(
@@ -271,13 +301,24 @@ unsafe fn apply(hwnd: HWND) {
     let dark = (p.kind == Kind::Dark) as i32;
     DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as _, 4);
     // Explicit colors also let a manual choice differ from the Windows preference.
-    for (attribute, value) in [(35, p.surface), (36, p.surface), (37, p.text)] {
+    for (attribute, value) in [(34, p.line), (35, p.surface), (36, p.text)] {
         let value = if p.kind == Kind::Contrast {
             0xffffffff
         } else {
             value
         };
         DwmSetWindowAttribute(hwnd, attribute, &value as *const _ as _, 4);
+    }
+    let mut name = [0u16; 64];
+    let len = GetClassNameW(hwnd, name.as_mut_ptr(), 64);
+    if String::from_utf16_lossy(&name[..len.max(0) as usize]) == "tooltips_class32" {
+        #[link(name = "uxtheme")]
+        extern "system" {
+            fn SetWindowTheme(hwnd: HWND, sub: *const u16, id: *const u16) -> i32;
+        }
+        SetWindowTheme(hwnd, wide("").as_ptr(), wide("").as_ptr());
+        SendMessageW(hwnd, TTM_SETTIPBKCOLOR, p.surface as usize, 0);
+        SendMessageW(hwnd, TTM_SETTIPTEXTCOLOR, p.text as usize, 0);
     }
     crate::theme_controls::install_children(hwnd);
     RedrawWindow(
@@ -296,7 +337,22 @@ unsafe extern "system" fn window_proc(
     _: usize,
 ) -> LRESULT {
     if msg == WM_NCDESTROY {
-        STATE.with(|s| s.borrow_mut().windows.retain(|h| *h != hwnd));
+        let next = STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            s.windows.retain(|h| *h != hwnd);
+            let next = if s.pending {
+                s.windows.first().copied()
+            } else {
+                None
+            };
+            if next.is_none() {
+                s.pending = false;
+            }
+            next
+        });
+        if let Some(next) = next {
+            PostMessageW(next, REFRESH, 0, 0);
+        }
         RemoveWindowSubclass(hwnd, Some(window_proc), SUBCLASS);
         return DefSubclassProc(hwnd, msg, w, l);
     }
@@ -313,6 +369,12 @@ unsafe extern "system" fn window_proc(
         if queue {
             PostMessageW(hwnd, REFRESH, 0, 0);
         }
+    }
+    if msg == WM_ERASEBKGND {
+        let mut r: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut r);
+        FillRect(w as HDC, &r, surface_brush());
+        return 1;
     }
     if msg == REFRESH {
         let mode = mode();
@@ -335,12 +397,44 @@ pub fn smoke_palette(kind: Kind) {
         Kind::Dark => Palette::dark(),
         Kind::Contrast => unsafe { Palette::contrast() },
     };
-    update(mode(), p);
+    update(
+        match kind {
+            Kind::Light => ThemeMode::Light,
+            Kind::Dark => ThemeMode::Dark,
+            Kind::Contrast => mode(),
+        },
+        p,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normal_text_meets_contrast_in_both_palettes() {
+        fn luminance(c: u32) -> f64 {
+            let channel = |v: u32| {
+                let f = (v & 255) as f64 / 255.;
+                if f <= 0.04045 {
+                    f / 12.92
+                } else {
+                    ((f + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            channel(c) * 0.2126 + channel(c >> 8) * 0.7152 + channel(c >> 16) * 0.0722
+        }
+        for p in [Palette::light(), Palette::dark()] {
+            for bg in [p.bg, p.surface] {
+                for fg in [p.text, p.muted] {
+                    let (a, b) = (luminance(bg), luminance(fg));
+                    let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                    assert!(ratio >= 4.5, "{p:?}: {ratio}");
+                }
+            }
+            let (a, b) = (luminance(p.primary), luminance(p.primary_text));
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5);
+        }
+    }
     #[test]
     fn preference_system_and_high_contrast_precedence() {
         for mode in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {

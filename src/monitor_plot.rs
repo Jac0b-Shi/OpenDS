@@ -242,6 +242,14 @@ pub(super) unsafe fn wave(
     time_labels: bool,
     phase: f32,
 ) {
+    let palette = crate::appearance::palette();
+    let rgb = |v: u32| {
+        RGBColor(
+            (v & 255) as u8,
+            ((v >> 8) & 255) as u8,
+            ((v >> 16) & 255) as u8,
+        )
+    };
     let (x, y, w, h) = bounds;
     if w < 60. || h < 22. {
         return;
@@ -270,13 +278,9 @@ pub(super) unsafe fn wave(
         .x_labels(if time_labels { 4 } else { 0 })
         .y_labels(3)
         .max_light_lines(0)
-        .axis_style(RGBColor(213, 220, 230))
-        .bold_line_style(RGBColor(236, 240, 245))
-        .label_style(
-            ("sans-serif", 11)
-                .into_font()
-                .color(&RGBColor(117, 129, 146)),
-        )
+        .axis_style(rgb(palette.line))
+        .bold_line_style(rgb(palette.grid))
+        .label_style(("sans-serif", 11).into_font().color(&rgb(palette.muted)))
         .x_label_formatter(&|v| {
             if v.abs() < 0.01 {
                 "0s".into()
@@ -292,9 +296,9 @@ pub(super) unsafe fn wave(
         }
         let bit = 1 << (lane + stage * 5);
         let color = if stage == 0 {
-            RGBColor(46, 115, 235)
+            rgb(palette.source)
         } else {
-            RGBColor(229, 137, 52)
+            rgb(palette.forwarded)
         };
         let time = |i: usize| {
             -(seconds as f32) + (i as f32 - phase) * seconds as f32 / bins.len().max(1) as f32

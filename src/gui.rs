@@ -1,7 +1,7 @@
 //! NWG 原生控件 + 按显示器 DPI 布局；UI 不参与实时数据处理。
 use crate::{
     bridge::BridgeController,
-    config::{CloseAction, Config},
+    config::{CloseAction, Config, ThemeMode},
     gui_theme as theme,
 };
 use native_windows_gui as nwg;
@@ -15,9 +15,7 @@ use std::{
 use winapi::{
     shared::{minwindef::*, windef::*},
     um::{
-        wingdi::{
-            CreateSolidBrush, DeleteObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
-        },
+        wingdi::{SetBkColor, SetBkMode, SetTextColor, TRANSPARENT},
         winuser::*,
     },
 };
@@ -66,6 +64,7 @@ struct Controls {
     mic_buffer: nwg::ComboBox<String>,
     close_action: nwg::ComboBox<String>,
     language: nwg::ComboBox<String>,
+    theme_choice: nwg::ComboBox<String>,
     import_language: nwg::Button,
     language_folder: nwg::Button,
     language_notice: nwg::Label,
@@ -97,7 +96,6 @@ struct App {
     dpi: Cell<u32>,
     fonts: RefCell<theme::Fonts>,
     last_logs: RefCell<String>,
-    white_brush: HBRUSH,
     smoke_deadline: Cell<Option<std::time::Instant>>,
     dependency_attention: Cell<bool>,
     dependency_check: Cell<std::time::Instant>,
@@ -148,6 +146,7 @@ impl App {
         background: bool,
         smoke: bool,
     ) -> Result<Rc<Self>, String> {
+        crate::appearance::initialize(cfg.theme);
         nwg::init().map_err(|e| e.to_string())?;
         let dpi = unsafe { crate::gui_theme::system_dpi() }.max(96);
         let fonts = theme::Fonts::new(dpi)?;
@@ -167,7 +166,6 @@ impl App {
             dpi: Cell::new(dpi),
             fonts: RefCell::new(fonts),
             last_logs: RefCell::new(String::new()),
-            white_brush: unsafe { CreateSolidBrush(theme::WHITE) },
             smoke_deadline: Cell::new(None),
             dependency_attention: Cell::new(false),
             dependency_check: Cell::new(std::time::Instant::now()),
@@ -190,11 +188,6 @@ impl App {
                 .title(if smoke { "OpenDS · UI test" } else { "OpenDS" })
                 .flags(
                     nwg::WindowFlags::WINDOW
-                        | if background {
-                            nwg::WindowFlags::empty()
-                        } else {
-                            nwg::WindowFlags::VISIBLE
-                        }
                         | nwg::WindowFlags::RESIZABLE
                         | nwg::WindowFlags::MINIMIZE_BOX,
                 )
@@ -208,6 +201,9 @@ impl App {
                     ICON_BIG as usize,
                     a.ui.taskbar_icon.handle as isize,
                 );
+            }
+            unsafe {
+                crate::appearance::install(theme::hwnd(&a.ui.window.handle));
             }
             let ui = &mut a.ui;
             let window = &ui.window;
@@ -225,7 +221,7 @@ impl App {
                     nwg::CheckBox::builder()
                         .parent(window)
                         .text($text)
-                        .background_color(Some([255, 255, 255]))
+                        .background_color(None)
                         .check_state(check($v))
                         .build(&mut ui.$field)?;
                 };
@@ -249,9 +245,28 @@ impl App {
             button!(import_language, crate::tr!(language_import));
             button!(language_folder, crate::tr!(language_open_folder));
             nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
                 .parent(window)
                 .collection(Vec::<String>::new())
                 .build(&mut ui.language)?;
+            nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
+                .parent(window)
+                .collection(vec![
+                    crate::tr!(appearance_system).to_owned(),
+                    crate::tr!(appearance_light).to_owned(),
+                    crate::tr!(appearance_dark).to_owned(),
+                ])
+                .selected_index(Some(cfg.theme.index()))
+                .build(&mut ui.theme_choice)?;
             for label in [
                 &mut ui.status,
                 &mut ui.count_input,
@@ -263,7 +278,7 @@ impl App {
             ] {
                 nwg::Label::builder()
                     .parent(window)
-                    .background_color(Some([255, 255, 255]))
+                    .background_color(None)
                     .text("")
                     .build(label)?;
             }
@@ -308,6 +323,11 @@ impl App {
                 cfg.microphone_enabled
             );
             nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
                 .parent(window)
                 .collection(vec![
                     crate::tr!(gui_ask).into(),
@@ -321,11 +341,21 @@ impl App {
                 }))
                 .build(&mut ui.close_action)?;
             nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
                 .parent(window)
                 .collection(vec![crate::tr!(gui_auto_select_bluetooth_dualsense).into()])
                 .selected_index(Some(0))
                 .build(&mut ui.device)?;
             nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
                 .parent(window)
                 .collection(vec![
                     crate::tr!(gui_automatic_game_setting_headphone_connection).into(),
@@ -365,6 +395,11 @@ impl App {
             mic_buffers.dedup();
             a.mic_buffers = mic_buffers.clone();
             nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
                 .parent(window)
                 .selected_index(
                     mic_buffers
@@ -377,7 +412,7 @@ impl App {
                 .parent(window)
                 .range(Some(0..50))
                 .pos(Some(cfg.microphone_gain_db as usize))
-                .background_color(Some([255, 255, 255]))
+                .background_color(None)
                 .build(&mut ui.mic_gain)?;
             cb!(active, crate::tr!(gui_enable_hidhide_device_hiding), false);
             nwg::ListBox::builder()
@@ -464,6 +499,10 @@ impl App {
             &cfg,
             a.path.clone(),
         )?);
+        unsafe {
+            crate::appearance::install(theme::hwnd(&a.window.handle));
+            crate::appearance::install(theme::hwnd(&a.tips.handle));
+        }
         a.apply_fonts()?;
         unsafe {
             let hwnd = theme::hwnd(&a.logs.handle);
@@ -525,6 +564,7 @@ impl App {
             &self.mic_buffer.handle,
             &self.close_action.handle,
             &self.language.handle,
+            &self.theme_choice.handle,
             &self.import_language.handle,
             &self.language_folder.handle,
             &self.language_notice.handle,
@@ -665,9 +705,10 @@ impl App {
                 put(&self.import_language.handle, x + 24, 212, 208, 38);
                 put(&self.language_folder.handle, x + 248, 212, 208, 38);
                 put(&self.language_notice.handle, x + 24, 266, cw - 48, 52);
-                put(&self.auto_start.handle, x + 24, 340, cw - 48, 38);
-                put(&self.start_on_login.handle, x + 24, 388, cw - 48, 38);
-                put(&self.close_action.handle, x + 24, 488, 280, 220);
+                put(&self.theme_choice.handle, x + 24, 350, 280, 240);
+                put(&self.auto_start.handle, x + 24, 396, cw - 48, 38);
+                put(&self.start_on_login.handle, x + 24, 440, cw - 48, 38);
+                put(&self.close_action.handle, x + 24, 526, 280, 220);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
         }
@@ -692,9 +733,9 @@ impl App {
             right: theme::px(x + w, dpi),
             bottom: theme::px(y + h, dpi),
         };
-        theme::fill(dc, &rect(0, 0, w, h), theme::BG);
-        theme::fill(dc, &rect(0, 0, 208, h), theme::WHITE);
-        theme::fill(dc, &rect(207, 0, 1, h), theme::LINE);
+        theme::fill(dc, &rect(0, 0, w, h), theme::palette().bg);
+        theme::fill(dc, &rect(0, 0, 208, h), theme::palette().surface);
+        theme::fill(dc, &rect(207, 0, 1, h), theme::palette().line);
         let text = |x, y, w, h, s: &str, font: &nwg::Font, color| {
             theme::text(
                 dc,
@@ -705,7 +746,7 @@ impl App {
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
             )
         };
-        text(28, 36, 160, 40, "OpenDS", &f.title, theme::INK);
+        text(28, 36, 160, 40, "OpenDS", &f.title, theme::palette().text);
         text(
             28,
             78,
@@ -713,7 +754,7 @@ impl App {
             24,
             crate::tr!(gui_dualsense_control_center),
             &f.small,
-            theme::MUTED,
+            theme::palette().muted,
         );
         text(
             28,
@@ -722,7 +763,7 @@ impl App {
             25,
             crate::tr!(gui_bluetooth_connection_usb_experience),
             &f.small,
-            theme::MUTED,
+            theme::palette().muted,
         );
         text(
             28,
@@ -731,7 +772,7 @@ impl App {
             22,
             concat!("v", env!("CARGO_PKG_VERSION")),
             &f.small,
-            theme::MUTED,
+            theme::palette().muted,
         );
         let titles = [
             crate::tr!(gui_overview),
@@ -750,15 +791,23 @@ impl App {
             crate::tr!(language_settings_description),
         ];
         let p = self.page.get() as usize;
-        text(x, 28, cw, 42, titles[p], &f.title, theme::INK);
-        text(x, 73, cw, 24, descriptions[p], &f.body, theme::MUTED);
+        text(x, 28, cw, 42, titles[p], &f.title, theme::palette().text);
+        text(
+            x,
+            73,
+            cw,
+            24,
+            descriptions[p],
+            &f.body,
+            theme::palette().muted,
+        );
         let card = |x, y, w, h| {
             theme::round(
                 dc,
                 &rect(x, y, w, h),
                 theme::px(16, dpi),
-                theme::WHITE,
-                theme::LINE,
+                theme::palette().surface,
+                theme::palette().line,
             )
         };
         match p {
@@ -771,7 +820,7 @@ impl App {
                     42,
                     crate::tr!(gui_native_feedback_wireless_freedom),
                     &f.title,
-                    theme::INK,
+                    theme::palette().text,
                 );
                 text(
                     x + 28,
@@ -780,7 +829,7 @@ impl App {
                     23,
                     crate::tr!(gui_dualsense_bluetooth_local_virtual_usb_controller),
                     &f.body,
-                    theme::MUTED,
+                    theme::palette().muted,
                 );
                 let c = (cw - 32) / 3;
                 for (i, name) in [
@@ -793,7 +842,15 @@ impl App {
                 {
                     let left = x + i as i32 * (c + 16);
                     card(left, 320, c, 112);
-                    text(left + 24, 337, c - 48, 24, name, &f.small, theme::MUTED);
+                    text(
+                        left + 24,
+                        337,
+                        c - 48,
+                        24,
+                        name,
+                        &f.small,
+                        theme::palette().muted,
+                    );
                 }
                 card(x, 452, cw, h - 476);
                 text(
@@ -803,7 +860,7 @@ impl App {
                     26,
                     crate::tr!(gui_recent_activity),
                     &f.strong,
-                    theme::INK,
+                    theme::palette().text,
                 );
                 if self.last_logs.borrow().is_empty() {
                     text(
@@ -813,7 +870,7 @@ impl App {
                         30,
                         crate::tr!(gui_ready_start_bridging_to_see_connection_and),
                         &f.body,
-                        theme::MUTED,
+                        theme::palette().muted,
                     );
                 }
             }
@@ -858,7 +915,7 @@ impl App {
                         crate::tr!(gui_microphone_safety_buffer_ms),
                     ),
                 ] {
-                    text(left, y, width, 24, s, &f.small, theme::MUTED);
+                    text(left, y, width, 24, s, &f.small, theme::palette().muted);
                 }
             }
             3 => {
@@ -870,7 +927,7 @@ impl App {
                     26,
                     crate::tr!(gui_application_whitelist),
                     &f.strong,
-                    theme::INK,
+                    theme::palette().text,
                 );
                 text(
                     x + 24,
@@ -879,7 +936,7 @@ impl App {
                     25,
                     crate::tr!(gui_listed_applications_can_still_see_the_physical),
                     &f.small,
-                    theme::MUTED,
+                    theme::palette().muted,
                 );
                 text(
                     x,
@@ -888,7 +945,7 @@ impl App {
                     24,
                     crate::tr!(gui_stopping_the_bridge_restores_the_hiding_settings),
                     &f.small,
-                    theme::MUTED,
+                    theme::palette().muted,
                 );
             }
             4 => {
@@ -901,11 +958,11 @@ impl App {
                     25,
                     crate::tr!(gui_application_log),
                     &f.strong,
-                    theme::INK,
+                    theme::palette().text,
                 );
             }
             _ => {
-                card(x, 112, cw, 442);
+                card(x, 112, cw, 458);
                 text(
                     x + 24,
                     130,
@@ -913,16 +970,25 @@ impl App {
                     24,
                     crate::tr!(language_label),
                     &f.strong,
-                    theme::INK,
+                    theme::palette().text,
                 );
                 text(
                     x + 24,
-                    452,
+                    492,
                     cw - 48,
                     24,
                     crate::tr!(gui_on_close),
                     &f.strong,
-                    theme::INK,
+                    theme::palette().text,
+                );
+                text(
+                    x + 24,
+                    320,
+                    cw - 48,
+                    24,
+                    crate::tr!(appearance_label),
+                    &f.strong,
+                    theme::palette().text,
                 );
             }
         }
@@ -930,6 +996,9 @@ impl App {
     }
     fn raw(&self, hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
         unsafe {
+            if let Some(result) = crate::theme_controls::parent_message(hwnd, msg, w, l) {
+                return Some(result);
+            }
             match msg {
                 WM_TIMER if w == 0x4f44 => {
                     if self
@@ -965,19 +1034,19 @@ impl App {
                 WM_ERASEBKGND => Some(1),
                 WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
                     let dc = w as HDC;
-                    SetBkColor(dc, theme::WHITE);
+                    SetBkColor(dc, theme::palette().surface);
                     SetBkMode(dc, TRANSPARENT as i32);
                     SetTextColor(
                         dc,
                         if l as HWND == theme::hwnd(&self.logs.handle)
                             && self.last_logs.borrow().is_empty()
                         {
-                            theme::MUTED
+                            theme::palette().muted
                         } else {
-                            theme::INK
+                            theme::palette().text
                         },
                     );
-                    Some(self.white_brush as isize)
+                    Some(crate::appearance::surface_brush() as isize)
                 }
                 WM_DRAWITEM => {
                     let item = &*(l as *const DRAWITEMSTRUCT);
@@ -1040,12 +1109,12 @@ impl App {
     fn error(&self, e: impl Into<String>) {
         let e = e.into();
         self.controller.borrow().state.error(e.clone());
-        nwg::modal_error_message(&self.window, "OpenDS", &e);
+        crate::theme_dialog::message(theme::hwnd(&self.window.handle), "OpenDS", &e);
     }
     fn error_message(&self, id: crate::i18n::MessageId, e: impl Into<String>) {
         let e = e.into();
         self.controller.borrow().state.error_message(id, e.clone());
-        nwg::modal_error_message(&self.window, "OpenDS", &e);
+        crate::theme_dialog::message(theme::hwnd(&self.window.handle), "OpenDS", &e);
     }
     fn refresh_languages(&self) {
         let mut languages = crate::i18n::languages_in(&crate::i18n::directory());
@@ -1089,6 +1158,23 @@ impl App {
                 ""
             },
         );
+    }
+    fn select_theme(&self) -> Result<(), String> {
+        let value = ThemeMode::from_index(self.theme_choice.selection().unwrap_or(0));
+        let previous = self.config.borrow().theme;
+        if value == previous {
+            return Ok(());
+        }
+        if let Err(error) = Config::load(&self.path).and_then(|mut c| {
+            c.theme = value;
+            c.save(&self.path)
+        }) {
+            self.theme_choice.set_selection(Some(previous.index()));
+            return Err(error);
+        }
+        self.config.borrow_mut().theme = value;
+        crate::appearance::set_mode(value);
+        Ok(())
     }
     fn select_language(&self) -> Result<(), String> {
         let code = self
@@ -1172,8 +1258,8 @@ impl App {
         if resolved == imported.code {
             return self.offer_language_restart(&requested);
         }
-        nwg::modal_info_message(
-            &self.window,
+        crate::theme_dialog::message(
+            theme::hwnd(&self.window.handle),
             crate::tr!(language_import_title),
             &crate::tr!(language_import_done, language = imported.name),
         );
@@ -1573,6 +1659,12 @@ impl App {
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
+        if event == E::OnComboxBoxSelection && handle == self.theme_choice {
+            if let Err(e) = self.select_theme() {
+                self.error(e);
+            }
+            return;
+        }
         if event == E::OnComboxBoxSelection && handle == self.language {
             if let Err(e) = self.select_language() {
                 self.error(e);
@@ -1850,9 +1942,6 @@ impl Drop for App {
     fn drop(&mut self) {
         self.audio_test_view.get_mut().take();
         self.monitor_view.get_mut().take();
-        unsafe {
-            DeleteObject(self.white_brush as _);
-        }
     }
 }
 pub fn run(
@@ -1876,6 +1965,12 @@ fn run_inner(
     smoke: bool,
     background: bool,
 ) -> Result<(), String> {
+    let mut cfg = cfg;
+    if smoke {
+        cfg.theme = ThemeMode::parse(
+            &std::env::var("OPENDS_UI_SMOKE_THEME").unwrap_or_else(|_| "system".into()),
+        );
+    }
     let app = App::build(cfg, path, error, background, smoke)?;
     #[cfg(debug_assertions)]
     let demo = if smoke && std::env::var_os("OPENDS_UI_SMOKE_DEMO").is_some() {
@@ -2011,6 +2106,9 @@ fn run_inner(
         nwg::unbind_raw_event_handler(&raw).map_err(|e| e.to_string())?;
         nwg::unbind_event_handler(&handler);
         return Err(crate::tr!(gui_could_not_create_the_ui_status_timer).into());
+    }
+    if !background && !smoke {
+        app.show_window();
     }
     app.update();
     app.layout();

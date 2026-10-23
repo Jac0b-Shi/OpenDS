@@ -148,8 +148,10 @@ unsafe fn push_button(hwnd: HWND, dc: HDC, r: RECT) {
     let bg = if !enabled {
         p.disabled
     } else if primary {
-        p.primary
-    } else if pressed || hot {
+        a::button_color(p.primary, pressed, hot)
+    } else if pressed {
+        p.selected
+    } else if hot {
         p.hover
     } else {
         p.surface
@@ -194,13 +196,14 @@ unsafe fn combo(hwnd: HWND, dc: HDC, r: RECT) {
         if enabled { p.text } else { p.disabled_text },
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
     );
-    let x = r.right - 13;
+    let px = |v| crate::gui_theme::px(v, crate::gui_theme::window_dpi(hwnd));
+    let x = r.right - px(13);
     let y = (r.bottom + r.top) / 2;
     let pen = CreatePen(PS_SOLID as i32, 1, p.muted);
     let old = SelectObject(dc, pen as _);
-    MoveToEx(dc, x - 4, y - 2, null_mut());
-    LineTo(dc, x, y + 2);
-    LineTo(dc, x + 4, y - 2);
+    MoveToEx(dc, x - px(4), y - px(2), null_mut());
+    LineTo(dc, x, y + px(2));
+    LineTo(dc, x + px(4), y - px(2));
     SelectObject(dc, old);
     DeleteObject(pen as _);
 }
@@ -313,6 +316,75 @@ unsafe extern "system" fn control_proc(
     if msg == WM_ERASEBKGND && (cb || push || kind == 2 || kind == 4) {
         return 1;
     }
+    if msg == WM_NCPAINT && (kind == 4 || kind == 3) {
+        let mut wr: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut wr);
+        let mut cr: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut cr);
+        let mut point = POINT { x: 0, y: 0 };
+        ClientToScreen(hwnd, &mut point);
+        let dc = GetWindowDC(hwnd);
+        let width = wr.right - wr.left;
+        let height = wr.bottom - wr.top;
+        let top = point.y - wr.top;
+        let left = point.x - wr.left;
+        let bottom = top + cr.bottom;
+        let right = left + cr.right;
+        let color = if kind == 3 {
+            if GetFocus() == hwnd {
+                a::palette().accent
+            } else {
+                a::palette().line
+            }
+        } else {
+            a::palette().surface
+        };
+        for r in [
+            RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: top,
+            },
+            RECT {
+                left: 0,
+                top: bottom,
+                right: width,
+                bottom: height,
+            },
+            RECT {
+                left: 0,
+                top: top,
+                right: left,
+                bottom,
+            },
+            RECT {
+                left: right,
+                top: top,
+                right: width,
+                bottom,
+            },
+        ] {
+            if r.right > r.left && r.bottom > r.top {
+                fill(dc, &r, color);
+            }
+        }
+        ReleaseDC(hwnd, dc);
+        if kind == 3 {
+            scroll_bar(hwnd);
+        }
+        return 0;
+    }
+    if msg == WM_MOUSEMOVE && (kind == 1 || kind == 2) {
+        let mut track: TRACKMOUSEEVENT = std::mem::zeroed();
+        track.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = hwnd;
+        TrackMouseEvent(&mut track);
+    }
+    if kind == 3 && matches!(msg, WM_SETFOCUS | WM_KILLFOCUS) {
+        RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_FRAME);
+    }
     let result = DefSubclassProc(hwnd, msg, w, l);
     if matches!(
         msg,
@@ -360,15 +432,40 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
         if n.code == NM_CUSTOMDRAW && class(n.hwndFrom) == "msctls_trackbar32" {
             let c = &*(l as *const NMCUSTOMDRAW);
             if c.dwDrawStage == CDDS_PREPAINT {
-                return Some(CDRF_NOTIFYITEMDRAW as isize);
-            }
-            if c.dwDrawStage == CDDS_ITEMPREPAINT {
-                let col = if c.dwItemSpec == TBCD_THUMB as usize {
-                    p.accent
-                } else {
-                    p.line
-                };
-                fill(c.hdc, &c.rc, col);
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(n.hwndFrom, &mut client);
+                fill(c.hdc, &client, p.surface);
+                let mut channel: RECT = std::mem::zeroed();
+                let mut thumb: RECT = std::mem::zeroed();
+                SendMessageW(
+                    n.hwndFrom,
+                    TBM_GETCHANNELRECT,
+                    0,
+                    &mut channel as *mut _ as isize,
+                );
+                SendMessageW(
+                    n.hwndFrom,
+                    TBM_GETTHUMBRECT,
+                    0,
+                    &mut thumb as *mut _ as isize,
+                );
+                let enabled = IsWindowEnabled(n.hwndFrom) != 0;
+                fill(c.hdc, &channel, p.line);
+                let mut active = channel;
+                active.right = (thumb.left + thumb.right) / 2;
+                if enabled && active.right > active.left {
+                    fill(c.hdc, &active, p.accent);
+                }
+                crate::gui_theme::round(
+                    c.hdc,
+                    &thumb,
+                    (thumb.right - thumb.left) / 2,
+                    if enabled { p.accent } else { p.disabled_text },
+                    p.line,
+                );
+                if GetFocus() == n.hwndFrom {
+                    DrawFocusRect(c.hdc, &client);
+                }
                 return Some(CDRF_SKIPDEFAULT as isize);
             }
         }
@@ -385,7 +482,7 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
             return Some(1);
         }
     }
-    if msg == WM_INITMENUPOPUP {
+    if msg == WM_INITMENUPOPUP && ((l as usize >> 16) & 65535) == 0 {
         let menu = w as HMENU;
         let mut info: MENUINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MENUINFO>() as u32;
@@ -410,6 +507,7 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
             item.fType |= MFT_OWNERDRAW;
             SetMenuItemInfoW(menu, i as u32, 1, &item);
         }
+        return Some(0);
     }
     if msg == WM_DRAWITEM && l != 0 {
         let d = &*(l as *const DRAWITEMSTRUCT);
