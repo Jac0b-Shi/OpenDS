@@ -110,6 +110,9 @@ Raise `buffer`, for example to 96 or 128.
 **Steam games misbehave**
 Disable Steam Input. It takes over the controller and bypasses the virtual device.
 
+**How do I troubleshoot a connection problem?**
+Logs are in `%LOCALAPPDATA%\OpenDS\logs\opends.log`, shared by startup and manual launches. They record connections, disconnects, bridge errors and audio statistics. Each file is capped at 1 MiB, with `opends.log.1` and `opends.log.2` kept as history. Every line starts with a Unix timestamp in seconds.
+
 ## Compatibility
 
 Supports DualSense and DualSense Edge. Edge uses the Edge PID by default; set `edge_as_ds=true` to present it as a standard DualSense. One controller at a time.

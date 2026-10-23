@@ -23,7 +23,21 @@
 
 ## 日志
 
-诊断日志在 `%LOCALAPPDATA%\OpenDS\logs`，保留当前文件和两份轮转，每份上限 1 MiB。
+诊断日志在 `%LOCALAPPDATA%\OpenDS\logs\opends.log`。
+
+登录自启和手动启动写同一个文件，没有单独的自启日志。
+
+记录内容包括：连接与断线、桥接错误、麦克风与音频统计、诊断计数（完整输入、游戏反馈、马达状态、写失败次数）。
+
+- 单文件上限 1 MiB，写满后轮转
+- 保留 `opends.log.1` 和 `opends.log.2` 两份历史
+- 每行开头的数字是 Unix 秒级时间戳
+
+转换时间戳：
+
+```powershell
+[DateTimeOffset]::FromUnixTimeSeconds(1792723950).LocalDateTime
+```
 
 ## 长期运行观测
 

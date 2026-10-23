@@ -110,6 +110,9 @@ haptics_gain=10
 **Steam 游戏识别异常**
 关闭 Steam Input。它会接管手柄，绕过本工具的虚拟设备。
 
+**怎么排查连接问题**
+日志在 `%LOCALAPPDATA%\OpenDS\logs\opends.log`，自启和手动启动共用同一个文件，记录连接、断线、桥接错误和音频统计。单文件上限 1 MiB，保留 `opends.log.1`、`opends.log.2` 两份历史。每行开头是 Unix 秒级时间戳。
+
 ## 兼容性
 
 支持普通 DualSense 和 DualSense Edge。Edge 默认使用 Edge 的 PID，可在配置里设 `edge_as_ds=true` 改为呈现为普通 DualSense。同时只支持一只手柄。
