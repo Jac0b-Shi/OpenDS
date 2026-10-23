@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { FINGERPRINT, GITHUB, GITEE, HttpError, requester, synchronize, verifyAssets } from '../sync-gitee-release.mjs';
+import { FINGERPRINT, GITHUB, GITEE, HttpError, NetworkError, requester, synchronize, verifyAssets } from '../sync-gitee-release.mjs';
 
 const tag = 'v0.2.0';
 const verification = { tag, version: '0.2.0', commit: 'a'.repeat(40), tag_object: 'b'.repeat(40),
@@ -93,6 +93,56 @@ test('partial upload fails the job and a rerun only fills missing assets', async
   f.failUpload('');
   await f.run();
   assert.equal(f.assets.length, 4);
+});
+
+test('slow uploads get a bounded three-minute timeout', async () => {
+  const f = fixture();
+  await f.run();
+  const uploads = f.calls.filter(c => c.body instanceof FormData);
+  assert.equal(uploads.length, 4);
+  assert.ok(uploads.every(c => c.timeout === 180000));
+});
+
+test('lost upload response is recovered by listing and hashing without a duplicate POST', async () => {
+  const f = fixture();
+  let lost = false;
+  await f.run({ request: async (url, options) => {
+    const result = await f.request(url, options);
+    if (!lost && options?.body instanceof FormData) {
+      lost = true;
+      throw new NetworkError('response lost');
+    }
+    return result;
+  } });
+  assert.equal(f.assets.length, 4);
+  assert.equal(f.calls.filter(c => c.body instanceof FormData).length, 4);
+});
+
+test('network failure without a stored attachment fails without retrying POST', async () => {
+  const f = fixture();
+  let uploads = 0;
+  await assert.rejects(f.run({ request: async (url, options) => {
+    if (options?.body instanceof FormData) {
+      uploads++;
+      throw new NetworkError('upload lost');
+    }
+    return f.request(url, options);
+  } }), /upload lost/);
+  assert.equal(uploads, 1);
+  assert.equal(f.assets.length, 0);
+});
+
+test('lost upload response cannot recover a corrupt stored attachment', async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ request: async (url, options) => {
+    const result = await f.request(url, options);
+    if (options?.body instanceof FormData) {
+      f.assets.at(-1).bytes = Buffer.from('corrupt');
+      throw new NetworkError('response lost');
+    }
+    return result;
+  } }), /attachment differs/);
+  assert.equal(f.assets.length, 1);
 });
 
 test('existing corrupt asset stops before uploading any additional file', async () => {

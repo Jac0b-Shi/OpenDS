@@ -15,6 +15,7 @@ const ensure = (condition, message) => { if (!condition) throw new Error(message
 export class HttpError extends Error {
   constructor(status) { super(`Release request returned HTTP ${status}.`); this.status = status; }
 }
+export class NetworkError extends Error {}
 
 export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} } = {}) {
   return async (url, { body, timeout = 30000 } = {}) => {
@@ -44,7 +45,7 @@ export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} 
       // Never log response bodies, redirected URLs, request options, or credentials.
       const code = error.name === 'TimeoutError' ? `timeout after ${timeout} ms`
         : /^[A-Z][A-Z0-9_]{1,39}$/.test(error.cause?.code ?? '') ? error.cause.code : 'connection or response failure';
-      throw new Error(`Release network request failed: ${operation} (${code}); no automatic retry.`);
+      throw new NetworkError(`Release network request failed: ${operation} (${code}); no automatic retry.`);
     }
   };
 }
@@ -137,7 +138,18 @@ export async function synchronize({ tag, verification, token, request = requeste
     const form = new FormData();
     form.set('access_token', token);
     form.set('file', new Blob([files.get(name)], { type: 'application/octet-stream' }), name);
-    const asset = await json(attachments, { body: form, timeout: 60000 });
+    let asset;
+    try {
+      asset = await json(attachments, { body: form, timeout: 180000 });
+    } catch (error) {
+      if (!(error instanceof NetworkError)) throw error;
+      // A lost response does not prove that an upload failed. Reconcile once
+      // without issuing another POST; only a matching read-back can recover it.
+      const after = await json(`${attachments}?per_page=100`);
+      const matches = Array.isArray(after) ? after.filter(a => a.name === name) : [];
+      if (matches.length !== 1) throw error;
+      asset = matches[0];
+    }
     ensure(Number.isSafeInteger(asset.id) && asset.id > 0, 'Gitee upload returned no attachment identity.');
     await checkAsset({ id: asset.id, name });
   }
