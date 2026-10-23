@@ -3,6 +3,7 @@
     all(windows, not(debug_assertions), not(test)),
     windows_subsystem = "windows"
 )]
+mod appearance;
 mod attach;
 mod audio;
 mod audio_test;
@@ -35,6 +36,8 @@ mod persistence;
 mod report;
 mod restart;
 mod startup;
+mod theme_controls;
+mod theme_dialog;
 mod viiper;
 
 use std::{

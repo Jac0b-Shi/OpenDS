@@ -548,3 +548,12 @@ startup-windows-sign-in-startup-setup-failed = Windows sign-in startup setup fai
 startup-the-executable-path-is-not-valid-unicode = The executable path is not valid Unicode
 startup-the-executable-path-contains-invalid-characters = The executable path contains invalid characters
 startup-the-sign-in-startup-command-exceeds-the = The sign-in startup command exceeds the Windows 260-character limit. Use a shorter installation path.
+
+# Appearance and shared dialogs
+appearance-label = Appearance
+appearance-system = Follow system
+appearance-light = Light
+appearance-dark = Dark
+dialog-ok = &OK
+dialog-yes = &Yes
+dialog-no = &No

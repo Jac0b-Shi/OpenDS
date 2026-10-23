@@ -25,6 +25,46 @@ impl fmt::Display for CloseAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+impl ThemeMode {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+    pub fn index(self) -> usize {
+        match self {
+            Self::System => 0,
+            Self::Light => 1,
+            Self::Dark => 2,
+        }
+    }
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Light,
+            2 => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
+impl fmt::Display for ThemeMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        })
+    }
+}
+
 /// 配置项，对应配置结构布局。
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -52,6 +92,7 @@ pub struct Config {
     pub usb_face: u8,
     pub auto_start: bool,
     pub language: String,
+    pub theme: ThemeMode,
     pub close_action: CloseAction,
     pub reconnect: bool,
     pub hide_device: bool,
@@ -87,6 +128,7 @@ impl Default for Config {
             usb_face: 0,
             auto_start: false,
             language: "auto".into(),
+            theme: ThemeMode::System,
             close_action: CloseAction::Ask,
             reconnect: true,
             hide_device: true,
@@ -229,6 +271,7 @@ impl Config {
                 "usb_face" => number!(usb_face),
                 "auto_start" => boolean!(auto_start),
                 "language" => cfg.language = value.to_owned(),
+                "theme" => cfg.theme = ThemeMode::parse(value),
                 "close_action" => {
                     cfg.close_action = match value {
                         "tray" => CloseAction::Tray,
@@ -274,6 +317,7 @@ impl Config {
             usb_face,
             auto_start,
             language,
+            theme,
             close_action,
             reconnect,
             hide_device,
@@ -466,5 +510,24 @@ mod tests {
         cfg.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap().microphone_gain_db, 24);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+    #[test]
+    fn themes_migrate_and_values_do_not_depend_on_labels() {
+        for (raw, expected) in [
+            ("", ThemeMode::System),
+            ("theme=broken", ThemeMode::System),
+            ("theme=light", ThemeMode::Light),
+            ("theme=dark", ThemeMode::Dark),
+        ] {
+            let c = Config::parse(&format!("[opends]\n{raw}\n")).unwrap();
+            assert_eq!(c.theme, expected);
+            assert_eq!(ThemeMode::from_index(c.theme.index()), expected);
+            assert_eq!(ThemeMode::parse(&c.theme.to_string()), expected);
+        }
     }
 }

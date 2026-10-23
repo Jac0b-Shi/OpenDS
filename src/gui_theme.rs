@@ -1,4 +1,5 @@
 //! NWG 的轻量 GDI 外观层：原生控件仍负责键盘、焦点和可访问性。
+pub use crate::appearance::palette;
 use native_windows_gui as nwg;
 use winapi::{
     shared::windef::*,
@@ -207,38 +208,42 @@ pub unsafe fn draw_button(
     let pressed = item.itemState & ODS_SELECTED != 0;
     let hot = item.itemState & ODS_HOTLIGHT != 0;
     let (bg, fg, border) = if disabled {
-        (rgb(241, 243, 247), rgb(157, 165, 178), rgb(235, 238, 243))
+        (palette().disabled, palette().disabled_text, palette().line)
     } else if primary {
-        (if pressed { rgb(32, 73, 184) } else { BLUE }, WHITE, BLUE)
+        (palette().primary, palette().primary_text, palette().primary)
     } else if nav {
         if selected {
-            (rgb(232, 238, 255), BLUE, rgb(232, 238, 255))
+            (palette().selected, palette().accent, palette().selected)
         } else {
             (
-                if hot { BG } else { WHITE },
-                INK,
-                if hot { BG } else { WHITE },
+                if hot { palette().bg } else { palette().surface },
+                palette().text,
+                if hot { palette().bg } else { palette().surface },
             )
         }
     } else {
         (
             if pressed || hot {
-                rgb(240, 244, 251)
+                palette().hover
             } else {
-                WHITE
+                palette().surface
             },
-            INK,
-            LINE,
+            palette().text,
+            palette().line,
         )
     };
-    fill(item.hDC, &item.rcItem, if nav { WHITE } else { BG });
+    fill(
+        item.hDC,
+        &item.rcItem,
+        if nav { palette().surface } else { palette().bg },
+    );
     round(
         item.hDC,
         &item.rcItem,
         px(10, dpi),
         bg,
         if item.itemState & ODS_FOCUS != 0 {
-            BLUE
+            palette().accent
         } else {
             border
         },

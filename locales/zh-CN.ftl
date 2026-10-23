@@ -547,3 +547,12 @@ startup-windows-sign-in-startup-setup-failed = Windows 登录自启设置失败�
 startup-the-executable-path-is-not-valid-unicode = 程序路径不是有效 Unicode
 startup-the-executable-path-contains-invalid-characters = 程序路径包含无效字符
 startup-the-sign-in-startup-command-exceeds-the = 登录启动命令超过 Windows 的 260 字符限制，请使用更短安装路径
+
+# Appearance and shared dialogs
+appearance-label = 外观
+appearance-system = 随系统
+appearance-light = 浅色
+appearance-dark = 深色
+dialog-ok = 确定(&O)
+dialog-yes = 是(&Y)
+dialog-no = 否(&N)
