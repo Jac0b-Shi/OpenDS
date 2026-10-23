@@ -14,6 +14,10 @@ use std::{
 use winapi::{
     shared::{dxgiformat::DXGI_FORMAT_UNKNOWN, minwindef::*, windef::*},
     um::{
+        commdlg::{
+            CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR,
+            OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        },
         d2d1::*,
         dcommon::{D2D1_ALPHA_MODE_UNKNOWN, D2D1_PIXEL_FORMAT},
         dwrite::*,
@@ -27,6 +31,38 @@ use winapi::{
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+unsafe fn choose_recording_path(owner: HWND) -> Result<Option<PathBuf>, String> {
+    let filter = wide("CSV 文件 (*.csv)\0*.csv\0");
+    let mut path = vec![0u16; 32768];
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let name = wide(&format!("OpenDS-monitor-{stamp}.csv"));
+    path[..name.len()].copy_from_slice(&name);
+    let mut dialog: OPENFILENAMEW = std::mem::zeroed();
+    dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    dialog.hwndOwner = owner;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.lpstrFile = path.as_mut_ptr();
+    dialog.nMaxFile = path.len() as u32;
+    let title = wide("选择 CSV 记录文件保存位置");
+    let extension = wide("csv");
+    dialog.lpstrTitle = title.as_ptr();
+    dialog.lpstrDefExt = extension.as_ptr();
+    dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if GetSaveFileNameW(&mut dialog) != 0 {
+        let end = path.iter().position(|c| *c == 0).unwrap_or(path.len());
+        Ok(Some(PathBuf::from(String::from_utf16_lossy(&path[..end]))))
+    } else {
+        let error = CommDlgExtendedError();
+        if error == 0 {
+            Ok(None)
+        } else {
+            Err(format!("无法选择保存位置：0x{error:08X}"))
+        }
+    }
 }
 fn model_bottom(width: f32) -> f32 {
     86. + ((width - 8.).max(1.) / 440.).min(1.65) * 300.
@@ -466,6 +502,7 @@ fn identity() -> D2D1_MATRIX_3X2_F {
 }
 
 const FRAME_MESSAGE: u32 = WM_APP + 0x4d;
+const RECORDING_ERROR_MESSAGE: u32 = WM_APP + 0x4e;
 #[link(name = "kernel32")]
 extern "system" {
     fn CreateWaitableTimerExW(
@@ -574,6 +611,8 @@ struct ViewState {
     peak: [u16; 10],
     input_time: u64,
     error: String,
+    recording_error_shown: bool,
+    has_collected: bool,
     last_status: Instant,
 }
 pub struct MonitorView {
@@ -615,6 +654,8 @@ impl MonitorView {
                 peak: [0; 10],
                 input_time: 0,
                 error: String::new(),
+                recording_error_shown: false,
+                has_collected: false,
                 last_status: Instant::now(),
             });
             let state = Box::new(RefCell::new(*state));
@@ -652,7 +693,8 @@ impl MonitorView {
                 (10, "STATIC", "采样", SS_LEFT),
                 (11, "STATIC", "刷新", SS_LEFT),
                 (12, "STATIC", "跨度", SS_LEFT),
-                (13, "STATIC", "尚未采集 · 手动开启，不影响桥接", SS_LEFT),
+                (13, "STATIC", "等待手动开启", SS_LEFT),
+                (14, "BUTTON", "开始记录文件", BS_PUSHBUTTON),
             ] {
                 let hwnd = CreateWindowExW(
                     0,
@@ -754,7 +796,9 @@ impl MonitorView {
     }
     pub fn refresh(&mut self) {
         unsafe {
-            self.state.borrow_mut().timer();
+            let mut state = self.state.borrow_mut();
+            state.timer();
+            state.status();
         }
     }
     pub fn smoke(&mut self) {
@@ -855,6 +899,7 @@ impl ViewState {
             }
         }
         MoveWindow(self.controls[12], 0, (h - p(28)).max(p(78)), w, p(26), 1);
+        MoveWindow(self.controls[13], p(466), p(42), p(128), p(30), 1);
         MoveWindow(self.canvas, 0, p(84), w, (h - p(116)).max(1), 1);
         self.renderer = None;
         self.scroll = 0;
@@ -1078,13 +1123,63 @@ impl ViewState {
         InvalidateRect(self.canvas, null(), 0);
     }
     unsafe fn status(&mut self) {
+        self.has_collected |= self.hub.active.load(Acquire);
+        let recording = self.hub.recording.status();
+        SetWindowTextW(
+            self.controls[13],
+            wide(if recording.starting {
+                "正在检查…"
+            } else if recording.active {
+                "停止记录文件"
+            } else if recording.finishing {
+                "正在保存…"
+            } else {
+                "开始记录文件"
+            })
+            .as_ptr(),
+        );
+        EnableWindow(
+            self.controls[13],
+            (self.hub.active.load(Acquire) && !recording.finishing && !recording.starting) as i32,
+        );
+        if recording.error.is_some() && !self.recording_error_shown {
+            if PostMessageW(self.root, RECORDING_ERROR_MESSAGE, 0, 0) != 0 {
+                self.recording_error_shown = true;
+            }
+        }
+        let record_status = if recording.error.is_some() {
+            " · CSV 记录失败".into()
+        } else if recording.starting {
+            " · 正在检查保存位置…".into()
+        } else if recording.path.is_some() {
+            format!(
+                " · CSV {} {:.2} MiB{}",
+                if recording.active {
+                    "记录中"
+                } else if recording.finishing {
+                    "保存中"
+                } else {
+                    "已保存"
+                },
+                recording.bytes as f64 / 1048576.,
+                if recording.dropped > 0 {
+                    format!(" / 丢弃 {}", recording.dropped)
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            String::new()
+        };
         let status = if !self.error.is_empty() {
             self.error.clone()
         } else {
             format!(
-                "{} · {} · 丢弃 {} · 解码失败 {} · 流重置 {} · 缓存 {:.1} MiB",
+                "{} · {}{} · 丢弃 {} · 解码失败 {} · 流重置 {} · 缓存 {:.1} MiB",
                 if self.hub.active.load(Relaxed) {
                     "采集中"
+                } else if !self.has_collected {
+                    "等待手动开启"
                 } else {
                     "已停止 / 历史冻结"
                 },
@@ -1093,6 +1188,7 @@ impl ViewState {
                 } else {
                     "等待手柄"
                 },
+                record_status,
                 self.hub.dropped(),
                 self.hub.decode_failures.load(Relaxed),
                 self.hub.resets.load(Relaxed),
@@ -1368,13 +1464,57 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
     // hold the state borrow across it: the main window refreshes on that loop.
     if !matches!(
         msg,
-        WM_SIZE | WM_COMMAND | FRAME_MESSAGE | WM_MOUSEWHEEL | WM_VSCROLL
+        WM_SIZE | WM_COMMAND | FRAME_MESSAGE | RECORDING_ERROR_MESSAGE | WM_MOUSEWHEEL | WM_VSCROLL
     ) {
         return DefWindowProcW(hwnd, msg, w, l);
     }
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<ViewState>;
     if ptr.is_null() {
         return DefWindowProcW(hwnd, msg, w, l);
+    }
+    if msg == RECORDING_ERROR_MESSAGE {
+        // MessageBox pumps the parent's timer messages: retain no ViewState borrow.
+        let error = (*ptr)
+            .try_borrow()
+            .ok()
+            .and_then(|s| s.hub.recording.status().error);
+        if let Some(error) = error {
+            MessageBoxW(
+                GetAncestor(hwnd, GA_ROOT),
+                wide(&error).as_ptr(),
+                wide("OpenDS · 文件记录已停止").as_ptr(),
+                MB_OK | MB_ICONWARNING,
+            );
+        }
+        return 0;
+    }
+    if msg == WM_COMMAND && w & 65535 == 14 {
+        // The save dialog pumps messages. Release ViewState before entering it.
+        let hub = match (*ptr).try_borrow() {
+            Ok(s) => s.hub.clone(),
+            Err(_) => return 0,
+        };
+        let result = if hub.recording.status().active {
+            hub.stop_recording();
+            Ok(false)
+        } else {
+            choose_recording_path(GetAncestor(hwnd, GA_ROOT)).and_then(|path| {
+                path.map_or(Ok(false), |path| hub.start_recording(path).map(|_| true))
+            })
+        };
+        if let Ok(mut s) = (*ptr).try_borrow_mut() {
+            match result {
+                Ok(started) => {
+                    s.error.clear();
+                    if started {
+                        s.recording_error_shown = false;
+                    }
+                }
+                Err(e) => s.error = e,
+            }
+            s.status();
+        }
+        return 0;
     }
     let Ok(mut data) = (*ptr).try_borrow_mut() else {
         return DefWindowProcW(hwnd, msg, w, l);

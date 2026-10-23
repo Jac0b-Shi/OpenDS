@@ -19,6 +19,7 @@ mod hidhide;
 mod logging;
 mod microphone;
 mod monitor;
+mod monitor_recording;
 mod monitor_view;
 #[cfg(not(feature = "bundled-opus"))]
 mod opus;

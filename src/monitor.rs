@@ -122,6 +122,7 @@ pub struct History {
     pub input: ParsedState,
     pub pressed: [u8; 3],
     pub input_time: u64,
+    input_samples: VecDeque<(u64, ParsedState)>,
     pub last: [u64; 10],
     pub peak: [u16; 10],
     pub now: u64,
@@ -130,11 +131,20 @@ pub struct History {
 impl History {
     fn allocated_bytes(&self) -> usize {
         self.levels.capacity() * std::mem::size_of::<Level>()
+            + self.input_samples.capacity() * std::mem::size_of::<(u64, ParsedState)>()
             + self
                 .levels
                 .iter()
                 .map(|level| level.buckets.capacity() * std::mem::size_of::<Bucket>())
                 .sum::<usize>()
+    }
+    fn input_at(&self, end: u64) -> (u64, ParsedState) {
+        self.input_samples
+            .iter()
+            .rev()
+            .find(|(time, _)| *time <= end)
+            .copied()
+            .unwrap_or((0, neutral()))
     }
     fn new(hz: u32) -> Self {
         Self {
@@ -146,6 +156,7 @@ impl History {
             input: neutral(),
             pressed: [0; 3],
             input_time: 0,
+            input_samples: VecDeque::new(),
             last: [0; 10],
             peak: [0; 10],
             now: 0,
@@ -352,6 +363,7 @@ pub fn dpad_bits(value: u8) -> u8 {
 }
 
 pub struct Monitor {
+    pub recording: crate::monitor_recording::Recording,
     origin: Instant,
     pub active: AtomicBool,
     pub source: AtomicBool,
@@ -428,7 +440,7 @@ impl Monitor {
         self.resets.store(0, Relaxed);
         let history = History::new(hz);
         let history_bytes = history.allocated_bytes();
-        if self.queue_bytes() + history_bytes > CACHE_LIMIT {
+        if self.queue_bytes() + history_bytes + self.recording.allocated_bytes() > CACHE_LIMIT {
             return Err("监视缓存将超出 32 MiB 上限，请降低采样频率".into());
         }
         *self.history.lock().map_err(|_| "监视缓存不可用")? = history;
@@ -454,6 +466,62 @@ impl Monitor {
                 let _ = w.join();
             }
         }
+        self.stop_recording();
+    }
+    pub fn start_recording(&self, path: std::path::PathBuf) -> Result<(), String> {
+        if !self.active.load(Acquire) {
+            return Err("请先开始采集，再开启文件记录".into());
+        }
+        if self.queue_bytes()
+            + self.history_bytes.load(Acquire) as usize
+            + crate::monitor_recording::queue_bytes()
+            > CACHE_LIMIT
+        {
+            return Err("记录队列将超出监视缓存上限，请降低采样频率".into());
+        }
+        self.recording
+            .start(path, self.hz.load(Acquire), self.now())
+    }
+    pub fn stop_recording(&self) {
+        if let Ok(h) = self.history.lock() {
+            self.record_history(&h);
+        }
+        self.recording.stop();
+    }
+    fn record_history(&self, h: &History) {
+        if !self.recording.active() {
+            return;
+        }
+        let now = self.now();
+        let hz = self.hz.load(Acquire);
+        self.recording.sample(now, hz, |tick| {
+            let end = (tick + 1) * 1_000_000_000 / hz as u64;
+            let (input_time, input) = h.input_at(end);
+            let base = &h.levels[0];
+            let bucket = tick
+                .checked_sub(base.first)
+                .and_then(|i| base.buckets.get(i as usize))
+                .copied()
+                .unwrap_or_default();
+            crate::monitor_recording::Frame {
+                time: end,
+                input_time,
+                epoch: self.epoch.load(Acquire),
+                generation: self.generation.load(Acquire),
+                connected: self.connected.load(Relaxed),
+                source: self.source.load(Relaxed),
+                forwarded: self.forwarded.load(Relaxed),
+                input: if self.connected.load(Relaxed) {
+                    input
+                } else {
+                    neutral()
+                },
+                bucket,
+                drops: self.dropped(),
+                decode_failures: self.decode_failures.load(Relaxed),
+                resets: self.resets.load(Relaxed),
+            }
+        });
     }
     pub fn clear(&self) {
         self.epoch.fetch_add(1, AcqRel);
@@ -673,6 +741,10 @@ impl Monitor {
                         }
                         h.input = s;
                         h.input_time = t;
+                        if h.input_samples.len() == 4096 {
+                            h.input_samples.pop_front();
+                        }
+                        h.input_samples.push_back((t, s));
                     }
                 }
                 if !self.connected.load(Relaxed) {
@@ -680,6 +752,9 @@ impl Monitor {
                     h.pressed = [0; 3];
                 }
                 h.now = self.now();
+                self.history_bytes
+                    .store(h.allocated_bytes() as u64, Release);
+                self.record_history(&h);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -698,12 +773,15 @@ impl Monitor {
             .unwrap_or(0)
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.queue_bytes() + self.history_bytes.load(Acquire) as usize
+        self.queue_bytes()
+            + self.history_bytes.load(Acquire) as usize
+            + self.recording.allocated_bytes()
     }
 }
 impl Default for Monitor {
     fn default() -> Self {
         Self {
+            recording: crate::monitor_recording::Recording::default(),
             origin: Instant::now(),
             active: AtomicBool::new(false),
             source: AtomicBool::new(true),
@@ -982,6 +1060,42 @@ mod tests {
         drop(guard);
         m.clear();
         assert!(m.allocated_bytes() < before / 2);
+    }
+    #[test]
+    fn csv_stops_with_collection_and_maximum_sampling_stays_within_budget() {
+        let m = Monitor::new();
+        let path =
+            std::env::temp_dir().join(format!("opends-monitor-stop-{}.csv", std::process::id()));
+        assert!(m.start_recording(path.clone()).is_err());
+        assert!(!path.exists());
+        m.start(200).unwrap();
+        m.start_recording(path.clone()).unwrap();
+        {
+            let mut h = m.history.lock().unwrap();
+            h.input_samples.reserve(4096);
+            m.history_bytes.store(h.allocated_bytes() as u64, Release);
+        }
+        assert!(m.allocated_bytes() < CACHE_LIMIT);
+        m.stop();
+        assert!(!m.recording.active());
+        // Dropping joins the writer and guarantees its completed file is usable.
+        drop(m);
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert!(csv.lines().last().unwrap().starts_with("end,"));
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn csv_input_uses_interval_end_without_borrowing_future_button_states() {
+        let mut h = History::new(100);
+        let mut pressed = neutral();
+        pressed.buttons1 = 1;
+        h.input_samples.push_back((5_000_000, neutral()));
+        h.input_samples.push_back((15_000_000, pressed));
+        h.input_samples.push_back((25_000_000, neutral()));
+        assert_eq!(h.input_at(10_000_000).1.buttons1, 0);
+        assert_eq!(h.input_at(20_000_000).1.buttons1, 1);
+        assert_eq!(h.input_at(30_000_000).1.buttons1, 0);
+        assert_eq!(h.input_at(20_000_000).0, 15_000_000);
     }
     #[test]
     fn opposite_channels_and_single_sample_peaks_survive_lod() {

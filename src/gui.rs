@@ -1087,23 +1087,28 @@ impl App {
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();
         }
+        let phase = if stopping {
+            "正在停止并恢复设备…".to_string()
+        } else if s.connected.load(Ordering::Acquire) {
+            "● 已连接 · 正在转发".to_string()
+        } else if running {
+            "● 桥接已启动 · 等待手柄连接…".to_string()
+        } else {
+            s.last_error
+                .lock()
+                .ok()
+                .and_then(|e| e.clone())
+                .map(|e| format!("○ 桥接已停止 · {}", e.chars().take(64).collect::<String>()))
+                .unwrap_or_else(|| "○ 桥接尚未启动".to_string())
+        };
+        if self.status.text() != phase {
+            self.status.set_text(&phase);
+        }
         if unsafe { IsWindowVisible(theme::hwnd(&self.window.handle)) } == 0 {
             return;
         }
         if self.dependency_check.get().elapsed() >= std::time::Duration::from_secs(5) {
             self.refresh_dependencies();
-        }
-        let phase = if stopping {
-            "正在停止并恢复设备…"
-        } else if s.connected.load(Ordering::Acquire) {
-            "● 已连接 · 正在转发"
-        } else if running {
-            "● 等待手柄连接…"
-        } else {
-            "○ 桥接尚未启动"
-        };
-        if self.status.text() != phase {
-            self.status.set_text(phase);
         }
         for (label, value) in [
             (&self.count_input, s.frames_out.load(Ordering::Relaxed)),
@@ -1152,6 +1157,14 @@ impl App {
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();
         }
+    }
+    fn show_window(&self) {
+        self.window.set_visible(true);
+        self.update();
+        unsafe {
+            SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 500, None);
+        }
+        self.window.set_focus();
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
@@ -1287,8 +1300,7 @@ impl App {
             return;
         }
         if event == E::OnMousePress(nwg::MousePressEvent::MousePressLeftUp) && handle == self.tray {
-            self.window.set_visible(true);
-            self.window.set_focus();
+            self.show_window();
             return;
         }
         if event == E::OnMenuItemSelected {
@@ -1297,8 +1309,7 @@ impl App {
             } else if handle == self.stop_menu {
                 self.controller.borrow().stop();
             } else if handle == self.show_menu {
-                self.window.set_visible(true);
-                self.window.set_focus();
+                self.show_window();
             } else if handle == self.exit_menu {
                 self.exiting.set(true);
                 self.controller.borrow().stop();
@@ -1317,6 +1328,7 @@ impl App {
             }
             self.page.set(i as u8);
             self.layout();
+            self.update();
             return;
         }
         let result: Result<(), String> = if handle == self.start {
@@ -1435,6 +1447,26 @@ fn run_inner(
         None
     };
     if smoke {
+        // Exercise tray-first startup before showing the overview: background
+        // refresh must publish waiting/error states even while hidden.
+        app.window.set_visible(false);
+        let state = app.controller.borrow().state.clone();
+        state.running.store(true, Ordering::Release);
+        app.update();
+        if !app.status.text().contains("等待手柄连接") {
+            return Err("托盘启动时未显示等待手柄状态".into());
+        }
+        state.running.store(false, Ordering::Release);
+        *state.last_error.lock().map_err(|_| "状态不可用")? = Some("界面测试错误".into());
+        app.update();
+        if !app.status.text().contains("界面测试错误") {
+            return Err("概览未显示桥接错误".into());
+        }
+        *state.last_error.lock().map_err(|_| "状态不可用")? = None;
+        app.show_window();
+        if app.status.text() != "○ 桥接尚未启动" {
+            return Err("从托盘打开时状态未立即刷新".into());
+        }
         app.window.set_visible(true);
         app.page.set(1);
         app.layout();
