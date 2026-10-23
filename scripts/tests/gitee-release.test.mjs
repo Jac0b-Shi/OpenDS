@@ -164,6 +164,21 @@ test('network errors do not print credentials or signed redirect URLs', async ()
   });
 });
 
+test('request diagnostics identify the original endpoint and safe error code without query secrets', async () => {
+  const logs = [];
+  const request = requester({ log: line => logs.push(line), fetchImpl: async () => {
+    throw Object.assign(new Error('secret-token signed-url'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } });
+  } });
+  await assert.rejects(request(`${api}/releases?secret-token=signed-url`), error => {
+    assert.match(error.message, /GET gitee.com\/api\/v5\/repos\/Jac0b_Shi\/OpenDS\/releases/);
+    assert.match(error.message, /UND_ERR_CONNECT_TIMEOUT/);
+    assert.doesNotMatch(error.message, /secret-token|signed-url/);
+    return true;
+  });
+  assert.equal(logs.length, 1);
+  assert.doesNotMatch(logs[0], /secret-token|signed-url|\?/);
+});
+
 test('actual published v0.2.0 fixtures can be checked locally when present', async t => {
   try {
     const names = [...fixture().files.keys()];

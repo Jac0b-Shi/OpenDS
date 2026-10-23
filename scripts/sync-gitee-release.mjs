@@ -16,12 +16,17 @@ export class HttpError extends Error {
   constructor(status) { super(`Release request returned HTTP ${status}.`); this.status = status; }
 }
 
-export function requester({ fetchImpl = fetch, githubToken = '' } = {}) {
+export function requester({ fetchImpl = fetch, githubToken = '', log = () => {} } = {}) {
   return async (url, { body, timeout = 30000 } = {}) => {
     ensure(!body || url.startsWith(`${API}/`), 'Credentials may only be sent to the Gitee repository API.');
     const headers = { 'User-Agent': 'OpenDS-release-sync' };
     if (url.startsWith(`${GH_API}/`) && githubToken) headers.Authorization = `Bearer ${githubToken}`;
     if (body instanceof URLSearchParams) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    // Log only the original public endpoint, never query strings, headers,
+    // response bodies or signed redirect destinations.
+    const endpoint = new URL(url);
+    const operation = `${body ? 'POST' : 'GET'} ${endpoint.hostname}${endpoint.pathname}`;
+    log(operation);
     try {
       const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', body, headers,
         redirect: body || headers.Authorization ? 'error' : 'follow', signal: AbortSignal.timeout(timeout) });
@@ -37,7 +42,9 @@ export function requester({ fetchImpl = fetch, githubToken = '' } = {}) {
     } catch (error) {
       if (error instanceof HttpError) throw error;
       // Never log response bodies, redirected URLs, request options, or credentials.
-      throw new Error('Release network request failed; no automatic retry.');
+      const code = error.name === 'TimeoutError' ? `timeout after ${timeout} ms`
+        : /^[A-Z][A-Z0-9_]{1,39}$/.test(error.cause?.code ?? '') ? error.cause.code : 'connection or response failure';
+      throw new Error(`Release network request failed: ${operation} (${code}); no automatic retry.`);
     }
   };
 }
@@ -146,7 +153,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const args = process.argv.slice(2);
     ensure(args.length === 4 && args[0] === '--tag' && args[2] === '--verification', 'Usage: --tag VERSION --verification FILE');
     console.log(await synchronize({ tag: args[1], verification: JSON.parse(await readFile(args[3], 'utf8')),
-      token: process.env.GITEE_TOKEN, request: requester({ githubToken: process.env.GH_TOKEN }) }));
+      token: process.env.GITEE_TOKEN, request: requester({ githubToken: process.env.GH_TOKEN, log: console.log }) }));
   } catch (error) {
     console.error(error instanceof SyntaxError ? 'Invalid release metadata JSON.' : error.message);
     process.exitCode = 1;
