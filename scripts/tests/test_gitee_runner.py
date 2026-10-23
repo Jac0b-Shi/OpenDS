@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,12 +21,16 @@ class RunnerTests(unittest.TestCase):
         self.workspace = self.root / "workspace"
         (self.workspace / "scripts").mkdir(parents=True)
         (self.workspace / "scripts/mirror_gitee_release.py").touch()
+        self.runner = self.workspace / "scripts/Run-GiteeRelease.sh"
+        self.runner.write_text((ROOT / "scripts/Run-GiteeRelease.sh").read_text(encoding="utf-8"), encoding="utf-8")
+        workflow = (ROOT / ".workflow/GiteeRelease.yml").read_text(encoding="utf-8")
+        self.entrypoint = textwrap.dedent(workflow.split("          - |\n", 1)[1])
         self.log = self.root / "commands"
         self.env = os.environ.copy()
-        self.env.update(PATH=str(self.bin), WORKSPACE=str(self.workspace), TEST_BIN=str(self.bin),
+        self.env.update(PATH=str(self.bin), WORKSPACE=str(self.workspace), TEST_WORKSPACE=str(self.workspace), TEST_BIN=str(self.bin),
                         TEST_LOG=str(self.log), OPENDS_GITEE_TOKEN="fixture-secret-never-log")
         self.bash = shutil.which("bash")
-        for name in ("env", "id"):
+        for name in ("bash", "env", "id"):
             (self.bin / name).symlink_to(shutil.which(name))
         self.tool("git", "exit 0")
         self.tool("python3", 'printf "publish\\n" >> "$TEST_LOG"')
@@ -41,9 +46,10 @@ class RunnerTests(unittest.TestCase):
         path.write_text("#!/bin/bash\nset -eu\n" + script + "\n")
         path.chmod(0o700)
 
-    def run_runner(self):
-        result = subprocess.run([self.bash, "-x", str(ROOT / "scripts/Run-GiteeRelease.sh")],
-                                cwd="/", env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def run_runner(self, *, workflow=False, cwd="/", prelude=""):
+        command = [self.bash, "-x", "-c", prelude + self.entrypoint] if workflow else [self.bash, "-x", str(self.runner)]
+        result = subprocess.run(command, cwd=cwd, env=self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertNotIn("fixture-secret-never-log", result.stdout + result.stderr)
         return result
 
@@ -74,8 +80,53 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.commands(), "")
 
     def test_missing_checkout_stops(self):
-        self.env["WORKSPACE"] = str(self.bin)
+        (self.workspace / "scripts/mirror_gitee_release.py").unlink()
         result = self.run_runner()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checkout is missing", result.stderr)
+        self.assertEqual(self.commands(), "")
+
+    def test_runner_uses_own_location_without_workspace(self):
+        self.env.pop("WORKSPACE")
+        self.assertEqual(self.run_runner().returncode, 0)
+        self.assertIn("publish\n", self.commands())
+
+    def test_runner_ignores_stale_workspace(self):
+        self.env["WORKSPACE"] = str(self.bin)
+        self.assertEqual(self.run_runner().returncode, 0)
+        self.assertIn("publish\n", self.commands())
+
+    def test_workflow_uses_exported_workspace_from_another_directory(self):
+        result = self.run_runner(workflow=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("publish\n", self.commands())
+
+    def test_workflow_uses_checkout_directory_without_workspace(self):
+        self.env.pop("WORKSPACE")
+        result = self.run_runner(workflow=True, cwd=self.workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("publish\n", self.commands())
+
+    def test_workflow_uses_checkout_directory_with_empty_workspace(self):
+        self.env["WORKSPACE"] = ""
+        result = self.run_runner(workflow=True, cwd=self.workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_workflow_does_not_need_workspace_exported_to_runner(self):
+        self.env.pop("WORKSPACE")
+        result = self.run_runner(workflow=True, prelude='WORKSPACE="$TEST_WORKSPACE"\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_workflow_ignores_stale_workspace(self):
+        self.env["WORKSPACE"] = str(self.bin)
+        result = self.run_runner(workflow=True, cwd=self.workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_workflow_missing_checkout_stops_before_install_or_publish(self):
+        self.env.pop("WORKSPACE")
+        self.env["GITEE_REPO"] = "fixture-does-not-exist/OpenDS"
+        self.env.pop("AGILE_MODULE_NAME", None)
+        result = self.run_runner(workflow=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("checkout is missing", result.stderr)
         self.assertEqual(self.commands(), "")

@@ -26,6 +26,13 @@ stages:
         pythonVersion: '3.9'
         commands:
           - |
+            set +x
             set -eu
-            cd "${WORKSPACE:?Gitee Go WORKSPACE is not set}"
-            bash scripts/Run-GiteeRelease.sh
+            for checkout in "${WORKSPACE:-}" "." "/root/workspace/${GITEE_REPO:-${AGILE_MODULE_NAME:-}}"; do
+              if [ -n "$checkout" ] && [ -f "$checkout/scripts/Run-GiteeRelease.sh" ] && [ -f "$checkout/scripts/mirror_gitee_release.py" ]; then
+                cd "$checkout"
+                exec bash scripts/Run-GiteeRelease.sh
+              fi
+            done
+            echo 'OpenDS source checkout is missing. Check the Gitee code source checkout step.' >&2
+            exit 1

@@ -2,9 +2,9 @@
 set +x
 set -euo pipefail
 
-cd "${WORKSPACE:?Gitee Go WORKSPACE is not set}"
+cd -- "${BASH_SOURCE[0]%/*}/.."
 if [[ ! -f scripts/mirror_gitee_release.py ]]; then
-    echo 'OpenDS source checkout is missing from WORKSPACE.' >&2
+    echo 'OpenDS source checkout is missing beside the runner script.' >&2
     exit 1
 fi
 if [[ -z "${OPENDS_GITEE_TOKEN:-}" ]]; then
