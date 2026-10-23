@@ -169,6 +169,27 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 - [协议说明](docs/guides/protocol.md)
 - [常驻运行](docs/guides/resident.md)
 
+## 致谢
+
+**运行时依赖**
+
+| 项目 | 作用 |
+| --- | --- |
+| [VIIPER](https://github.com/DualSenseClient/VIIPER) | 虚拟 USB DualSense 设备（GPL-3.0-or-later） |
+| [USB/IP Win2](https://github.com/vadimgrn/usbip-win2) | 创建虚拟 USB 设备 |
+| [HidHide](https://github.com/nefarius/HidHide) | 隐藏物理手柄 |
+| [Opus](https://opus-codec.org/) | 音频编解码（BSD-3-Clause） |
+| [native-windows-gui](https://github.com/gabdube/native-windows-gui) | 设置界面（MIT） |
+
+**设计参考**
+
+- [input-overlay](https://github.com/univrsal/input-overlay)：DualSense 图形布局参考，预设素材为 CC0
+- [3d-controller-overlay](https://github.com/larfingshnew/3d-controller-overlay)：手柄三维呈现的视觉参考（MIT）
+
+**思路启发**
+
+- B 站 UP 主 [zhonghuihong](https://space.bilibili.com/37635277)：他的文档帮助厘清了 DualSense 在 PC 上的工作方式和调试思路。该软件为闭源，本项目未使用其代码。
+
 ## 法律声明
 
 DualSense、PlayStation 是索尼互动娱乐（Sony Interactive Entertainment Inc.，SIE）的注册商标。

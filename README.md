@@ -169,6 +169,27 @@ When distributing binaries, include `vendor/viiper-source`; the release script p
 - [Protocol notes](docs/guides/protocol.md)
 - [Resident mode](docs/guides/resident.md)
 
+## Acknowledgements
+
+**Runtime dependencies**
+
+| Project | Role |
+| --- | --- |
+| [VIIPER](https://github.com/DualSenseClient/VIIPER) | virtual USB DualSense device (GPL-3.0-or-later) |
+| [USB/IP Win2](https://github.com/vadimgrn/usbip-win2) | creates the virtual USB device |
+| [HidHide](https://github.com/nefarius/HidHide) | hides the physical controller |
+| [Opus](https://opus-codec.org/) | audio codec (BSD-3-Clause) |
+| [native-windows-gui](https://github.com/gabdube/native-windows-gui) | settings UI (MIT) |
+
+**Design references**
+
+- [input-overlay](https://github.com/univrsal/input-overlay): DualSense layout reference; the presets are CC0
+- [3d-controller-overlay](https://github.com/larfingshnew/3d-controller-overlay): visual reference for the three-dimensional handset (MIT)
+
+**Ideas**
+
+- [zhonghuihong](https://space.bilibili.com/37635277) on Bilibili: his documentation clarified how the DualSense behaves on PC and how to approach debugging it. That software is closed source; no code from it is used here.
+
 ## Legal Notice
 
 DualSense and PlayStation are registered trademarks of Sony Interactive Entertainment Inc. (SIE).
