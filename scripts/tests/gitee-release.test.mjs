@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { FINGERPRINT, GITHUB, GITEE, HttpError, NetworkError, curlUpload, requester, synchronize, verifyAssets } from '../sync-gitee-release.mjs';
+import { FINGERPRINT, GITHUB, GITEE, HttpError, NetworkError, curlUpload, requester, synchronize, uploadTimeout, verifyAssets } from '../sync-gitee-release.mjs';
 
 const tag = 'v0.2.0';
 const verification = { tag, version: '0.2.0', commit: 'a'.repeat(40), tag_object: 'b'.repeat(40),
@@ -97,12 +97,18 @@ test('partial upload fails the job and a rerun only fills missing assets', async
   assert.equal(f.assets.length, 4);
 });
 
-test('slow uploads get a bounded three-minute timeout', async () => {
+test('upload budgets accommodate measured slow routes but remain bounded by file size', async () => {
   const f = fixture();
   await f.run();
   const uploads = f.calls.filter(c => c.body instanceof FormData);
   assert.equal(uploads.length, 4);
-  assert.ok(uploads.every(c => c.timeout === 180000));
+  assert.ok(uploads.every(c => c.timeout === 60000));
+  const large = 4 * 1024 * 1024;
+  assert.ok(uploadTimeout(large) > large * 1000 / (12 * 1024));
+  assert.ok(uploadTimeout(large) > uploadTimeout(1024 * 1024));
+  assert.equal(uploadTimeout(64 * 1024 * 1024), 600000);
+  assert.throws(() => uploadTimeout(-1), /Invalid upload size/);
+  assert.throws(() => uploadTimeout(64 * 1024 * 1024 + 1), /Invalid upload size/);
 });
 
 test('lost upload response is recovered by listing and hashing without a duplicate POST', async () => {

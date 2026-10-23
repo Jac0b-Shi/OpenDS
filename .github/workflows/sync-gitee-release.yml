@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         options: [ubuntu-latest, macos-15]
-        default: ubuntu-latest
+        default: macos-15
   workflow_call:
     inputs:
       tag:
@@ -21,7 +21,7 @@ on:
       runner:
         required: false
         type: string
-        default: ubuntu-latest
+        default: macos-15
     secrets:
       GITEE_TOKEN:
         required: true
@@ -36,7 +36,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ${{ inputs.runner == 'macos-15' && 'macos-15' || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Check credential availability
         env:

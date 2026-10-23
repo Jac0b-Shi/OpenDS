@@ -17,6 +17,13 @@ export class HttpError extends Error {
 }
 export class NetworkError extends Error {}
 
+export function uploadTimeout(bytes) {
+  ensure(Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= 64 * 1024 * 1024, 'Invalid upload size.');
+  // Accommodate a progressing 8 KiB/s route, plus connection/response overhead.
+  // The low-speed watchdog still terminates a stalled transfer independently.
+  return Math.min(600000, Math.max(60000, 30000 + Math.ceil(bytes * 1000 / 8192)));
+}
+
 export async function curlUpload(url, body, { timeout = 180000, spawnImpl = spawn, log = () => {} } = {}) {
   ensure(url.startsWith(`${API}/`) && body instanceof FormData, 'Invalid Gitee upload destination or payload.');
   const multipart = new Request(url, { method: 'POST', body });
@@ -202,7 +209,7 @@ export async function synchronize({ tag, verification, token, request = requeste
     form.set('file', new Blob([files.get(name)], { type: 'application/octet-stream' }), name);
     let asset;
     try {
-      asset = await json(attachments, { body: form, timeout: 180000 });
+      asset = await json(attachments, { body: form, timeout: uploadTimeout(files.get(name).length) });
     } catch (error) {
       if (!(error instanceof NetworkError)) throw error;
       // A lost response does not prove that an upload failed. Reconcile once
