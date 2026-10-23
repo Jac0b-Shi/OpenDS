@@ -53,9 +53,7 @@ jobs:
           persist-credentials: false
       - name: Test release signature gate with isolated fixture keys
         run: python scripts/tests/test_release_tag.py
-      - name: Test Gitee release integrity, signatures and resumable uploads
-        run: python scripts/tests/test_gitee_release.py
-      - name: Test Gitee runner bootstrap without network or real credentials
+      - name: Test Gitee attachment preparation without network or real credentials
         run: python scripts/tests/test_gitee_runner.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 (node24)
         with:

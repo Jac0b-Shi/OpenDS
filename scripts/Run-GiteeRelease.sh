@@ -3,41 +3,67 @@ set +x
 set -euo pipefail
 
 cd -- "${BASH_SOURCE[0]%/*}/.."
-if [[ ! -f scripts/mirror_gitee_release.py ]]; then
-    echo 'OpenDS source checkout is missing beside the runner script.' >&2
+for tool in curl git timeout sha256sum sed sort diff mktemp wc mkdir cp rm; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "Required runner tool is missing: $tool" >&2; exit 1; }
+done
+
+tag="${OPENDS_RELEASE_TAG:-}"
+if [[ -z "$tag" ]]; then
+    tag="${GITEE_BRANCH:-}"
+    if [[ "$tag" != v* ]]; then
+        tag="v$(sed -n '/^\[package\]$/,/^version = /s/^version = "\([^"]*\)".*/\1/p' Cargo.toml)"
+    fi
+fi
+if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo 'Select an existing stable version tag, for example v0.2.0.' >&2
     exit 1
 fi
-if [[ -z "${OPENDS_GITEE_TOKEN:-}" ]]; then
-    echo 'OPENDS_GITEE_TOKEN is unavailable. In the Gitee pipeline editor, add a variable, select Common Variables, and associate the encrypted variable.' >&2
+version="${tag#v}"
+
+# Fail before downloading archives if the mirrored signed tag is not available.
+remote_tag="$(timeout 15 git ls-remote --exit-code origin "refs/tags/$tag" 2>/dev/null)" || {
+    echo "Gitee tag $tag is unavailable. Wait for repository synchronization." >&2; exit 1;
+}
+remote_tag="${remote_tag%%[[:space:]]*}"
+if [[ ! "$remote_tag" =~ ^[0-9a-f]{40}$ ]]; then
+    echo 'Unexpected mirrored tag identity.' >&2; exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf -- "$work"' EXIT
+files=("OpenDS-$version-windows-x64.zip" "OpenDS-$version-source.zip" TAG-SIGNATURE.json SHA256SUMS.txt)
+base="https://github.com/Jac0b-Shi/OpenDS/releases/download/$tag"
+pids=()
+for name in "${files[@]}"; do
+    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 5 --max-time 30 "$base/$name" --output "$work/$name" &
+    pids+=("$!")
+done
+failed=0
+for pid in "${pids[@]}"; do
+    wait "$pid" || failed=1
+done
+if (( failed )); then
+    echo "Download failed for $tag. Confirm GitHub has published it and this runner can reach GitHub; no automatic retry." >&2
     exit 1
 fi
-for tool in git python3; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Required runner tool is missing: $tool" >&2
-        exit 1
-    fi
-done
-if ! command -v gpg >/dev/null 2>&1 || ! command -v gpgconf >/dev/null 2>&1; then
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo 'GPG is missing and this runner has no apt-get. Use an Ubuntu runner with GnuPG installed.' >&2
-        exit 1
-    fi
-    root_command=()
-    if [[ "$(id -u)" != 0 ]]; then
-        if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true; then
-            echo 'Installing GnuPG requires root or noninteractive sudo on this runner.' >&2
-            exit 1
-        fi
-        root_command=(sudo -n)
-    fi
-    echo 'Installing GnuPG from the runner Ubuntu package repositories.'
-    "${root_command[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    "${root_command[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnupg ca-certificates
+
+# Accept exactly the three expected manifest entries; never follow arbitrary paths.
+printf '%s\n' "OpenDS-$version-source.zip" "OpenDS-$version-windows-x64.zip" TAG-SIGNATURE.json | sort > "$work/expected"
+sed -n 's/^[0-9a-f]\{64\}  \(\.\/\)\{0,1\}//p' "$work/SHA256SUMS.txt" | sort > "$work/listed"
+if [[ "$(wc -l < "$work/SHA256SUMS.txt")" -ne 3 ]] || ! diff -q "$work/expected" "$work/listed" >/dev/null; then
+    echo 'Unexpected GitHub checksum manifest.' >&2; exit 1
 fi
-for tool in gpg gpgconf; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "Required runner tool is still missing: $tool" >&2
-        exit 1
-    fi
+(cd "$work" && sha256sum --check --strict SHA256SUMS.txt)
+receipt_tag="$(sed -n 's/^  "tag": "\([^"]*\)",\{0,1\}$/\1/p' "$work/TAG-SIGNATURE.json")"
+receipt_object="$(sed -n 's/^  "tag_object": "\([0-9a-f]*\)",\{0,1\}$/\1/p' "$work/TAG-SIGNATURE.json")"
+if [[ "$receipt_tag" != "$tag" || "$receipt_object" != "$remote_tag" ]]; then
+    echo 'Published GitHub receipt differs from the mirrored Gitee tag.' >&2; exit 1
+fi
+
+mkdir -p release-assets
+for name in "${files[@]}"; do
+    cp -- "$work/$name" "release-assets/$name"
 done
-exec python3 scripts/mirror_gitee_release.py "$@"
+printf 'OPENDS_RELEASE_TAG=%s\nOPENDS_RELEASE_VERSION=%s\n' "$tag" "$version" >> GITEE_PARAMS
+echo "Prepared four verified attachments for $tag; Gitee's native Release step handles publication."
