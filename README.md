@@ -34,6 +34,8 @@ The GUI covers everyday use. The commands below are for scripting and troublesho
 
 ## Dependencies
 
+Starting with 0.3.2, Diagnostics lets you select installation directories for USB/IP Win2 and HidHide. Selections are saved and checked immediately; Auto clears a manual selection. USB/IP requires `usbip.exe`. The HidHide directory locates its optional configuration client and does not install the driver. Stop bridging before changing directories.
+
 | Component | Purpose |
 | --- | --- |
 | USB/IP Win2 | creates the virtual USB device |
@@ -99,21 +101,33 @@ Or pass `-Startup` to `scripts/Install-OpenDS.ps1` during install. Startup uses 
 ## Troubleshooting
 
 **The controller is missing from Device Manager**
+
 HidHide is hiding it. Exiting OpenDS restores it; after a crash, run `opends.exe restore`.
 
 **No rumble in game**
+
 Start OpenDS before launching the game. Games usually probe the controller type and its capabilities at startup. A controller connected later is still recognized as an input device, but the capability probe does not run again — rumble, adaptive triggers and lighting may stay inactive.
 
 **Rumble but no sound**
+
 The controller speaker has its own volume, set by the game through the output report. Without a game-side option it keeps its previous level. Make sure `audio=1`.
 
 **Audio stutters**
+
 Raise `buffer`, for example to 96 or 128.
 
 **Steam games misbehave**
+
 Disable Steam Input. It takes over the controller and bypasses the virtual device.
 
+**The magnifier or on-screen keyboard opens by itself**
+
+Steam's guide chords turn PS button combinations into system shortcuts — magnifier, on-screen keyboard, screen recording. Turn it off in Steam: Settings → Controller → Advanced Settings → clear "Enable controller guide chords".
+
+If it only happens occasionally, you can also disable the individual Windows accessibility shortcuts.
+
 **How do I troubleshoot a connection problem?**
+
 Logs are in `%LOCALAPPDATA%\OpenDS\logs\opends.log`, shared by startup and manual launches. They record connections, disconnects, bridge errors and audio statistics. Each file is capped at 1 MiB, with `opends.log.1` and `opends.log.2` kept as history. Every line starts with a Unix timestamp in seconds.
 
 ## Compatibility
