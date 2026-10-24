@@ -4,6 +4,8 @@ use crate::{
     config::{CloseAction, Config, ThemeMode},
     gui_theme as theme,
 };
+#[path = "dependency_validation.rs"]
+mod dependency_validation;
 #[path = "gui_diagnostics.rs"]
 mod diagnostics;
 #[path = "theme_validation.rs"]
@@ -49,8 +51,8 @@ struct Controls {
     count_input: nwg::Label,
     count_output: nwg::Label,
     count_audio: nwg::Label,
-    dependencies: nwg::Label,
-    install_status: nwg::Label,
+    dependencies: nwg::TextBox,
+    install_status: nwg::TextBox,
     tips: nwg::Tooltip,
     logs: nwg::TextBox,
     auto_start: nwg::CheckBox,
@@ -84,6 +86,15 @@ struct Controls {
     doctor: nwg::Button,
     usbip: nwg::Button,
     hidhide_link: nwg::Button,
+    usbip_location: nwg::Label,
+    hidhide_location: nwg::Label,
+    usbip_directory: nwg::TextInput,
+    hidhide_directory: nwg::TextInput,
+    usbip_choose: nwg::Button,
+    hidhide_choose: nwg::Button,
+    usbip_auto: nwg::Button,
+    hidhide_auto: nwg::Button,
+    hidhide_open: nwg::Button,
     notice: nwg::Notice,
     nav: Vec<nwg::Button>,
 }
@@ -109,6 +120,7 @@ struct App {
     dependency_check: Cell<std::time::Instant>,
     diagnostics: RefCell<diagnostics::Diagnostics>,
     hidhide_available: Cell<bool>,
+    hidhide_tool_available: Cell<bool>,
     initial_diagnostics: Cell<bool>,
     smoke: bool,
     installation: RefCell<Option<crate::dependencies::Installation>>,
@@ -184,6 +196,7 @@ impl App {
             dependency_check: Cell::new(std::time::Instant::now()),
             diagnostics: RefCell::new(diagnostics::Diagnostics::default()),
             hidhide_available: Cell::new(false),
+            hidhide_tool_available: Cell::new(false),
             initial_diagnostics: Cell::new(true),
             smoke,
             installation: RefCell::new(None),
@@ -292,9 +305,9 @@ impl App {
                 &mut ui.count_input,
                 &mut ui.count_output,
                 &mut ui.count_audio,
-                &mut ui.dependencies,
-                &mut ui.install_status,
                 &mut ui.language_notice,
+                &mut ui.usbip_location,
+                &mut ui.hidhide_location,
             ] {
                 nwg::Label::builder()
                     .parent(window)
@@ -302,15 +315,17 @@ impl App {
                     .text("")
                     .build(label)?;
             }
-            nwg::TextBox::builder()
-                .parent(window)
-                .readonly(true)
-                .flags(
-                    nwg::TextBoxFlags::VISIBLE
-                        | nwg::TextBoxFlags::AUTOVSCROLL
-                        | nwg::TextBoxFlags::VSCROLL,
-                )
-                .build(&mut ui.logs)?;
+            for textbox in [&mut ui.logs, &mut ui.dependencies, &mut ui.install_status] {
+                nwg::TextBox::builder()
+                    .parent(window)
+                    .readonly(true)
+                    .flags(
+                        nwg::TextBoxFlags::VISIBLE
+                            | nwg::TextBoxFlags::AUTOVSCROLL
+                            | nwg::TextBoxFlags::VSCROLL,
+                    )
+                    .build(textbox)?;
+            }
             cb!(
                 auto_start,
                 crate::tr!(gui_start_bridging_when_opends_opens),
@@ -446,6 +461,17 @@ impl App {
             button!(doctor, crate::tr!(gui_check_again));
             button!(usbip, crate::tr!(gui_install_usb_ip_win2));
             button!(hidhide_link, crate::tr!(gui_install_hidhide));
+            button!(usbip_choose, crate::tr!(dependency_choose_directory));
+            button!(hidhide_choose, crate::tr!(dependency_choose_directory));
+            button!(usbip_auto, crate::tr!(dependency_use_auto));
+            button!(hidhide_auto, crate::tr!(dependency_use_auto));
+            button!(hidhide_open, crate::tr!(dependency_open_hidhide));
+            for input in [&mut ui.usbip_directory, &mut ui.hidhide_directory] {
+                nwg::TextInput::builder()
+                    .parent(window)
+                    .readonly(true)
+                    .build(input)?;
+            }
             for name in [
                 crate::tr!(gui_overview),
                 crate::tr!(gui_live_monitor),
@@ -513,6 +539,7 @@ impl App {
             SetWindowLongPtrW(h, GWL_STYLE, style | WS_CLIPCHILDREN as isize);
         }
         let a = Rc::new(a);
+        a.show_dependency_locations(None, None);
         *a.monitor_view.borrow_mut() = Some(crate::monitor_view::MonitorView::new(
             theme::hwnd(&a.window.handle),
             a.controller.borrow().state.monitor.clone(),
@@ -525,11 +552,17 @@ impl App {
         }
         a.apply_fonts()?;
         unsafe {
-            let hwnd = theme::hwnd(&a.logs.handle);
-            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & !(WS_EX_CLIENTEDGE as isize));
-            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_BORDER as isize));
+            for handle in [
+                &a.logs.handle,
+                &a.dependencies.handle,
+                &a.install_status.handle,
+            ] {
+                let hwnd = theme::hwnd(handle);
+                let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & !(WS_EX_CLIENTEDGE as isize));
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_BORDER as isize));
+            }
         }
         a.apply_devices(Vec::new());
         a.refresh();
@@ -594,6 +627,15 @@ impl App {
             &self.doctor.handle,
             &self.usbip.handle,
             &self.hidhide_link.handle,
+            &self.usbip_location.handle,
+            &self.hidhide_location.handle,
+            &self.usbip_directory.handle,
+            &self.hidhide_directory.handle,
+            &self.usbip_choose.handle,
+            &self.hidhide_choose.handle,
+            &self.usbip_auto.handle,
+            &self.hidhide_auto.handle,
+            &self.hidhide_open.handle,
         ]
     }
     fn apply_fonts(&self) -> Result<(), String> {
@@ -715,8 +757,29 @@ impl App {
                 put(&self.doctor.handle, x + 24, 259, 120, 36);
                 put(&self.usbip.handle, x + 156, 259, 176, 36);
                 put(&self.hidhide_link.handle, x + 344, 259, 150, 36);
-                put(&self.install_status.handle, x + 24, 304, cw - 48, 28);
-                put(&self.logs.handle, x + 24, 400, cw - 48, (h - 448).max(88));
+                put(&self.usbip_location.handle, x + 24, 305, cw - 48, 22);
+                put(&self.hidhide_location.handle, x + 24, 369, cw - 222, 22);
+                put(&self.hidhide_open.handle, x + cw - 188, 366, 164, 26);
+                for (field, choose, auto, y) in [
+                    (
+                        &self.usbip_directory,
+                        &self.usbip_choose,
+                        &self.usbip_auto,
+                        331,
+                    ),
+                    (
+                        &self.hidhide_directory,
+                        &self.hidhide_choose,
+                        &self.hidhide_auto,
+                        395,
+                    ),
+                ] {
+                    put(&field.handle, x + 24, y, cw - 236, 30);
+                    put(&choose.handle, x + cw - 200, y, 92, 30);
+                    put(&auto.handle, x + cw - 100, y, 76, 30);
+                }
+                put(&self.install_status.handle, x + 24, 439, cw - 48, 54);
+                put(&self.logs.handle, x + 24, 554, cw - 48, (h - 602).max(52));
             }
             _ => {
                 put(&self.language.handle, x + 24, 164, cw - 48, 240);
@@ -984,11 +1047,11 @@ impl App {
                 );
             }
             4 => {
-                card(x, 112, cw, 226);
-                card(x, 358, cw, h - 382);
+                card(x, 112, cw, 391);
+                card(x, 519, cw, h - 543);
                 text(
                     x + 24,
-                    370,
+                    528,
                     cw - 48,
                     25,
                     crate::tr!(gui_application_log),
@@ -1349,6 +1412,139 @@ impl App {
         c.validate()?;
         Ok(c)
     }
+    fn show_dependency_locations(
+        &self,
+        usbip: Option<&std::path::Path>,
+        hidhide: Option<&std::path::Path>,
+    ) {
+        use crate::dependency_paths::Component;
+        let config = self.config.borrow();
+        for (component, name, label, field, resolved) in [
+            (
+                Component::Usbip,
+                "USB/IP Win2",
+                &self.usbip_location,
+                &self.usbip_directory,
+                usbip,
+            ),
+            (
+                Component::HidHide,
+                "HidHide",
+                &self.hidhide_location,
+                &self.hidhide_directory,
+                hidhide,
+            ),
+        ] {
+            let directory = component.directory(&config);
+            label.set_text(&crate::tr!(
+                dependency_location,
+                component = name,
+                mode = if directory.is_empty() {
+                    crate::tr!(dependency_mode_auto)
+                } else {
+                    crate::tr!(dependency_mode_manual)
+                }
+            ));
+            let text = if let Some(path) = resolved {
+                path.display().to_string()
+            } else if directory.is_empty() {
+                crate::tr!(dependency_tool_not_found).into()
+            } else {
+                crate::tr!(
+                    dependency_selected_missing,
+                    path = directory,
+                    executable = component.executable()
+                )
+            };
+            field.set_text(&text);
+        }
+        self.hidhide_tool_available.set(hidhide.is_some());
+    }
+    fn set_dependency_directory(
+        &self,
+        component: crate::dependency_paths::Component,
+        directory: String,
+    ) -> Result<(), String> {
+        if self.installation.borrow().is_some()
+            || self
+                .controller
+                .borrow()
+                .state
+                .running
+                .load(Ordering::Acquire)
+        {
+            return Err(crate::tr!(dependency_stop_before_changing).into());
+        }
+        if !directory.is_empty() {
+            component.validate_directory(std::path::Path::new(&directory))?;
+        }
+        // Update only this preference; unrelated unsaved controls stay untouched.
+        let mut disk = Config::load(&self.path)?;
+        component.set_directory(&mut disk, directory.clone());
+        disk.save(&self.path)?;
+        component.set_directory(&mut self.config.borrow_mut(), directory);
+        self.refresh_dependencies();
+        Ok(())
+    }
+    fn choose_dependency_directory(
+        &self,
+        component: crate::dependency_paths::Component,
+    ) -> Result<(), String> {
+        if self.installation.borrow().is_some()
+            || self
+                .controller
+                .borrow()
+                .state
+                .running
+                .load(Ordering::Acquire)
+        {
+            return Err(crate::tr!(dependency_stop_before_changing).into());
+        }
+        let current = component.directory(&self.config.borrow()).to_owned();
+        let mut dialog = nwg::FileDialog::default();
+        let mut builder = nwg::FileDialog::builder()
+            .title(crate::tr!(
+                dependency_directory_title,
+                executable = component.executable()
+            ))
+            .action(nwg::FileDialogAction::OpenDirectory);
+        if !current.is_empty() && std::path::Path::new(&current).is_dir() {
+            builder = builder.default_folder(current);
+        }
+        builder.build(&mut dialog).map_err(|e| e.to_string())?;
+        // The folder picker runs a nested message loop; hold no RefCell borrows.
+        if !dialog.run(Some(&self.window)) {
+            return Ok(());
+        }
+        let directory = PathBuf::from(dialog.get_selected_item().map_err(|e| e.to_string())?);
+        self.set_dependency_directory(
+            component,
+            directory
+                .to_str()
+                .ok_or(crate::tr!(dependency_directory_encoding))?
+                .to_owned(),
+        )
+    }
+    fn open_hidhide(&self) -> Result<(), String> {
+        if self.installation.borrow().is_some()
+            || self
+                .controller
+                .borrow()
+                .state
+                .running
+                .load(Ordering::Acquire)
+        {
+            return Err(crate::tr!(dependency_stop_before_changing).into());
+        }
+        let directory = self.config.borrow().hidhide_directory.clone();
+        let path = crate::dependency_paths::Component::HidHide
+            .resolve(&directory)
+            .ok_or(crate::tr!(dependency_hidhide_not_found))?;
+        std::process::Command::new(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
     fn save_settings(&self) -> Result<Config, String> {
         let mut c = self.read_config()?;
         if let Some(v) = self.monitor_view.borrow().as_ref() {
@@ -1395,7 +1591,10 @@ impl App {
             .state
             .hidhide_healthy
             .load(Ordering::Acquire);
-        let result = self.diagnostics.borrow_mut().request(scan, owned);
+        let result =
+            self.diagnostics
+                .borrow_mut()
+                .request(scan, owned, self.config.borrow().clone());
         if let Err(error) = result {
             self.controller.borrow().state.log_message(
                 crate::i18n::MessageId::gui_diagnostics_failed,
@@ -1446,12 +1645,27 @@ impl App {
             );
             return;
         };
+        let current = self.config.borrow();
+        let stale = snapshot.directories
+            != (
+                current.usbip_directory.clone(),
+                current.hidhide_directory.clone(),
+            );
+        drop(current);
+        if stale {
+            self.request_diagnostics(true);
+            return;
+        }
         let state = self.controller.borrow().state.clone();
         snapshot
             .status
             .confirm_hidhide_owned(state.hidhide_healthy.load(Ordering::Acquire));
         let status = snapshot.status;
-        let summary = status.summary();
+        self.show_dependency_locations(
+            status.usbip_path.as_deref(),
+            status.hidhide_path.as_deref(),
+        );
+        let summary = status.summary().replace('\n', "\r\n");
         if self.dependencies.text() != summary {
             self.dependencies.set_text(&summary);
         }
@@ -1538,17 +1752,7 @@ impl App {
                 state.log(error);
             }
             let message = if success {
-                if crate::dependencies::ready() {
-                    crate::tr!(
-                        gui_installed_dependencies_are_ready,
-                        component = crate::i18n_arg!(job.component)
-                    )
-                } else {
-                    crate::tr!(
-                        gui_wizard_finished_but_dependencies_are_not_ready,
-                        component = crate::i18n_arg!(job.component)
-                    )
-                }
+                crate::tr!(dependency_installer_finished, component = job.component)
             } else {
                 crate::tr!(
                     gui_installation_failed_or_was_cancelled_see_the,
@@ -1557,7 +1761,7 @@ impl App {
             };
             self.install_status.set_text(&message);
             state.log(&message);
-            self.refresh_dependencies();
+            self.refresh();
         }
     }
     fn update(&self) {
@@ -1653,6 +1857,17 @@ impl App {
         }
         self.usbip.set_enabled(!running && !installing);
         self.hidhide_link.set_enabled(!running && !installing);
+        for button in [
+            &self.usbip_choose,
+            &self.hidhide_choose,
+            &self.usbip_auto,
+            &self.hidhide_auto,
+        ] {
+            button.set_enabled(!running && !installing);
+        }
+        // Changing HidHide settings externally during bridging can break hiding.
+        self.hidhide_open
+            .set_enabled(!running && !installing && self.hidhide_tool_available.get());
         if !installing {
             let hint = crate::tr!(gui_bridging_is_running_stop_it_before_installing);
             if running && self.install_status.text() != hint {
@@ -2090,6 +2305,19 @@ impl App {
             self.begin_installation("usbip")
         } else if handle == self.hidhide_link {
             self.begin_installation("hidhide")
+        } else if handle == self.usbip_choose {
+            self.choose_dependency_directory(crate::dependency_paths::Component::Usbip)
+        } else if handle == self.hidhide_choose {
+            self.choose_dependency_directory(crate::dependency_paths::Component::HidHide)
+        } else if handle == self.usbip_auto {
+            self.set_dependency_directory(crate::dependency_paths::Component::Usbip, String::new())
+        } else if handle == self.hidhide_auto {
+            self.set_dependency_directory(
+                crate::dependency_paths::Component::HidHide,
+                String::new(),
+            )
+        } else if handle == self.hidhide_open {
+            self.open_hidhide()
         } else {
             Ok(())
         };
@@ -2303,6 +2531,9 @@ fn run_inner(
     }
     if smoke && std::env::args().any(|a| a == "--smoke-responsiveness") {
         app.test_responsiveness()?;
+    }
+    if smoke && std::env::args().any(|a| a == "--smoke-dependencies") {
+        app.test_dependency_directories()?;
     }
     if smoke && std::env::var("OPENDS_UI_SMOKE_THEME_STRESS").as_deref() == Ok("1") {
         app.test_themes()?;

@@ -256,8 +256,13 @@ pub struct Viiper {
 }
 
 impl Viiper {
-    pub fn attach_prepared(&self, port: u16, cancelled: impl Fn() -> bool) -> Result<u32, String> {
-        crate::attach::first_device(port, self.bus, cancelled)
+    pub fn attach_prepared(
+        &self,
+        exe: &std::path::Path,
+        port: u16,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<u32, String> {
+        crate::attach::first_device(exe, port, self.bus, cancelled)
     }
     /// 启动服务器并创建一条总线。
     ///

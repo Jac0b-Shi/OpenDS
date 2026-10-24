@@ -78,7 +78,7 @@ language-error-name = The language name must be a single line of at most 128 cha
 
 ## attach
 
-attach-cannot-find-usb-ip-win2-usbip-exe = Cannot find USB/IP Win2 usbip.exe. Install the compact package or add its directory to PATH.
+attach-cannot-find-usb-ip-win2-usbip-exe = Cannot find usbip.exe. Open Diagnostics and select the USB/IP Win2 installation directory, or restore automatic discovery.
 # Parameters: $error
 attach-could-not-start-usb-ip = Could not start USB/IP: { $error }
 # Parameters: $output, $error
@@ -231,7 +231,7 @@ config-configuration-line-is-missing = Configuration line { $line } is missing =
 config-invalid-configuration = Invalid configuration { $key }: { $value }
 # Parameters: $key
 config-configuration-must-be-0-1-or-true = Configuration { $key } must be 0/1 or true/false
-config-configuration-values-must-not-contain-line-breaks = Configuration values must not contain line breaks
+config-configuration-values-must-not-contain-line-breaks = Configuration values must not contain line breaks or NUL characters.
 # Parameters: $error
 config-could-not-save-configuration = Could not save configuration: { $error }
 config-dsx-udp-automatic-dsx-launch-and-xbox = DSX UDP, automatic DSX launch, and Xbox/DS4 identities are not supported. Disable these options.
@@ -246,11 +246,11 @@ dependencies-usb-ip-win2-ude-hidhide-libviiper-opus = USB/IP Win2 UDE: { $usbip 
     Opus: { $opus }
     Configuration: { $path }
 dependencies-service-and-attachment-tool-available = Service and attachment tool available
-dependencies-service-running-usbip-exe-is-missing = Service running; usbip.exe is missing
-dependencies-not-running-or-not-installed-install-reboot = Not running or not installed. Install, reboot, then check again.
+dependencies-service-running-usbip-exe-is-missing = Driver running; usbip.exe not found. Choose its directory.
+dependencies-not-running-or-not-installed-install-reboot = Driver not running. Install if missing; reboot if prompted.
 dependencies-enabled-hiding-the-physical-controller = Enabled; hiding the physical controller
 dependencies-accessible = Accessible
-dependencies-not-accessible-check-driver-and-permissions = Not accessible. Check driver and permissions.
+dependencies-not-accessible-check-driver-and-permissions = Driver inaccessible. Check installation, reboot and permissions.
 dependencies-available = Available
 dependencies-matching-dll-missing-place-it-beside-opends = Matching DLL missing. Place it beside opends.exe.
 dependencies-libopus-0-dll-missing-audio-and-native = libopus-0.dll missing; audio and native haptics unavailable
@@ -304,8 +304,8 @@ gui-stop-bridge = Stop bridge
 gui-open-settings = Open settings
 gui-stop-bridging-to-download-and-open-the = Stop bridging to download and open the official USB/IP Win2 installer
 gui-stop-bridging-to-download-and-open-the-2 = Stop bridging to download and open the official HidHide installer
-gui-installation-requires-administrator-approval-dependencies-will-be = Installation requires administrator approval. Dependencies will be checked again afterwards.
-gui-first-install-the-missing-drivers-on-this = First, install the missing drivers on this page. Restart Windows if prompted, then check again.
+gui-installation-requires-administrator-approval-dependencies-will-be = Directories are saved immediately. HidHide uses its installed driver directly; its configuration tool is optional. Installing drivers requires administrator approval.
+gui-first-install-the-missing-drivers-on-this = Some dependencies are not ready. Review the status above. If already installed, select the installation directory; install drivers only when missing.
 gui-dualsense-control-center = DualSense control center
 gui-bluetooth-connection-usb-experience = Bluetooth connection · USB experience
 gui-connection-status-and-feedback-at-a-glance = Connection status and feedback at a glance.
@@ -359,7 +359,7 @@ gui-bridge-started-waiting-for-controller = ● Bridge started · waiting for co
 # Parameters: $error
 gui-bridge-stopped = ○ Bridge stopped · { $error }
 gui-bridge-not-started = ○ Bridge not started
-gui-bridging-is-running-stop-it-before-installing = Bridging is running. Stop it before installing drivers.
+gui-bridging-is-running-stop-it-before-installing = Stop bridging before changing dependency directories or installing drivers.
 gui-ready-start-bridging-to-see-connection-feedback = Ready.
     Start bridging to see connection, feedback and recovery events here.
 gui-some-dependencies-are-missing-or-inaccessible-open = Some dependencies are missing or inaccessible. Open Diagnostics to check.
@@ -589,3 +589,19 @@ appearance-dark = Dark
 dialog-ok = &OK
 dialog-yes = &Yes
 dialog-no = &No
+
+dependency-directory-invalid = The selected directory does not contain { $executable }: { $path }. Select the installed program directory.
+dependency-usbip-custom-invalid = Driver running; selected directory has no usbip.exe. Choose again.
+dependency-choose-directory = Browse…
+dependency-use-auto = Auto
+dependency-open-hidhide = Open HidHide settings
+dependency-location = { $component } location ({ $mode })
+dependency-mode-auto = automatic
+dependency-mode-manual = manual
+dependency-tool-not-found = Tool not found. Select an installation directory if installed.
+dependency-selected-missing = { $executable } not found: { $path }
+dependency-stop-before-changing = Stop bridging and wait for any installation to finish before changing directories.
+dependency-directory-title = Choose the installation directory containing { $executable }
+dependency-directory-encoding = The directory cannot be saved as UTF-8.
+dependency-hidhide-not-found = HidHideClient.exe not found. Select the HidHide installation directory. The configuration tool is optional for bridging.
+dependency-installer-finished = { $component } installer finished. Review dependency status above; select the installed directory or reboot if prompted.

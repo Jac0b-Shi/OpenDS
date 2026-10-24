@@ -43,6 +43,9 @@ jobs:
       - name: Verify shutdown cancellation, modal windows, CSV flush and stalled workers
         shell: pwsh
         run: ./scripts/Test-Shutdown.ps1
+      - name: Validate dependency directories and diagnostic controls
+        shell: pwsh
+        run: ./scripts/Test-Dependencies.ps1
       - name: Verify native input backgrounds and page switching latency
         shell: pwsh
         run: ./scripts/Test-Responsiveness.ps1

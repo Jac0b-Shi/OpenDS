@@ -54,14 +54,22 @@ fn hidhide_status(owned_healthy: bool, probe: impl FnOnce() -> bool) -> HidHideS
 pub struct Status {
     usbip_service: bool,
     usbip_tool: bool,
+    usbip_custom: bool,
+    pub usbip_path: Option<std::path::PathBuf>,
+    pub hidhide_path: Option<std::path::PathBuf>,
     hidhide: HidHideStatus,
     viiper: bool,
     opus: bool,
 }
-pub fn inspect(hidhide_owned_healthy: bool) -> Status {
+pub fn inspect(config: &crate::config::Config, hidhide_owned_healthy: bool) -> Status {
+    let usbip_path = crate::dependency_paths::Component::Usbip.resolve(&config.usbip_directory);
     Status {
         usbip_service: service_running("usbip2_ude"),
-        usbip_tool: crate::attach::usbip_path().is_some(),
+        usbip_tool: usbip_path.is_some(),
+        usbip_custom: !config.usbip_directory.is_empty(),
+        usbip_path,
+        hidhide_path: crate::dependency_paths::Component::HidHide
+            .resolve(&config.hidhide_directory),
         hidhide: hidhide_status(hidhide_owned_healthy, || {
             crate::hidhide::HidHide::open()
                 .and_then(|h| h.get_active())
@@ -86,6 +94,8 @@ impl Status {
             usbip = crate::i18n_arg!(if self.usbip_service {
                 if self.usbip_tool {
                     crate::tr!(dependencies_service_and_attachment_tool_available)
+                } else if self.usbip_custom {
+                    crate::tr!(dependency_usbip_custom_invalid)
                 } else {
                     crate::tr!(dependencies_service_running_usbip_exe_is_missing)
                 }
@@ -121,11 +131,8 @@ impl Status {
             && self.usbip_tool
     }
 }
-pub fn summary() -> String {
-    inspect(false).summary()
-}
-pub fn ready() -> bool {
-    inspect(false).ready()
+pub fn summary(config: &crate::config::Config) -> String {
+    inspect(config, false).summary()
 }
 
 /// One asynchronous installer at a time; the UI polls completion without blocking.
@@ -237,11 +244,26 @@ mod tests {
         let mut status = Status {
             usbip_service: true,
             usbip_tool: true,
+            usbip_custom: false,
+            usbip_path: None,
+            hidhide_path: None,
             hidhide: HidHideStatus::InUse,
             viiper: true,
             opus: true,
         };
         assert!(status.ready());
+        // HidHideClient is a convenience, never a prerequisite for direct IOCTL access.
+        assert!(status.hidhide_path.is_none());
+        status.usbip_tool = false;
+        assert!(!status.ready());
+        assert!(status.summary().contains(crate::tr!(
+            dependencies_service_running_usbip_exe_is_missing
+        )));
+        status.usbip_custom = true;
+        assert!(status
+            .summary()
+            .contains(crate::tr!(dependency_usbip_custom_invalid)));
+        status.usbip_tool = true;
         assert!(status.summary().contains(crate::tr!(
             dependencies_enabled_hiding_the_physical_controller
         )));

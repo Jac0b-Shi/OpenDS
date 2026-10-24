@@ -2,6 +2,7 @@
 use std::thread::JoinHandle;
 
 pub(super) struct Snapshot {
+    pub directories: (String, String),
     pub status: crate::dependencies::Status,
     pub devices: Option<Vec<(String, String)>>,
     pub hiding: Option<(bool, Vec<String>)>,
@@ -12,7 +13,12 @@ pub(super) struct Diagnostics {
     pending_scan: bool,
 }
 impl Diagnostics {
-    pub fn request(&mut self, scan: bool, owned: bool) -> std::io::Result<()> {
+    pub fn request(
+        &mut self,
+        scan: bool,
+        owned: bool,
+        config: crate::config::Config,
+    ) -> std::io::Result<()> {
         if self.worker.is_some() {
             self.pending_scan |= scan;
             return Ok(());
@@ -49,7 +55,8 @@ impl Diagnostics {
                         None
                     };
                     Snapshot {
-                        status: crate::dependencies::inspect(owned),
+                        status: crate::dependencies::inspect(&config, owned),
+                        directories: (config.usbip_directory, config.hidhide_directory),
                         devices,
                         hiding,
                     }
@@ -85,7 +92,9 @@ mod tests {
         };
         let start = std::time::Instant::now();
         for _ in 0..100 {
-            diagnostics.request(true, false).unwrap();
+            diagnostics
+                .request(true, false, crate::config::Config::default())
+                .unwrap();
             assert!(diagnostics.poll().is_none());
         }
         assert!(start.elapsed() < std::time::Duration::from_millis(100));

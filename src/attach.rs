@@ -1,32 +1,17 @@
 //! 预载特性后再挂接；跟踪本会话端口并清理同一端点的旧会话。
 use std::os::windows::process::CommandExt;
 use std::{
-    path::PathBuf,
+    path::Path,
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
-pub fn usbip_path() -> Option<PathBuf> {
-    for key in ["ProgramW6432", "ProgramFiles"] {
-        if let Some(root) = std::env::var_os(key) {
-            let path = PathBuf::from(root).join("USBip/usbip.exe");
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|p| p.join("usbip.exe"))
-            .find(|p| p.is_file())
-    })
-}
 fn run(
+    exe: &Path,
     args: Vec<String>,
     cancelled: impl Fn() -> bool,
     timeout: Duration,
 ) -> Result<Output, String> {
-    let exe = usbip_path().ok_or(crate::tr!(attach_cannot_find_usb_ip_win2_usbip_exe))?;
     let mut child = Command::new(exe)
         .args(args)
         .creation_flags(0x08000000)
@@ -63,7 +48,12 @@ fn run(
         std::thread::sleep(Duration::from_millis(25));
     }
 }
-pub fn first_device(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Result<u32, String> {
+pub fn first_device(
+    exe: &Path,
+    port: u16,
+    bus: u32,
+    cancelled: impl Fn() -> bool,
+) -> Result<u32, String> {
     // VIIPER 每个新建私有总线的第一个 DevID 为 1。
     let args = vec![
         "--tcp-port".into(),
@@ -76,7 +66,7 @@ pub fn first_device(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Result
         "--once".into(),
         "--terse".into(),
     ];
-    let output = run(args, cancelled, Duration::from_secs(5))?;
+    let output = run(exe, args, cancelled, Duration::from_secs(5))?;
     let port = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse::<u32>()
@@ -88,11 +78,12 @@ pub fn first_device(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Result
     }
     Ok(port)
 }
-pub fn detach(port: u32) -> Result<(), String> {
+pub fn detach(exe: &Path, port: u32) -> Result<(), String> {
     if !(1..=255).contains(&port) {
         return Err(crate::tr!(attach_refusing_to_detach_an_invalid_ude_port).into());
     }
     run(
+        exe,
         vec!["detach".into(), "-p".into(), port.to_string()],
         || false,
         Duration::from_secs(2),
@@ -126,9 +117,15 @@ fn owned_ports(text: &str, service: u16, bus: u32) -> Vec<u32> {
     }
     result
 }
-pub fn cleanup_owned(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Result<(), String> {
+pub fn cleanup_owned(
+    exe: &Path,
+    port: u16,
+    bus: u32,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), String> {
     for host in ["localhost", "127.0.0.1"] {
         run(
+            exe,
             vec![
                 "--tcp-port".into(),
                 port.to_string(),
@@ -143,15 +140,39 @@ pub fn cleanup_owned(port: u16, bus: u32, cancelled: impl Fn() -> bool) -> Resul
             Duration::from_secs(2),
         )?;
     }
-    let list = run(vec!["port".into()], cancelled, Duration::from_secs(2))?;
+    let list = run(exe, vec!["port".into()], cancelled, Duration::from_secs(2))?;
     for own in owned_ports(&String::from_utf8_lossy(&list.stdout), port, bus) {
-        detach(own)?;
+        detach(exe, own)?;
     }
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_uses_the_selected_executable_in_a_unicode_directory() {
+        let root =
+            std::env::temp_dir().join(format!("opends-command-{}-中文 空格", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let selected = root.join("usbip.exe");
+        std::fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe"),
+            &selected,
+        )
+        .unwrap();
+        let output = run(
+            &selected,
+            vec!["/D".into(), "/C".into(), "echo selected-tool".into()],
+            || false,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "selected-tool"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn cleanup_only_selects_sony_devices_on_our_exact_loopback_endpoint() {
         let text="Port 01: connected\n Sony (054c:0ce6)\n -> usbip://localhost:3241/1-1\nPort 02: connected\n Sony (054c:0ce6)\n -> usbip://192.168.1.5:3241/1-1\nPort 03: connected\n Sony (054c:0ce6)\n -> usbip://localhost:3242/1-1\nPort 04: connected\n Other (1234:5678)\n -> usbip://localhost:3241/1-1\nPort 05: connected\n Sony (054c:0df2)\n -> usbip://127.0.0.1:3241/1-1";

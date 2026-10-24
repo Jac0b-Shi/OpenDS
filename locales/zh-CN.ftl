@@ -78,7 +78,7 @@ language-error-name = 语言名称须为单行，且不超过 128 个字符。
 
 ## attach
 
-attach-cannot-find-usb-ip-win2-usbip-exe = 找不到 USB/IP Win2 自带的 usbip.exe，请安装 compact 主程序或将其目录加入 PATH
+attach-cannot-find-usb-ip-win2-usbip-exe = 未找到 usbip.exe，请在“诊断与日志”中指定 USB/IP Win2 安装目录，或恢复自动查找。
 # Parameters: $error
 attach-could-not-start-usb-ip = 启动 USB/IP 操作失败：{ $error }
 # Parameters: $output, $error
@@ -231,7 +231,7 @@ config-configuration-line-is-missing = 配置第 { $line } 行缺少 =
 config-invalid-configuration = 配置 { $key } 无效：{ $value }
 # Parameters: $key
 config-configuration-must-be-0-1-or-true = 配置 { $key } 必须为 0/1 或 true/false
-config-configuration-values-must-not-contain-line-breaks = 设备路径含换行符
+config-configuration-values-must-not-contain-line-breaks = 配置值不能包含换行或空字符。
 # Parameters: $error
 config-could-not-save-configuration = 保存配置失败：{ $error }
 config-dsx-udp-automatic-dsx-launch-and-xbox = DSX UDP/自动启动 DSX/Xbox/DS4 外观尚未支持，请关闭相应配置。
@@ -246,11 +246,11 @@ dependencies-usb-ip-win2-ude-hidhide-libviiper-opus = USB/IP Win2 UDE：{ $usbip
     Opus：{ $opus }
     配置：{ $path }
 dependencies-service-and-attachment-tool-available = 服务与挂接工具可用
-dependencies-service-running-usbip-exe-is-missing = 服务已运行，缺少 usbip.exe 主程序
-dependencies-not-running-or-not-installed-install-reboot = 未运行或未安装，请安装后重启并重新检查
+dependencies-service-running-usbip-exe-is-missing = 驱动已运行；未找到 usbip.exe，请指定安装目录
+dependencies-not-running-or-not-installed-install-reboot = 驱动未运行；若未安装请先安装，按提示重启后检查
 dependencies-enabled-hiding-the-physical-controller = 已启用，正在隐藏物理手柄
 dependencies-accessible = 可访问
-dependencies-not-accessible-check-driver-and-permissions = 不可访问，请检查驱动或权限
+dependencies-not-accessible-check-driver-and-permissions = 驱动不可访问，请检查安装、重启及权限
 dependencies-available = 可用
 dependencies-matching-dll-missing-place-it-beside-opends = 缺少配套 DLL，请放到 opends.exe 同目录
 dependencies-libopus-0-dll-missing-audio-and-native = 缺少 libopus-0.dll；音频和原生触觉不可用
@@ -304,8 +304,8 @@ gui-stop-bridge = 停止桥接
 gui-open-settings = 打开设置
 gui-stop-bridging-to-download-and-open-the = 停止桥接后可下载并打开 USB/IP Win2 官方安装向导
 gui-stop-bridging-to-download-and-open-the-2 = 停止桥接后可下载并打开 HidHide 官方安装向导
-gui-installation-requires-administrator-approval-dependencies-will-be = 安装需管理员确认，完成后会自动重新检查依赖。
-gui-first-install-the-missing-drivers-on-this = 首次使用请先在本页安装缺失驱动；安装完成并按提示重启后重新检查。
+gui-installation-requires-administrator-approval-dependencies-will-be = 目录选择后立即保存。HidHide 直接使用已安装驱动，配置工具为可选项。安装驱动需管理员确认。
+gui-first-install-the-missing-drivers-on-this = 部分依赖尚未就绪，请按上方状态处理。已安装的组件可手动指定安装目录，未安装的驱动请先安装。
 gui-dualsense-control-center = DualSense 控制中心
 gui-bluetooth-connection-usb-experience = 蓝牙连接 · USB 体验
 gui-connection-status-and-feedback-at-a-glance = 连接状态与反馈数据，尽在此处。
@@ -359,7 +359,7 @@ gui-bridge-started-waiting-for-controller = ● 桥接已启动 · 等待手柄�
 # Parameters: $error
 gui-bridge-stopped = ○ 桥接已停止 · { $error }
 gui-bridge-not-started = ○ 桥接尚未启动
-gui-bridging-is-running-stop-it-before-installing = 桥接正在运行，请先停止桥接再安装驱动。
+gui-bridging-is-running-stop-it-before-installing = 桥接运行中，请先停止桥接，再修改依赖目录或安装驱动。
 gui-ready-start-bridging-to-see-connection-feedback = 准备就绪。
     启动桥接后，这里会显示连接、反馈和恢复记录。
 gui-some-dependencies-are-missing-or-inaccessible-open = 缺少或无法访问运行依赖，请打开诊断检查
@@ -588,3 +588,19 @@ appearance-dark = 深色
 dialog-ok = 确定(&O)
 dialog-yes = 是(&Y)
 dialog-no = 否(&N)
+
+dependency-directory-invalid = 所选目录中未找到 { $executable }：{ $path }。请选择程序的安装目录。
+dependency-usbip-custom-invalid = 驱动已运行；指定目录中未找到 usbip.exe，请重新选择
+dependency-choose-directory = 选择目录…
+dependency-use-auto = 自动查找
+dependency-open-hidhide = 打开 HidHide 配置
+dependency-location = { $component } 位置（{ $mode }）
+dependency-mode-auto = 自动查找
+dependency-mode-manual = 手动指定
+dependency-tool-not-found = 未找到工具；已安装时请选择安装目录
+dependency-selected-missing = 未找到 { $executable }：{ $path }
+dependency-stop-before-changing = 请先停止桥接，并等待安装完成后再修改目录。
+dependency-directory-title = 选择包含 { $executable } 的安装目录
+dependency-directory-encoding = 该目录无法保存为 UTF-8 路径。
+dependency-hidhide-not-found = 未找到 HidHideClient.exe，请指定 HidHide 安装目录。桥接本身不需要此配置工具。
+dependency-installer-finished = { $component } 安装向导已结束。请查看上方依赖状态；已安装时可指定目录，按安装提示重启。

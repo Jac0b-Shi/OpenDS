@@ -14,7 +14,7 @@ try {
     # Exercise the real GUI initialization and event loop, without starting a bridge.
     $smokeOut = Join-Path $root 'target\gui-smoke-output.txt'
     $smokeErr = Join-Path $root 'target\gui-smoke-error.txt'
-    $guiCheck = Start-Process -FilePath (Join-Path $root 'target\release\opends.exe') -ArgumentList 'ui-smoke-test' -PassThru -RedirectStandardOutput $smokeOut -RedirectStandardError $smokeErr
+    $guiCheck = Start-Process -FilePath (Join-Path $root 'target\release\opends.exe') -ArgumentList 'ui-smoke-test' -WindowStyle Hidden -PassThru -RedirectStandardOutput $smokeOut -RedirectStandardError $smokeErr
     if (!$guiCheck.WaitForExit(15000)) { throw 'GUI smoke check did not exit within 15 seconds; inspect the app before packaging.' }
     if ($guiCheck.ExitCode -ne 0) { throw ('GUI startup failed: ' + (Get-Content -LiteralPath $smokeErr -Raw)) }
     $version = ((Get-Content Cargo.toml | Select-String '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value)

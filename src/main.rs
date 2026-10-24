@@ -13,6 +13,7 @@ mod audio_thread;
 mod bridge;
 mod config;
 mod dependencies;
+mod dependency_paths;
 mod gui;
 mod gui_close;
 mod gui_language;
@@ -140,7 +141,10 @@ fn cli() -> Result<(), String> {
             return Ok(());
         }
         "doctor" => {
-            println!("{}", dependencies::summary());
+            println!(
+                "{}",
+                dependencies::summary(&config::Config::load(&config::Config::path())?)
+            );
             return Ok(());
         }
         "ui-smoke-test" => {

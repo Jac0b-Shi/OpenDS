@@ -317,6 +317,7 @@ struct Session {
     output: Option<JoinHandle<()>>,
     state: Arc<BridgeState>,
     ude_port: Option<u32>,
+    usbip_exe: std::path::PathBuf,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -344,7 +345,7 @@ impl Drop for Session {
             }
         }
         if let Some(port) = self.ude_port.take() {
-            if let Err(e) = crate::attach::detach(port) {
+            if let Err(e) = crate::attach::detach(&self.usbip_exe, port) {
                 self.state.error(e);
             }
         }
@@ -634,9 +635,14 @@ fn run_session(
             pid = format!("{:04X}", physical.product_id)
         ),
     );
+    let usbip_exe = crate::dependency_paths::Component::Usbip
+        .resolve(&cfg.usbip_directory)
+        .ok_or(crate::tr!(attach_cannot_find_usb_ip_win2_usbip_exe))?;
     let server = viiper::Viiper::start(&format!("127.0.0.1:{}", cfg.port))
         .ok_or(crate::tr!(bridge_could_not_start_the_usb_server_check))?;
-    crate::attach::cleanup_owned(cfg.port, server.bus_id(), || expired(started, limit, state))?;
+    crate::attach::cleanup_owned(&usbip_exe, cfg.port, server.bus_id(), || {
+        expired(started, limit, state)
+    })?;
     let pid = if physical.product_id == viiper::PID_DUALSENSE_EDGE && !cfg.edge_as_ds {
         viiper::PID_DUALSENSE_EDGE
     } else {
@@ -686,6 +692,7 @@ fn run_session(
         output: None,
         state: state.clone(),
         ude_port: None,
+        usbip_exe,
     };
     for report in &features {
         if !session.device.set_feature_report(report) {
@@ -747,11 +754,11 @@ fn run_session(
             )
         })?,
     );
-    session.ude_port = Some(
-        session
-            ._server
-            .attach_prepared(cfg.port, || expired(started, limit, state))?,
-    );
+    session.ude_port = Some(session._server.attach_prepared(
+        &session.usbip_exe,
+        cfg.port,
+        || expired(started, limit, state),
+    )?);
     let attached_at = Instant::now();
     progress.connected_for = Some(Duration::ZERO);
     let mut stable = false;

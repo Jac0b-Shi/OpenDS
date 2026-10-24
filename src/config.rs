@@ -107,6 +107,9 @@ pub struct Config {
     pub headphone_volume: u8,
     /// 空串表示自动选择；否则只连接指定物理 HID 路径。
     pub device_path: String,
+    /// Empty selects automatic discovery; otherwise use this installation directory.
+    pub usbip_directory: String,
+    pub hidhide_directory: String,
     pub monitor_sample_hz: u32,
     pub monitor_fps: u32,
     pub monitor_seconds: u32,
@@ -141,6 +144,8 @@ impl Default for Config {
             speaker_volume: 255,
             headphone_volume: 63,
             device_path: String::new(),
+            usbip_directory: String::new(),
+            hidhide_directory: String::new(),
             monitor_sample_hz: 100,
             monitor_fps: 60,
             monitor_seconds: 60,
@@ -290,6 +295,8 @@ impl Config {
                 "speaker_volume" => number!(speaker_volume),
                 "headphone_volume" => number!(headphone_volume),
                 "device_path" => cfg.device_path = value.to_owned(),
+                "usbip_directory" => cfg.usbip_directory = value.to_owned(),
+                "hidhide_directory" => cfg.hidhide_directory = value.to_owned(),
                 "monitor_sample_hz" => number!(monitor_sample_hz),
                 "monitor_fps" => number!(monitor_fps),
                 "monitor_seconds" => number!(monitor_seconds),
@@ -330,11 +337,21 @@ impl Config {
             speaker_volume,
             headphone_volume,
             device_path,
+            usbip_directory,
+            hidhide_directory,
             monitor_sample_hz,
             monitor_fps,
             monitor_seconds
         );
-        if self.device_path.contains(['\r', '\n']) || self.language.contains(['\r', '\n']) {
+        if [
+            &self.device_path,
+            &self.language,
+            &self.usbip_directory,
+            &self.hidhide_directory,
+        ]
+        .iter()
+        .any(|value| value.contains(['\r', '\n', '\0']))
+        {
             return Err(
                 crate::tr!(config_configuration_values_must_not_contain_line_breaks).into(),
             );
@@ -384,6 +401,42 @@ impl fmt::Display for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dependency_directories_round_trip_reset_and_reject_ini_injection() {
+        let path = std::env::temp_dir().join(format!(
+            "opends-directory-config-{}.ini",
+            std::process::id()
+        ));
+        let mut cfg = Config {
+            usbip_directory: r"D:\软件 空格\USB=ip".into(),
+            hidhide_directory: r"D:\软件\HidHide".into(),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.usbip_directory, cfg.usbip_directory);
+        assert_eq!(loaded.hidhide_directory, cfg.hidhide_directory);
+        for invalid in ["bad\nport=1", "bad\rport=1", "bad\0path"] {
+            cfg.usbip_directory = invalid.into();
+            assert!(cfg.save(&path).is_err());
+            assert_eq!(
+                Config::load(&path).unwrap().usbip_directory,
+                loaded.usbip_directory
+            );
+            cfg.usbip_directory.clear();
+            cfg.hidhide_directory = invalid.into();
+            assert!(cfg.save(&path).is_err());
+        }
+        cfg.hidhide_directory.clear();
+        cfg.save(&path).unwrap();
+        let reset = Config::load(&path).unwrap();
+        assert!(reset.usbip_directory.is_empty() && reset.hidhide_directory.is_empty());
+        assert!(Config::parse("[opends]\nport=3241")
+            .unwrap()
+            .usbip_directory
+            .is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn language_defaults_to_system_and_round_trips_unknown_preferences() {
         assert_eq!(Config::default().language, "auto");
