@@ -35,6 +35,8 @@ mod output;
 mod persistence;
 mod report;
 mod restart;
+mod shortcuts;
+mod shutdown;
 mod startup;
 mod theme_controls;
 mod theme_dialog;
@@ -55,6 +57,9 @@ extern "system" fn console_stop(kind: u32) -> i32 {
     }
     if let Ok(g) = CONSOLE_STATE.try_read() {
         if let Some(s) = g.as_ref() {
+            if matches!(kind, 5 | 6) {
+                shutdown::begin();
+            }
             s.stop.store(true, Ordering::Release);
         }
     }
@@ -270,10 +275,14 @@ fn main() {
         }
     }
     if let Err(e) = cli().and_then(|_| {
-        restart::launch_pending().map_err(|e| crate::tr!(language_restart_error, error = e))
+        if shutdown::ending() {
+            Ok(())
+        } else {
+            restart::launch_pending().map_err(|e| crate::tr!(language_restart_error, error = e))
+        }
     }) {
         eprintln!("OpenDS：{e}");
-        if gui {
+        if gui && !shutdown::ending() {
             appearance::initialize(
                 config::Config::load(&config::Config::path())
                     .map(|c| c.theme)

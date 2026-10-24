@@ -507,6 +507,23 @@ mod tests {
     }
 
     #[test]
+    fn full_bluetooth_preserves_battery_level_and_charge_status_for_virtual_usb() {
+        for battery in 0..=255u8 {
+            let mut bt = vec![0u8; 78];
+            bt[0] = 0x31;
+            bt[1] = 1;
+            bt[54] = battery;
+            let input = InputReport::new(bt).unwrap();
+            let usb = input.usb_payload().unwrap();
+            assert_eq!(usb[53], battery);
+            let source = input.parse().unwrap();
+            let forwarded = InputReport::new(usb.to_vec()).unwrap().parse().unwrap();
+            assert_eq!(forwarded.battery_level, source.battery_level);
+            assert_eq!(forwarded.battery_status, source.battery_status);
+        }
+    }
+
+    #[test]
     fn detect_modes() {
         assert_eq!(Mode::from_input_len(64), Some(Mode::Usb));
         assert_eq!(Mode::from_input_len(78), Some(Mode::Bluetooth));

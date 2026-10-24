@@ -1,6 +1,35 @@
 meta-language-code = zh-CN
 meta-language-name = 简体中文
 meta-schema-version = 1
+shortcut-desktop = 创建桌面快捷方式
+gui-diagnostics-failed = 无法启动后台诊断：{ $error }
+gui-diagnostics-worker-failed = 后台诊断失败，请刷新后重试。
+shortcut-start-menu = 创建开始菜单快捷方式
+shortcut-created = 已创建快捷方式：{ $path }
+shortcut-exists = 此位置已有文件，未覆盖：{ $path }
+shortcut-failed = 无法创建快捷方式：{ $error }
+bridge-connection-diagnostic = 连接诊断
+bridge-connection-resource-busy = 本次读取真实手柄特性时，Windows 返回过 170（请求的资源正在使用），随后连接失败。
+    最终错误：{ $error }
+    可能有其他程序同时访问物理手柄或改变其协议状态；这还不能确定具体是哪一个进程。
+    请退出游戏和其他手柄工具，按 PS 键重连，先建立稳定的 OpenDS 桥接，再重新打开游戏。
+bridge-connection-lost-immediately = 桥接连接后 { $milliseconds } 毫秒内，蓝牙手柄断开。
+    原始错误：{ $error }
+    可能原因包括其他程序访问物理手柄、蓝牙链路或供电异常、手柄输出冲突；仅凭此错误无法确定是哪一种。
+    请先退出游戏和其他手柄工具，按 PS 键重连手柄，先启动 OpenDS 并等待连接稳定，再打开游戏。部分游戏只在启动时识别完整反馈能力。
+bridge-connection-lost = 蓝牙连接在持续 { $seconds } 秒后中断。
+    原始错误：{ $error }
+    请检查手柄电量、蓝牙信号和其他手柄工具，按 PS 键重新连接。如果只在启动游戏时发生，请先退出游戏，建立桥接后再启动游戏。
+bridge-connection-setup-failed = 手柄桥接初始化失败。
+    原始错误：{ $error }
+    请检查蓝牙连接、驱动诊断和 HidHide 访问权限，退出游戏及其他手柄工具后重试。上面的原始错误是当前可用依据，程序占用仅是一种可能原因。
+gui-connection-interrupted = ● 蓝牙连接中断 · 等待重新连接
+gui-connection-stopped = ● 桥接已停止 · 请查看断线原因
+gui-connection-retrying = ● 桥接初始化失败 · 等待重试
+gui-connection-confirming = ● 已重新连接 · 正在确认连接稳定
+gui-connection-details = 查看断线原因
+gui-connection-issue-title = 连接中断
+gui-connection-recovery-heading = 连接异常 · 处理建议
 language-file-dialog-error = 无法打开语言文件选择窗口（{ $code }）。
 language-restart-dialog-error = 无法打开重启提示窗口（{ $code }）。
 
@@ -146,6 +175,9 @@ bridge-could-not-remove-virtual-device-check-the = 移除虚拟设备失败；�
 bridge-the-selected-bluetooth-dualsense-was-not-found = 未找到指定的蓝牙 DualSense；请检查连接和 HidHide 白名单。
 bridge-waiting-for-bluetooth-dualsense = 等待蓝牙 DualSense 连接…
 bridge-input-released-waiting-to-reconnect = 已释放输入，等待重新连接
+bridge-input-probe-timeout = 蓝牙设备可打开，但未收到有效按键输入；暂不隐藏或创建虚拟手柄。请确认蓝牙连接，并检查其他手柄软件是否正在接管。
+# Parameters: $seconds
+bridge-retry-backoff = 连续建链失败；将在 { $seconds } 秒后重试，减少设备反复插拔。若 Steam 正在后台运行，请检查其桌面布局和指南键组合设置。
 # Parameters: $pid
 bridge-physical-pid-creating-a-virtual-usb-device = 连接 PID={ $pid }，创建虚拟 USB 设备…
 # Parameters: $report

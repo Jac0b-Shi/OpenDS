@@ -5,6 +5,91 @@ use crate::{
     theme_dialog::{Request, TestAction},
 };
 impl App {
+    pub(super) fn test_responsiveness(&self) -> Result<(), String> {
+        use winapi::um::wingdi::*;
+        unsafe {
+            let hwnd = theme::hwnd(&self.window.handle);
+            let original_page = self.page.get();
+            let original_kind = appearance::palette().kind;
+            self.page.set(2);
+            self.layout();
+            for kind in [Kind::Light, Kind::Dark, Kind::Contrast] {
+                appearance::smoke_palette(kind);
+                for control in [
+                    &self.speaker.handle,
+                    &self.haptic_gain.handle,
+                    &self.port.handle,
+                    &self.buffer.handle,
+                ] {
+                    let edit = theme::hwnd(control);
+                    let mut rect: RECT = std::mem::zeroed();
+                    GetWindowRect(edit, &mut rect);
+                    let mut origin = POINT { x: 0, y: 0 };
+                    ClientToScreen(edit, &mut origin);
+                    let margin = origin.y - rect.top;
+                    let width = rect.right - rect.left;
+                    let height = rect.bottom - rect.top;
+                    let screen = GetDC(hwnd);
+                    let dc = CreateCompatibleDC(screen);
+                    let bitmap = CreateCompatibleBitmap(screen, width, height);
+                    let previous = SelectObject(dc, bitmap as _);
+                    SendMessageW(
+                        edit,
+                        WM_PRINT,
+                        dc as usize,
+                        (PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND) as isize,
+                    );
+                    let actual = GetPixel(dc, width / 2, (margin / 2).max(1));
+                    let expected = appearance::palette().surface;
+                    SelectObject(dc, previous);
+                    DeleteObject(bitmap as _);
+                    DeleteDC(dc);
+                    ReleaseDC(hwnd, screen);
+                    if margin > 2 && actual != expected {
+                        return Err(format!("Edit margin color differs from surface: {kind:?}, actual={actual:06x}, expected={expected:06x}"));
+                    }
+                }
+            }
+            appearance::smoke_palette(original_kind);
+            // Exercise the real button command path, including layout, repaint
+            // and cached status updates. Device access is excluded in smoke mode.
+            let mut samples = Vec::new();
+            let mut commands = Vec::new();
+            for _ in 0..10 {
+                for button in &self.nav {
+                    let started = std::time::Instant::now();
+                    SendMessageW(
+                        hwnd,
+                        WM_COMMAND,
+                        (BN_CLICKED as usize) << 16,
+                        theme::hwnd(&button.handle) as isize,
+                    );
+                    commands.push(started.elapsed().as_micros());
+                    RedrawWindow(
+                        hwnd,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                    );
+                    samples.push(started.elapsed().as_micros());
+                }
+            }
+            samples.sort_unstable();
+            commands.sort_unstable();
+            let command_p95 = commands[commands.len() * 95 / 100];
+            let p95 = samples[samples.len() * 95 / 100];
+            let maximum = samples[samples.len() - 1];
+            println!("UI responsiveness: command_p95_us={command_p95}, page_switch_p95_us={p95}, max_us={maximum}, native_edit_backgrounds=passed");
+            // Gate event handling independently of the runner's GPU/DWM speed;
+            // total frame latency remains reported for local comparison.
+            if command_p95 > 250_000 {
+                return Err("Page commands exceeded the 250 ms latency budget".into());
+            }
+            self.page.set(original_page);
+            self.layout();
+            Ok(())
+        }
+    }
     pub(super) fn test_themes(&self) -> Result<(), String> {
         unsafe {
             #[link(name = "user32")]

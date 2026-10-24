@@ -72,6 +72,14 @@ pub fn inspect(hidhide_owned_healthy: bool) -> Status {
     }
 }
 impl Status {
+    pub fn hidhide_available(&self) -> bool {
+        self.hidhide != HidHideStatus::Unavailable
+    }
+    pub fn confirm_hidhide_owned(&mut self, healthy: bool) {
+        if healthy {
+            self.hidhide = HidHideStatus::InUse;
+        }
+    }
     pub fn summary(&self) -> String {
         crate::tr!(
             dependencies_usb_ip_win2_ude_hidhide_libviiper_opus,

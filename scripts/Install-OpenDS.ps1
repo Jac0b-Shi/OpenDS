@@ -1,6 +1,7 @@
 [CmdletBinding()]
-param([string]$Destination = (Join-Path $env:LOCALAPPDATA 'Programs\OpenDS'), [switch]$NoShortcut, [switch]$Startup)
+param([string]$Destination = (Join-Path $env:LOCALAPPDATA 'Programs\OpenDS'), [switch]$StartMenuShortcut, [switch]$NoShortcut, [switch]$Startup)
 $ErrorActionPreference = 'Stop'
+if ($StartMenuShortcut -and $NoShortcut) { throw 'Choose either -StartMenuShortcut or -NoShortcut.' }
 $source = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 if ($source.TrimEnd('\') -ieq $destinationPath.TrimEnd('\')) { throw 'Choose an installation folder different from the extracted package.' }
@@ -14,7 +15,7 @@ foreach ($file in @('opends.exe','libVIIPER.dll','libopus-0.dll','viiper-build-i
 foreach ($folder in @('scripts','licenses','docs')) {
     Copy-Item -LiteralPath (Join-Path $source $folder) -Destination $destinationPath -Recurse -Force
 }
-if (!$NoShortcut) {
+if ($StartMenuShortcut) {
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'OpenDS.lnk'
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($menu)
     $shortcut.TargetPath = Join-Path $destinationPath 'opends.exe'
@@ -22,7 +23,8 @@ if (!$NoShortcut) {
     $shortcut.IconLocation = $shortcut.TargetPath
     $shortcut.Save()
 }
-Write-Host "Installed: $destinationPath. Open OpenDS from the Start menu."
+Write-Host "Installed: $destinationPath. Launch opends.exe from this folder."
+if ($StartMenuShortcut) { Write-Host 'Created the requested Start menu shortcut.' }
 Write-Host 'Drivers are installed separately from the Diagnostics page. Existing configuration is preserved.'
 if ($Startup) {
     $startupProcess = Start-Process -FilePath (Join-Path $destinationPath 'opends.exe') -ArgumentList 'startup','enable' -WindowStyle Hidden -Wait -PassThru

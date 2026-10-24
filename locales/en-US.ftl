@@ -1,6 +1,35 @@
 meta-language-code = en-US
 meta-language-name = English
 meta-schema-version = 1
+shortcut-desktop = Create desktop shortcut
+gui-diagnostics-failed = Could not start background diagnostics: { $error }
+gui-diagnostics-worker-failed = Background diagnostics failed. Refresh to try again.
+shortcut-start-menu = Create Start menu shortcut
+shortcut-created = Shortcut created: { $path }
+shortcut-exists = A file already exists at { $path }. It has not been replaced.
+shortcut-failed = Could not create the shortcut: { $error }
+bridge-connection-diagnostic = Connection diagnostic
+bridge-connection-resource-busy = Windows returned error 170 (resource in use) while reading the physical controller's feature reports, and this connection attempt then failed.
+    Final error: { $error }
+    Another program may already be accessing the physical controller or changing its protocol state. This does not identify the responsible process.
+    Exit the game and other controller tools, reconnect with PS, and establish a stable OpenDS bridge before restarting the game.
+bridge-connection-lost-immediately = The Bluetooth controller disconnected { $milliseconds } ms after the bridge connected.
+    Error: { $error }
+    Possible causes include another application accessing the physical controller, a Bluetooth link or power problem, or conflicting controller output. This error alone does not identify the cause.
+    Exit the game and other controller tools, reconnect the controller, and start OpenDS first. Wait for a stable connection before starting the game. Some games enable full feedback only when the controller is present at launch.
+bridge-connection-lost = The Bluetooth connection was lost after { $seconds } seconds.
+    Error: { $error }
+    Check the controller battery, Bluetooth signal, and other controller tools. Press PS to reconnect. If the problem occurs when starting a game, exit it and establish the bridge before restarting the game.
+bridge-connection-setup-failed = The controller bridge could not be initialized.
+    Error: { $error }
+    Check the Bluetooth connection, driver diagnostics and HidHide access. Close games and other controller tools before retrying. The original error above is the available evidence; application conflicts are only a possible cause.
+gui-connection-interrupted = ● Bluetooth disconnected · Waiting to reconnect
+gui-connection-stopped = ● Bridge stopped · See connection details
+gui-connection-retrying = ● Bridge initialization failed · Waiting to retry
+gui-connection-confirming = ● Reconnected · Checking connection stability
+gui-connection-details = Connection details
+gui-connection-issue-title = Connection interrupted
+gui-connection-recovery-heading = Connection issue · Recovery advice
 language-file-dialog-error = Unable to open the language file dialog ({ $code }).
 language-restart-dialog-error = Unable to open the restart dialog ({ $code }).
 
@@ -146,6 +175,9 @@ bridge-could-not-remove-virtual-device-check-the = Could not remove virtual devi
 bridge-the-selected-bluetooth-dualsense-was-not-found = The selected Bluetooth DualSense was not found. Check its connection and HidHide whitelist.
 bridge-waiting-for-bluetooth-dualsense = Waiting for Bluetooth DualSense…
 bridge-input-released-waiting-to-reconnect = Input released; waiting to reconnect
+bridge-input-probe-timeout = The Bluetooth device opened but did not provide valid controller input. Hiding and virtual device creation have been deferred. Check the Bluetooth connection and whether another controller application is taking control.
+# Parameters: $seconds
+bridge-retry-backoff = Repeated connection failures; retrying in { $seconds } seconds to reduce device reconnections. If Steam is running, check its Desktop Layout and Guide Button Chord settings.
 # Parameters: $pid
 bridge-physical-pid-creating-a-virtual-usb-device = Physical PID={ $pid }. Creating a virtual USB device…
 # Parameters: $report

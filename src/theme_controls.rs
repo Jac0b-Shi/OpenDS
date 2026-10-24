@@ -316,29 +316,33 @@ unsafe extern "system" fn control_proc(
     if msg == WM_ERASEBKGND && (cb || push || kind == 2 || kind == 4) {
         return 1;
     }
-    if msg == WM_NCPAINT && (kind == 4 || kind == 3) {
+    if (msg == WM_NCPAINT || (msg == WM_PRINT && l & PRF_NONCLIENT as isize != 0))
+        && (kind == 4 || kind == 3)
+    {
+        let printing = msg == WM_PRINT;
+        if printing {
+            DefSubclassProc(hwnd, msg, w, l);
+        }
         let mut wr: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut wr);
         let mut cr: RECT = std::mem::zeroed();
         GetClientRect(hwnd, &mut cr);
         let mut point = POINT { x: 0, y: 0 };
         ClientToScreen(hwnd, &mut point);
-        let dc = GetWindowDC(hwnd);
+        let dc = if printing {
+            w as HDC
+        } else {
+            GetWindowDC(hwnd)
+        };
         let width = wr.right - wr.left;
         let height = wr.bottom - wr.top;
         let top = point.y - wr.top;
         let left = point.x - wr.left;
         let bottom = top + cr.bottom;
         let right = left + cr.right;
-        let color = if kind == 3 {
-            if GetFocus() == hwnd {
-                a::palette().accent
-            } else {
-                a::palette().line
-            }
-        } else {
-            a::palette().surface
-        };
+        // NWG centers single-line edit text by reserving nonclient top/bottom
+        // margins. Those margins are background, not a thick border.
+        let color = a::palette().surface;
         for r in [
             RECT {
                 left: 0,
@@ -369,8 +373,26 @@ unsafe extern "system" fn control_proc(
                 fill(dc, &r, color);
             }
         }
-        ReleaseDC(hwnd, dc);
         if kind == 3 {
+            border(
+                dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width,
+                    bottom: height,
+                },
+                if GetFocus() == hwnd {
+                    a::palette().accent
+                } else {
+                    a::palette().line
+                },
+            );
+        }
+        if !printing {
+            ReleaseDC(hwnd, dc);
+        }
+        if kind == 3 && !printing {
             scroll_bar(hwnd);
         }
         return 0;

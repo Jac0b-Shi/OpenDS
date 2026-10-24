@@ -115,7 +115,14 @@ fn smoke_dpi() -> Option<u32> {
 }
 pub fn window_dpi(hwnd: HWND) -> u32 {
     smoke_dpi()
-        .unwrap_or_else(|| unsafe { GetDpiForWindow(hwnd) })
+        .unwrap_or_else(|| unsafe {
+            let dpi = GetDpiForWindow(hwnd);
+            if dpi == 0 {
+                GetDpiForSystem()
+            } else {
+                dpi
+            }
+        })
         .max(96)
 }
 pub fn system_dpi() -> u32 {

@@ -645,7 +645,7 @@ impl Drop for DrawClock {
     fn drop(&mut self) {
         self.stop.store(true, Release);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            let _ = crate::shutdown::join(t);
         }
     }
 }
@@ -1051,9 +1051,9 @@ impl ViewState {
     unsafe fn timer(&mut self) {
         let top = GetAncestor(self.root, GA_ROOT);
         let visible = IsWindowVisible(self.root) != 0 && IsIconic(top) == 0;
-        if !visible {
-            self.renderer = None;
-        }
+        // Keep the render target attached to its HWND while the page is hidden.
+        // Recreating Direct2D on every navigation blocks the UI on driver setup.
+        // No drawing clock runs while hidden; host destruction still releases it.
         let wanted = visible && self.hub.active.load(Acquire);
         if self
             .clock

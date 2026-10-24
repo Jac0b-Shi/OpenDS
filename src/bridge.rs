@@ -17,6 +17,41 @@ use std::{
     time::{Duration, Instant},
 };
 
+const STABLE_CONNECTION: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug)]
+pub struct ConnectionIssue {
+    pub error: String,
+    pub connected_for: Option<Duration>,
+    pub resource_busy: bool,
+}
+impl ConnectionIssue {
+    pub fn detail(&self) -> String {
+        if self.resource_busy {
+            return crate::tr!(bridge_connection_resource_busy, error = self.error.as_str());
+        }
+        match self.connected_for {
+            Some(age) if age < STABLE_CONNECTION => crate::tr!(
+                bridge_connection_lost_immediately,
+                milliseconds = crate::i18n_arg!(age.as_millis()),
+                error = self.error.as_str()
+            ),
+            Some(age) => crate::tr!(
+                bridge_connection_lost,
+                seconds = crate::i18n_arg!(age.as_secs()),
+                error = self.error.as_str()
+            ),
+            None => crate::tr!(bridge_connection_setup_failed, error = self.error.as_str()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionProgress {
+    connected_for: Option<Duration>,
+    resource_busy: bool,
+}
+
 #[derive(Default)]
 pub struct BridgeState {
     pub monitor: Arc<crate::monitor::Monitor>,
@@ -33,9 +68,33 @@ pub struct BridgeState {
     pub output_callbacks: AtomicU64,
     pub reconnects: AtomicU64,
     pub last_error: Mutex<Option<String>>,
+    pub connection_issue: Mutex<Option<ConnectionIssue>>,
     logs: Mutex<VecDeque<String>>,
 }
 impl BridgeState {
+    fn session_failed(&self, error: String, connected_for: Option<Duration>, resource_busy: bool) {
+        let issue = ConnectionIssue {
+            error,
+            connected_for,
+            resource_busy,
+        };
+        self.log_message(
+            crate::i18n::MessageId::bridge_connection_diagnostic,
+            issue.detail(),
+        );
+        if let Ok(mut slot) = self.connection_issue.lock() {
+            *slot = Some(issue);
+        }
+    }
+    fn confirm_stable_connection(&self, age: Duration) -> bool {
+        if age < STABLE_CONNECTION {
+            return false;
+        }
+        if let Ok(mut slot) = self.connection_issue.lock() {
+            slot.take();
+        }
+        true
+    }
     pub fn log_message(&self, id: crate::i18n::MessageId, message: impl Into<String>) {
         self.log(format!("[{}] {}", id.key(), message.into()));
     }
@@ -48,6 +107,7 @@ impl BridgeState {
     pub fn log(&self, s: impl Into<String>) {
         let s = crate::logging::bounded(&s.into());
         eprintln!("{s}");
+        #[cfg(not(test))]
         crate::logging::record(&s);
         if let Ok(mut l) = self.logs.lock() {
             if l.len() >= 200 {
@@ -155,8 +215,14 @@ impl BridgeController {
     }
     pub fn wait(&mut self) {
         if let Some(h) = self.worker.take() {
-            let _ = h.join();
+            let _ = crate::shutdown::join(h);
         }
+    }
+    pub fn test_stalled_shutdown_worker(&mut self) {
+        // Reachable only from the isolated ui-smoke-test branch. No HID/DLL use.
+        self.worker = Some(std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10))
+        }));
     }
 }
 impl Drop for BridgeController {
@@ -254,6 +320,11 @@ struct Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        // During OS shutdown, release hiding before potentially slow DLL/driver
+        // teardown. Normal disconnects retain the usual virtual-then-physical order.
+        if crate::shutdown::ending() {
+            self.restore_hiding();
+        }
         let _ = self.device.send_raw_report(&report::neutral_usb_report());
         if !self.device.clear_callbacks() {
             self.state.log_message(
@@ -268,7 +339,7 @@ impl Drop for Session {
         }
         self.output_running.store(false, Ordering::Release);
         if let Some(h) = self.output.take() {
-            if h.join().is_err() {
+            if matches!(crate::shutdown::join(h), Some(Err(_))) {
                 self.state.error_message(crate::i18n::MessageId::bridge_output_thread_failed_unexpectedly_stopping_the_session, crate::tr!(bridge_output_thread_failed_unexpectedly_stopping_the_session).into());
             }
         }
@@ -283,6 +354,11 @@ impl Drop for Session {
                 crate::tr!(bridge_could_not_remove_virtual_device_check_the).into(),
             );
         }
+        self.restore_hiding();
+    }
+}
+impl Session {
+    fn restore_hiding(&mut self) {
         if let Some(mut h) = self.hider.take() {
             if let Err(e) = h.restore() {
                 self.state.error(e);
@@ -295,18 +371,99 @@ impl Drop for Session {
 fn expired(start: Instant, limit: Option<Duration>, state: &BridgeState) -> bool {
     state.stop.load(Ordering::Acquire) || limit.is_some_and(|d| start.elapsed() >= d)
 }
-fn wait_retry(start: Instant, limit: Option<Duration>, state: &BridgeState) {
-    for _ in 0..10 {
+fn wait_retry(start: Instant, limit: Option<Duration>, state: &BridgeState, delay: Duration) {
+    let retry_at = Instant::now() + delay;
+    while Instant::now() < retry_at {
         if expired(start, limit, state) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(
+            retry_at
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50)),
+        );
+    }
+}
+
+#[derive(Default)]
+struct RetryBackoff {
+    failures: u32,
+}
+impl RetryBackoff {
+    fn failed(&mut self, connected_for: Option<Duration>) -> Duration {
+        if connected_for.is_some_and(|age| age >= STABLE_CONNECTION) {
+            self.failures = 0;
+        }
+        // Keep ordinary reconnects responsive; slow down only repeated failures.
+        const DELAYS_MS: [u64; 8] = [250, 500, 1000, 2000, 4000, 8000, 16000, 30000];
+        let milliseconds = DELAYS_MS[(self.failures as usize).min(DELAYS_MS.len() - 1)];
+        self.failures = self.failures.saturating_add(1);
+        Duration::from_millis(milliseconds)
+    }
+}
+
+// A successful open/feature query does not prove that the BT input stream is live.
+// No hiding, virtual USB device or output report is created by this probe.
+fn probe_input(
+    mut read: impl FnMut() -> std::io::Result<Option<Vec<u8>>>,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<[u8; 64]>, String> {
+    let until = Instant::now() + Duration::from_millis(750);
+    let mut valid = 0;
+    while !cancelled() && Instant::now() < until {
+        let data = read().map_err(|e| {
+            crate::tr!(
+                bridge_could_not_read_bluetooth_controller,
+                error = crate::i18n_arg!(e)
+            )
+        })?;
+        let Some(data) = data else { continue };
+        if data.first() == Some(&0x31) && !report::verify_input_crc(&data) {
+            valid = 0;
+            continue;
+        }
+        let Some(input) = InputReport::new(data) else {
+            valid = 0;
+            continue;
+        };
+        if let Some(usb) = input.usb_payload() {
+            valid += 1;
+            if valid >= 3 {
+                return Ok(Some(usb));
+            }
+        }
+    }
+    if cancelled() {
+        Ok(None)
+    } else {
+        Err(crate::tr!(bridge_input_probe_timeout).into())
+    }
+}
+
+// A PS press used to wake/connect the physical pad must not arrive on a newly
+// enumerated virtual pad as a fresh Guide chord. Only this initial press is held.
+struct InitialGuide {
+    ready: bool,
+    released_at: Option<Duration>,
+}
+impl InitialGuide {
+    fn apply(&mut self, usb: &mut [u8; 64], age: Duration) {
+        if !self.ready {
+            if usb[10] & 1 != 0 {
+                self.released_at = None;
+            } else {
+                let since = *self.released_at.get_or_insert(age);
+                self.ready = age.saturating_sub(since) >= Duration::from_millis(120);
+            }
+            usb[10] &= !1;
+        }
     }
 }
 
 fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result<(), String> {
     let started = Instant::now();
     let mut waiting = false;
+    let mut backoff = RetryBackoff::default();
     while !expired(started, limit, state) {
         // 上一次恢复失败时绝不覆盖原日志继续隐藏。
         hidhide::recover_if_needed()?;
@@ -328,20 +485,36 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
                 );
                 waiting = true;
             }
-            wait_retry(started, limit, state);
+            wait_retry(started, limit, state, Duration::from_secs(1));
             continue;
         };
         if expired(started, limit, state) {
             break;
         }
         waiting = false;
-        let result = run_session(&cfg, Arc::new(physical), state, started, limit);
+        let mut progress = SessionProgress::default();
+        let result = run_session(
+            &cfg,
+            Arc::new(physical),
+            state,
+            started,
+            limit,
+            &mut progress,
+        );
         state.connected.store(false, Ordering::Release);
         state.monitor.connected.store(false, Ordering::Release);
         state.monitor.reset();
         match result {
             Ok(()) => break,
             Err(e) => {
+                if expired(started, limit, state) {
+                    break;
+                }
+                // Cleanup time is not evidence of a stable input connection.
+                let age = progress.connected_for;
+                if !expired(started, limit, state) {
+                    state.session_failed(e.clone(), age, progress.resource_busy);
+                }
                 if !cfg.reconnect {
                     return Err(e);
                 }
@@ -352,7 +525,15 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
                     crate::i18n::MessageId::bridge_input_released_waiting_to_reconnect,
                     crate::tr!(bridge_input_released_waiting_to_reconnect),
                 );
-                wait_retry(started, limit, state);
+                let delay = backoff.failed(age);
+                state.log_message(
+                    crate::i18n::MessageId::bridge_retry_backoff,
+                    crate::tr!(
+                        bridge_retry_backoff,
+                        seconds = crate::i18n_arg!(delay.as_secs_f64())
+                    ),
+                );
+                wait_retry(started, limit, state, delay);
             }
         }
     }
@@ -365,14 +546,16 @@ fn run_session(
     state: &Arc<BridgeState>,
     started: Instant,
     limit: Option<Duration>,
+    progress: &mut SessionProgress,
 ) -> Result<(), String> {
-    state.log_message(
-        crate::i18n::MessageId::bridge_physical_pid_creating_a_virtual_usb_device,
-        crate::tr!(
-            bridge_physical_pid_creating_a_virtual_usb_device,
-            pid = format!("{:04X}", physical.product_id)
-        ),
-    );
+    if probe_input(
+        || physical.read_result(20),
+        || expired(started, limit, state),
+    )?
+    .is_none()
+    {
+        return Ok(());
+    }
     let mut features = Vec::new();
     for (id, length) in [(0x05, 41), (0x09, 20), (0x20, 64)] {
         let mut report = None;
@@ -394,14 +577,17 @@ fn run_session(
                         ),
                     );
                 }
-                Err(e) => state.log_message(
-                    crate::i18n::MessageId::bridge_could_not_read_feature_0x_retrying,
-                    crate::tr!(
-                        bridge_could_not_read_feature_0x_retrying,
-                        report = format!("{:02X}", id),
-                        error = crate::i18n_arg!(e)
-                    ),
-                ),
+                Err(e) => {
+                    progress.resource_busy |= e.raw_os_error() == Some(170);
+                    state.log_message(
+                        crate::i18n::MessageId::bridge_could_not_read_feature_0x_retrying,
+                        crate::tr!(
+                            bridge_could_not_read_feature_0x_retrying,
+                            report = format!("{:02X}", id),
+                            error = crate::i18n_arg!(e)
+                        ),
+                    );
+                }
             }
         }
         features.push(report.ok_or_else(|| {
@@ -418,6 +604,36 @@ fn run_session(
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(":");
+    // Enable and validate full input before causing any device-topology changes.
+    let mut enable = [0u8; 48];
+    enable[0] = 2;
+    if let Some(r) = crate::output::usb_to_bluetooth(&enable, 0) {
+        physical.write_result(&r, 200).map_err(|e| {
+            crate::tr!(
+                bridge_could_not_enable_full_input_mode,
+                error = crate::i18n_arg!(e)
+            )
+        })?;
+    }
+    if probe_input(
+        || physical.read_result(20),
+        || expired(started, limit, state),
+    )?
+    .is_none()
+    {
+        return Ok(());
+    }
+    let mut guide = InitialGuide {
+        ready: false,
+        released_at: None,
+    };
+    state.log_message(
+        crate::i18n::MessageId::bridge_physical_pid_creating_a_virtual_usb_device,
+        crate::tr!(
+            bridge_physical_pid_creating_a_virtual_usb_device,
+            pid = format!("{:04X}", physical.product_id)
+        ),
+    );
     let server = viiper::Viiper::start(&format!("127.0.0.1:{}", cfg.port))
         .ok_or(crate::tr!(bridge_could_not_start_the_usb_server_check))?;
     crate::attach::cleanup_owned(cfg.port, server.bus_id(), || expired(started, limit, state))?;
@@ -496,17 +712,6 @@ fn run_session(
     if expired(started, limit, state) {
         return Ok(());
     }
-    // 主动切到完整输入模式；即使固件暂未切换，兼容报告也按真实布局转换。
-    let mut enable = [0u8; 48];
-    enable[0] = 2;
-    if let Some(r) = crate::output::usb_to_bluetooth(&enable, 0) {
-        physical.write_result(&r, 200).map_err(|e| {
-            crate::tr!(
-                bridge_could_not_enable_full_input_mode,
-                error = crate::i18n_arg!(e)
-            )
-        })?;
-    }
     {
         let mut g = CALLBACKS
             .write()
@@ -547,6 +752,9 @@ fn run_session(
             ._server
             .attach_prepared(cfg.port, || expired(started, limit, state))?,
     );
+    let attached_at = Instant::now();
+    progress.connected_for = Some(Duration::ZERO);
+    let mut stable = false;
     state.connected.store(true, Ordering::Release);
     state.monitor.reset();
     state.monitor.connected.store(true, Ordering::Release);
@@ -684,12 +892,17 @@ fn run_session(
                         .headset
                         .store(s.connection & 1 != 0, Ordering::Relaxed);
                 }
-                if let Some(usb) = report.usb_payload() {
+                if let Some(mut usb) = report.usb_payload() {
+                    guide.apply(&mut usb, attached_at.elapsed());
                     if !session.device.send_raw_report(&usb) {
                         return Err(crate::tr!(bridge_could_not_submit_virtual_device_input).into());
                     }
                     state.frames_out.fetch_add(1, Ordering::Relaxed);
                     last_valid = Instant::now();
+                    progress.connected_for = Some(attached_at.elapsed());
+                    if !stable {
+                        stable = state.confirm_stable_connection(attached_at.elapsed());
+                    }
                 } else {
                     state.invalid_frames.fetch_add(1, Ordering::Relaxed);
                 }
@@ -780,6 +993,173 @@ fn run_session(
 mod tests {
     use super::*;
     static CALLBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[test]
+    fn brief_failures_back_off_but_a_stable_session_resets_retry_delay() {
+        let mut retry = RetryBackoff::default();
+        let delays: Vec<_> = (0..10).map(|_| retry.failed(None).as_millis()).collect();
+        assert_eq!(
+            delays,
+            [250, 500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]
+        );
+        assert_eq!(retry.failed(Some(Duration::from_secs(4))).as_secs(), 30);
+        assert_eq!(retry.failed(Some(STABLE_CONNECTION)).as_millis(), 250);
+        assert_eq!(retry.failed(None).as_millis(), 500);
+    }
+    #[test]
+    fn retry_can_be_cancelled_without_waiting_for_the_backoff() {
+        let state = BridgeState::default();
+        state.stop.store(true, Ordering::Release);
+        let now = Instant::now();
+        wait_retry(now, None, &state, Duration::from_secs(30));
+        assert!(now.elapsed() < Duration::from_millis(200));
+        wait_retry(
+            now,
+            Some(Duration::ZERO),
+            &BridgeState::default(),
+            Duration::from_secs(30),
+        );
+        assert!(now.elapsed() < Duration::from_millis(200));
+    }
+    #[test]
+    fn input_probe_requires_real_input_and_preserves_disconnect_errors() {
+        let mut reads = 0;
+        let input = report::neutral_usb_report().to_vec();
+        let result = probe_input(
+            || {
+                reads += 1;
+                Ok(if reads == 1 {
+                    None
+                } else {
+                    Some(input.clone())
+                })
+            },
+            || false,
+        )
+        .unwrap();
+        assert!(result.is_some());
+        assert_eq!(reads, 4);
+        assert!(
+            probe_input(|| Err(std::io::Error::from_raw_os_error(1167)), || false)
+                .unwrap_err()
+                .contains("1167")
+        );
+        assert!(
+            probe_input(|| panic!("cancelled probe must not read"), || true)
+                .unwrap()
+                .is_none()
+        );
+        let mut reads = 0;
+        let result = probe_input(
+            || {
+                reads += 1;
+                if reads < 4 {
+                    Ok(Some(vec![0; 78]))
+                } else {
+                    Err(std::io::Error::from_raw_os_error(1167))
+                }
+            },
+            || false,
+        );
+        assert!(result.is_err());
+        assert_eq!(reads, 4);
+    }
+    #[test]
+    fn connection_ps_press_is_released_before_subsequent_guide_chords_are_forwarded() {
+        let mut gate = InitialGuide {
+            ready: false,
+            released_at: None,
+        };
+        let mut usb = report::neutral_usb_report();
+        usb[8] |= report::buttons::CROSS;
+        usb[10] = 0b111;
+        let other = usb;
+        for _ in 0..4 {
+            usb = other;
+            gate.apply(&mut usb, Duration::from_millis(10));
+            assert_eq!(usb[10], 0b110);
+            assert_eq!(&usb[..10], &other[..10]);
+            assert_eq!(&usb[11..], &other[11..]);
+        }
+        usb[10] = 0;
+        gate.apply(&mut usb, Duration::from_millis(20));
+        gate.apply(&mut usb, Duration::from_millis(140));
+        usb[10] = 1;
+        gate.apply(&mut usb, Duration::from_millis(150));
+        assert_eq!(usb[10], 1);
+        assert!(gate.ready);
+    }
+    #[test]
+    fn audio_only_and_corrupt_reports_cannot_pass_the_connection_probe() {
+        let mut input = vec![0u8; 78];
+        input[0] = 0x31;
+        let crc = report::bt_input_crc32(&input[..74]);
+        input[74..].copy_from_slice(&crc.to_le_bytes());
+        let mut audio = input.clone();
+        audio[1] = 2;
+        let crc = report::bt_input_crc32(&audio[..74]);
+        audio[74..].copy_from_slice(&crc.to_le_bytes());
+        let mut corrupt = input.clone();
+        corrupt[74] ^= 1;
+        let mut reports = [
+            audio.clone(),
+            audio,
+            input.clone(),
+            corrupt,
+            input.clone(),
+            input.clone(),
+            input,
+        ]
+        .into_iter();
+        assert!(probe_input(
+            || Ok(Some(reports.next().expect(
+                "probe should finish after three valid input reports"
+            ))),
+            || false
+        )
+        .unwrap()
+        .is_some());
+        assert!(reports.next().is_none());
+    }
+    #[test]
+    fn reconnect_warning_survives_brief_reconnect_without_becoming_a_fatal_error() {
+        let state = BridgeState::default();
+        state.session_failed(
+            "device disconnected (os error 1167)".into(),
+            Some(Duration::from_millis(300)),
+            false,
+        );
+        assert!(state.last_error.lock().unwrap().is_none());
+        assert!(state
+            .connection_issue
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .detail()
+            .contains("1167"));
+        state.connected.store(true, Ordering::Release);
+        assert!(!state.confirm_stable_connection(Duration::from_millis(4999)));
+        assert!(state.connection_issue.lock().unwrap().is_some());
+        assert!(state.confirm_stable_connection(STABLE_CONNECTION));
+        assert!(state.connection_issue.lock().unwrap().is_none());
+        state.session_failed("feature read failed".into(), None, true);
+        assert!(state
+            .connection_issue
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .detail()
+            .contains("170"));
+        assert!(state
+            .connection_issue
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .connected_for
+            .is_none());
+    }
     #[test]
     fn batched_usb_iso_pcm_and_haptics_are_accepted_instead_of_silently_dropped() {
         let _lock = CALLBACK_TEST_LOCK.lock().unwrap();

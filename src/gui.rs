@@ -4,6 +4,8 @@ use crate::{
     config::{CloseAction, Config, ThemeMode},
     gui_theme as theme,
 };
+#[path = "gui_diagnostics.rs"]
+mod diagnostics;
 #[path = "theme_validation.rs"]
 mod theme_validation;
 use native_windows_gui as nwg;
@@ -35,6 +37,9 @@ struct Controls {
     exit_menu: nwg::MenuItem,
     start: nwg::Button,
     stop: nwg::Button,
+    connection_details: nwg::Button,
+    desktop_shortcut: nwg::Button,
+    menu_shortcut: nwg::Button,
     save: nwg::Button,
     refresh: nwg::Button,
     restore: nwg::Button,
@@ -100,7 +105,12 @@ struct App {
     last_logs: RefCell<String>,
     smoke_deadline: Cell<Option<std::time::Instant>>,
     dependency_attention: Cell<bool>,
+    connection_issue_visible: Cell<bool>,
     dependency_check: Cell<std::time::Instant>,
+    diagnostics: RefCell<diagnostics::Diagnostics>,
+    hidhide_available: Cell<bool>,
+    initial_diagnostics: Cell<bool>,
+    smoke: bool,
     installation: RefCell<Option<crate::dependencies::Installation>>,
     monitor_view: RefCell<Option<crate::monitor_view::MonitorView>>,
     audio_test_view: RefCell<Option<crate::audio_test_view::Dialog>>,
@@ -170,7 +180,12 @@ impl App {
             last_logs: RefCell::new(String::new()),
             smoke_deadline: Cell::new(None),
             dependency_attention: Cell::new(false),
+            connection_issue_visible: Cell::new(false),
             dependency_check: Cell::new(std::time::Instant::now()),
+            diagnostics: RefCell::new(diagnostics::Diagnostics::default()),
+            hidhide_available: Cell::new(false),
+            initial_diagnostics: Cell::new(true),
+            smoke,
             installation: RefCell::new(None),
             monitor_view: RefCell::new(None),
             audio_test_view: RefCell::new(None),
@@ -238,6 +253,9 @@ impl App {
             }
             button!(start, crate::tr!(gui_start_bridge));
             button!(stop, crate::tr!(gui_stop));
+            button!(connection_details, crate::tr!(gui_connection_details));
+            button!(desktop_shortcut, crate::tr!(shortcut_desktop));
+            button!(menu_shortcut, crate::tr!(shortcut_start_menu));
             button!(save, crate::tr!(gui_save_settings));
             button!(refresh, crate::tr!(gui_refresh_devices));
             button!(audio_test, crate::tr!(gui_microphone_test));
@@ -513,15 +531,9 @@ impl App {
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_BORDER as isize));
         }
+        a.apply_devices(Vec::new());
         a.refresh();
         a.refresh_languages();
-        if !crate::dependencies::ready() {
-            a.page.set(4);
-            a.controller.borrow().state.log_message(
-                crate::i18n::MessageId::gui_first_install_the_missing_drivers_on_this,
-                crate::tr!(gui_first_install_the_missing_drivers_on_this),
-            );
-        }
         a.layout();
         if let Some(e) = error {
             a.controller.borrow().state.error(e);
@@ -536,6 +548,9 @@ impl App {
         vec![
             &self.start.handle,
             &self.stop.handle,
+            &self.connection_details.handle,
+            &self.desktop_shortcut.handle,
+            &self.menu_shortcut.handle,
             &self.save.handle,
             &self.refresh.handle,
             &self.restore.handle,
@@ -625,13 +640,11 @@ impl App {
                 page == 1,
             );
         }
-        for control in self.all() {
-            unsafe {
-                ShowWindow(theme::hwnd(control), SW_HIDE);
-            }
-        }
-        let put =
-            |control: &nwg::ControlHandle, x, y, w, h| theme::place(control, x, y, w, h, dpi, true);
+        let mut visible = Vec::new();
+        let mut put = |control: &nwg::ControlHandle, x, y, w, h| {
+            visible.push(theme::hwnd(control));
+            theme::place(control, x, y, w, h, dpi, true);
+        };
         for (i, b) in self.nav.iter().enumerate() {
             put(&b.handle, 16, 156 + i as i32 * 54, 176, 42);
         }
@@ -642,6 +655,9 @@ impl App {
                 put(&self.status.handle, x + 28, 199, cw - 56, 24);
                 put(&self.start.handle, x + 28, 240, 128, 36);
                 put(&self.stop.handle, x + 168, 240, 88, 36);
+                if self.connection_issue_visible.get() {
+                    put(&self.connection_details.handle, x + 272, 240, 156, 36);
+                }
                 let card = (cw - 32) / 3;
                 put(&self.count_input.handle, x + 24, 366, card - 48, 42);
                 put(&self.count_output.handle, x + card + 40, 366, card - 48, 42);
@@ -704,14 +720,27 @@ impl App {
             }
             _ => {
                 put(&self.language.handle, x + 24, 164, cw - 48, 240);
-                put(&self.import_language.handle, x + 24, 212, 208, 38);
-                put(&self.language_folder.handle, x + 248, 212, 208, 38);
-                put(&self.language_notice.handle, x + 24, 266, cw - 48, 52);
-                put(&self.theme_choice.handle, x + 24, 350, 280, 240);
-                put(&self.auto_start.handle, x + 24, 396, cw - 48, 38);
-                put(&self.start_on_login.handle, x + 24, 440, cw - 48, 38);
-                put(&self.close_action.handle, x + 24, 526, 280, 220);
+                let half = (cw - 64) / 2;
+                put(&self.import_language.handle, x + 24, 208, half, 32);
+                put(&self.language_folder.handle, x + 40 + half, 208, half, 32);
+                put(&self.language_notice.handle, x + 24, 250, cw - 48, 28);
+                put(&self.theme_choice.handle, x + 24, 312, 280, 240);
+                put(&self.auto_start.handle, x + 24, 352, cw - 48, 28);
+                put(&self.start_on_login.handle, x + 24, 386, cw - 48, 28);
+                put(&self.close_action.handle, x + 24, 454, 280, 220);
+                put(&self.desktop_shortcut.handle, x + 24, 502, half, 30);
+                put(&self.menu_shortcut.handle, x + 40 + half, 502, half, 30);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
+            }
+        }
+        for control in self.all() {
+            let hwnd = theme::hwnd(control);
+            if !visible.contains(&hwnd) {
+                unsafe {
+                    if GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE as isize != 0 {
+                        ShowWindow(hwnd, SW_HIDE);
+                    }
+                }
             }
         }
         unsafe {
@@ -860,7 +889,11 @@ impl App {
                     466,
                     cw - 48,
                     26,
-                    crate::tr!(gui_recent_activity),
+                    if self.connection_issue_visible.get() {
+                        crate::tr!(gui_connection_recovery_heading)
+                    } else {
+                        crate::tr!(gui_recent_activity)
+                    },
                     &f.strong,
                     theme::palette().text,
                 );
@@ -964,7 +997,7 @@ impl App {
                 );
             }
             _ => {
-                card(x, 112, cw, 458);
+                card(x, 112, cw, 424);
                 text(
                     x + 24,
                     130,
@@ -976,7 +1009,7 @@ impl App {
                 );
                 text(
                     x + 24,
-                    492,
+                    426,
                     cw - 48,
                     24,
                     crate::tr!(gui_on_close),
@@ -985,7 +1018,7 @@ impl App {
                 );
                 text(
                     x + 24,
-                    320,
+                    284,
                     cw - 48,
                     24,
                     crate::tr!(appearance_label),
@@ -1024,10 +1057,17 @@ impl App {
                     );
                     Some(0)
                 }
-                WM_ENDSESSION if w != 0 => {
-                    self.controller.borrow().stop();
-                    self.controller.borrow_mut().wait();
-                    None
+                WM_QUERYENDSESSION => Some(1),
+                WM_ENDSESSION => {
+                    if w != 0 && !crate::shutdown::ending() {
+                        crate::shutdown::begin();
+                        self.exiting.set(true);
+                        self.controller.borrow().stop();
+                        self.controller.borrow().state.monitor.stop();
+                        self.controller.borrow_mut().wait();
+                        nwg::stop_thread_dispatch();
+                    }
+                    Some(0)
                 }
                 WM_PAINT => {
                     self.paint(hwnd);
@@ -1342,24 +1382,39 @@ impl App {
         self.update();
     }
     fn refresh(&self) {
+        self.request_diagnostics(true);
+    }
+    fn request_diagnostics(&self, scan: bool) {
+        self.dependency_check.set(std::time::Instant::now());
+        if self.smoke || self.exiting.get() {
+            return;
+        }
+        let owned = self
+            .controller
+            .borrow()
+            .state
+            .hidhide_healthy
+            .load(Ordering::Acquire);
+        let result = self.diagnostics.borrow_mut().request(scan, owned);
+        if let Err(error) = result {
+            self.controller.borrow().state.log_message(
+                crate::i18n::MessageId::gui_diagnostics_failed,
+                crate::tr!(gui_diagnostics_failed, error = error.to_string()),
+            );
+        }
+    }
+    fn apply_devices(&self, devices: Vec<(String, String)>) {
         let mut paths = vec![String::new()];
         let mut names = vec![crate::tr!(gui_auto_select_bluetooth_dualsense).to_string()];
-        let selected = self.config.borrow().device_path.clone();
-        for p in crate::hid::HidDevice::enum_paths() {
-            if let Some(d) = crate::hid::HidDevice::open(&p) {
-                if d.is_dualsense_bluetooth() {
-                    names.push(format!(
-                        "{} · {}",
-                        if d.product_id == 0x0DF2 {
-                            "DualSense Edge"
-                        } else {
-                            "DualSense"
-                        },
-                        d.serial_number().unwrap_or_else(|| p.clone())
-                    ));
-                    paths.push(p);
-                }
-            }
+        // A completed background scan must preserve a user's unsaved selection.
+        let selected = self
+            .device
+            .selection()
+            .and_then(|i| self.devices.borrow().get(i).cloned())
+            .unwrap_or_else(|| self.config.borrow().device_path.clone());
+        for (path, name) in devices {
+            paths.push(path);
+            names.push(name);
         }
         if !selected.is_empty() && !paths.iter().any(|p| p.eq_ignore_ascii_case(&selected)) {
             names.push(crate::tr!(gui_saved_controller_currently_disconnected).into());
@@ -1369,35 +1424,67 @@ impl App {
             .iter()
             .position(|p| p.eq_ignore_ascii_case(&selected))
             .unwrap_or(0);
-        self.device.set_collection(names);
-        self.device.set_selection(Some(index));
-        *self.devices.borrow_mut() = paths;
-        if let Some(h) = crate::hidhide::HidHide::open() {
-            self.active
-                .set_check_state(check(h.get_active().unwrap_or(false)));
-            if let Some(v) = h.get_whitelist() {
-                self.whitelist.set_collection(v);
-            }
+        let changed = *self.devices.borrow() != paths || *self.device.collection() != names;
+        if changed {
+            self.device.set_collection(names);
+            self.device.set_selection(Some(index));
         }
-        self.refresh_dependencies();
-        self.update();
+        *self.devices.borrow_mut() = paths;
     }
     fn refresh_dependencies(&self) {
-        let owned_healthy = self
-            .controller
-            .borrow()
-            .state
-            .hidhide_healthy
-            .load(Ordering::Acquire);
-        let status = crate::dependencies::inspect(owned_healthy);
-        self.dependencies.set_text(&status.summary());
+        self.request_diagnostics(false);
+    }
+    fn poll_diagnostics(&self) {
+        let result = self.diagnostics.borrow_mut().poll();
+        let Some(result) = result else {
+            return;
+        };
+        let Ok(mut snapshot) = result else {
+            self.controller.borrow().state.log_message(
+                crate::i18n::MessageId::gui_diagnostics_worker_failed,
+                crate::tr!(gui_diagnostics_worker_failed),
+            );
+            return;
+        };
+        let state = self.controller.borrow().state.clone();
+        snapshot
+            .status
+            .confirm_hidhide_owned(state.hidhide_healthy.load(Ordering::Acquire));
+        let status = snapshot.status;
+        let summary = status.summary();
+        if self.dependencies.text() != summary {
+            self.dependencies.set_text(&summary);
+        }
+        self.hidhide_available.set(status.hidhide_available());
         let attention = !status.ready();
         if self.dependency_attention.replace(attention) != attention {
             unsafe {
                 InvalidateRect(theme::hwnd(&self.nav[4].handle), std::ptr::null(), 1);
             }
         }
-        self.dependency_check.set(std::time::Instant::now());
+        if let Some(devices) = snapshot.devices {
+            self.apply_devices(devices);
+        }
+        if !state.running.load(Ordering::Acquire) {
+            if let Some((active, whitelist)) = snapshot.hiding {
+                self.active.set_check_state(check(active));
+                self.whitelist.set_collection(whitelist);
+            }
+        }
+        if self.initial_diagnostics.replace(false) && attention {
+            state.log_message(
+                crate::i18n::MessageId::gui_first_install_the_missing_drivers_on_this,
+                crate::tr!(gui_first_install_the_missing_drivers_on_this),
+            );
+            if self.page.get() == 0 {
+                self.page.set(4);
+                self.layout();
+            }
+        }
+        let rescan = self.diagnostics.borrow_mut().take_pending_scan();
+        if rescan {
+            self.request_diagnostics(true);
+        }
     }
     fn begin_installation(&self, component: &str) -> Result<(), String> {
         if self.installation.borrow().is_some() {
@@ -1474,6 +1561,7 @@ impl App {
         }
     }
     fn update(&self) {
+        self.poll_diagnostics();
         if let Some(v) = self.monitor_view.borrow_mut().as_mut() {
             v.refresh();
         }
@@ -1491,6 +1579,11 @@ impl App {
             }
         }
         let installing = self.installation.borrow().is_some();
+        let issue = s.connection_issue.lock().ok().and_then(|v| v.clone());
+        let issue_visible = issue.is_some() && !s.stop.load(Ordering::Acquire);
+        if self.connection_issue_visible.replace(issue_visible) != issue_visible {
+            self.layout();
+        }
         self.start_menu.set_enabled(!running && !installing);
         self.stop_menu.set_enabled(running && !stopping);
         if self.exiting.get() && idle {
@@ -1498,8 +1591,18 @@ impl App {
         }
         let phase = if stopping {
             crate::tr!(gui_stopping_and_restoring_devices).to_string()
+        } else if s.connected.load(Ordering::Acquire) && issue_visible {
+            crate::tr!(gui_connection_confirming).to_string()
         } else if s.connected.load(Ordering::Acquire) {
             crate::tr!(gui_connected_forwarding).to_string()
+        } else if issue_visible && !running {
+            crate::tr!(gui_connection_stopped).to_string()
+        } else if issue_visible {
+            if issue.as_ref().is_some_and(|i| i.connected_for.is_some()) {
+                crate::tr!(gui_connection_interrupted).to_string()
+            } else {
+                crate::tr!(gui_connection_retrying).to_string()
+            }
         } else if running {
             crate::tr!(gui_bridge_started_waiting_for_controller).to_string()
         } else {
@@ -1544,7 +1647,7 @@ impl App {
         self.stop_menu.set_enabled(running && !stopping);
         self.restore.set_enabled(!running);
         self.active
-            .set_enabled(!running && crate::hidhide::HidHide::open().is_some());
+            .set_enabled(!running && self.hidhide_available.get());
         for button in [&self.add, &self.remove, &self.add_self] {
             button.set_enabled(!running);
         }
@@ -1560,10 +1663,22 @@ impl App {
                 ));
             }
         }
-        let logs = s.logs();
+        let logs = if issue_visible {
+            format!(
+                "{}\r\n\r\n{}",
+                issue.as_ref().unwrap().detail().replace('\n', "\r\n"),
+                s.logs()
+            )
+        } else {
+            s.logs()
+        };
         if *self.last_logs.borrow() != logs {
             self.logs.set_text(&logs);
-            self.logs.scroll_lastline();
+            if issue_visible {
+                self.logs.scroll(-self.logs.linecount());
+            } else {
+                self.logs.scroll_lastline();
+            }
             *self.last_logs.borrow_mut() = logs;
         }
         if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
@@ -1576,6 +1691,7 @@ impl App {
         }
     }
     fn show_window(&self) {
+        let previous_focus = unsafe { GetFocus() };
         self.window.set_visible(true);
         // Showing a hidden iconic window alone leaves it minimized on the taskbar.
         if unsafe { IsIconic(theme::hwnd(&self.window.handle)) } != 0 {
@@ -1585,7 +1701,20 @@ impl App {
         unsafe {
             SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 500, None);
         }
-        self.window.set_focus();
+        // A top-level HWND is not a useful input target. Choose a navigation
+        // button on first display instead of leaving initial focus to Windows.
+        // Preserve a deliberately focused field when restoring an existing UI.
+        unsafe {
+            if !previous_focus.is_null()
+                && IsChild(theme::hwnd(&self.window.handle), previous_focus) != 0
+                && IsWindowVisible(previous_focus) != 0
+                && IsWindowEnabled(previous_focus) != 0
+            {
+                SetFocus(previous_focus);
+            } else if let Some(button) = self.nav.get(self.page.get() as usize) {
+                button.set_focus();
+            }
+        }
     }
     fn minimize_to_tray(&self) {
         if let Some(dialog) = self.audio_test_view.borrow().as_ref() {
@@ -1858,6 +1987,36 @@ impl App {
         } else if handle == self.stop {
             self.controller.borrow().stop();
             Ok(())
+        } else if handle == self.connection_details {
+            let issue = self
+                .controller
+                .borrow()
+                .state
+                .connection_issue
+                .lock()
+                .ok()
+                .and_then(|i| i.clone());
+            if let Some(issue) = issue {
+                crate::theme_dialog::message(
+                    theme::hwnd(&self.window.handle),
+                    crate::tr!(gui_connection_issue_title),
+                    &issue.detail(),
+                );
+            }
+            Ok(())
+        } else if handle == self.desktop_shortcut || handle == self.menu_shortcut {
+            let location = if handle == self.desktop_shortcut {
+                crate::shortcuts::Location::Desktop
+            } else {
+                crate::shortcuts::Location::StartMenu
+            };
+            crate::shortcuts::create(location).map(|path| {
+                crate::theme_dialog::message(
+                    theme::hwnd(&self.window.handle),
+                    "OpenDS",
+                    &crate::tr!(shortcut_created, path = path.display().to_string()),
+                );
+            })
         } else if handle == self.quit {
             self.request_exit();
             return;
@@ -1955,6 +2114,8 @@ pub fn run(
     run_inner(cfg, path, error, false, background)
 }
 pub fn smoke_test() -> Result<(), String> {
+    // Exercise the ownerless startup-error path before NWG creates any window.
+    crate::theme_dialog::smoke_unowned()?;
     let path = std::env::temp_dir().join(format!("opends-ui-smoke-{}.ini", std::process::id()));
     let result = run_inner(Config::default(), path.clone(), None, true, false);
     let _ = std::fs::remove_file(path);
@@ -2011,6 +2172,32 @@ fn run_inner(
             .lock()
             .map_err(|_| crate::tr!(gui_state_unavailable))? = None;
         app.show_window();
+        if unsafe { GetFocus() } != theme::hwnd(&app.nav[app.page.get() as usize].handle) {
+            return Err("Startup focus was not placed on navigation".into());
+        }
+        state.running.store(true, Ordering::Release);
+        *state.connection_issue.lock().map_err(|e| e.to_string())? =
+            Some(crate::bridge::ConnectionIssue {
+                error: "device disconnected (os error 1167)".into(),
+                connected_for: Some(std::time::Duration::from_millis(300)),
+                resource_busy: false,
+            });
+        app.update();
+        if app.status.text() != crate::tr!(gui_connection_interrupted)
+            || !app.last_logs.borrow().contains("1167")
+            || !app.connection_issue_visible.get()
+        {
+            return Err("Recoverable disconnect was not shown in the overview".into());
+        }
+        state.connected.store(true, Ordering::Release);
+        app.update();
+        if app.status.text() != crate::tr!(gui_connection_confirming) {
+            return Err("Brief reconnect hid the connection warning".into());
+        }
+        *state.connection_issue.lock().map_err(|e| e.to_string())? = None;
+        state.connected.store(false, Ordering::Release);
+        state.running.store(false, Ordering::Release);
+        app.update();
         if app.status.text() != crate::tr!(gui_bridge_not_started) {
             return Err(crate::tr!(gui_opening_from_tray_did_not_refresh_the).into());
         }
@@ -2109,16 +2296,73 @@ fn run_inner(
         nwg::unbind_event_handler(&handler);
         return Err(crate::tr!(gui_could_not_create_the_ui_status_timer).into());
     }
+    app.update();
+    app.layout();
     if !background && !smoke {
         app.show_window();
     }
-    app.update();
-    app.layout();
+    if smoke && std::env::args().any(|a| a == "--smoke-responsiveness") {
+        app.test_responsiveness()?;
+    }
     if smoke && std::env::var("OPENDS_UI_SMOKE_THEME_STRESS").as_deref() == Ok("1") {
         app.test_themes()?;
         app.smoke_deadline.set(Some(
             std::time::Instant::now() + std::time::Duration::from_secs(2),
         ));
+    }
+    if smoke && std::env::args().any(|a| a == "--smoke-shutdown") {
+        let hwnd = theme::hwnd(&app.window.handle);
+        app.set_close_action(CloseAction::Tray)?;
+        unsafe {
+            if SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0) != 1 {
+                return Err("Shutdown query was refused".into());
+            }
+            SendMessageW(hwnd, WM_ENDSESSION, 0, 0);
+        }
+        if crate::shutdown::ending()
+            || app.exiting.get()
+            || app.controller.borrow().state.stop.load(Ordering::Acquire)
+        {
+            return Err("Cancelled shutdown stopped the application".into());
+        }
+        crate::restart::request(false);
+        let monitor = app.controller.borrow().state.monitor.clone();
+        let csv = app.path.with_extension("shutdown.csv");
+        monitor.start(100)?;
+        monitor.start_recording(csv.clone())?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if std::env::args().any(|a| a == "--smoke-shutdown-stalled") {
+            app.controller.borrow_mut().test_stalled_shutdown_worker();
+        }
+        let shutdown_started = std::time::Instant::now();
+        let result = crate::theme_dialog::show(
+            hwnd,
+            crate::theme_dialog::Request {
+                title: "OpenDS · shutdown test",
+                message: "Shutdown test / 关机消息测试",
+                buttons: &[(IDOK, "OK")],
+                default: IDOK,
+                cancel: IDCANCEL,
+                verification: None,
+                test: Some(crate::theme_dialog::TestAction::EndSession),
+            },
+        )?;
+        eprintln!(
+            "shutdown_cleanup_ms={}",
+            shutdown_started.elapsed().as_millis()
+        );
+        if result.button != IDCANCEL || !crate::shutdown::ending() || !app.exiting.get() {
+            return Err("Confirmed shutdown did not unwind the modal dialog".into());
+        }
+        if !std::fs::read_to_string(&csv)
+            .map_err(|e| e.to_string())?
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("end,"))
+        {
+            return Err("Shutdown did not flush the CSV end record".into());
+        }
+        let _ = std::fs::remove_file(csv);
     }
     nwg::dispatch_thread_events();
     #[cfg(debug_assertions)]

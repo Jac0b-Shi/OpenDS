@@ -517,10 +517,13 @@ impl Monitor {
         self.active.store(false, Release);
         if let Ok(mut w) = self.worker.lock() {
             if let Some(w) = w.take() {
-                let _ = w.join();
+                let _ = crate::shutdown::join(w);
             }
         }
         self.stop_recording();
+        if crate::shutdown::ending() {
+            self.recording.finish();
+        }
     }
     pub fn start_recording(&self, path: std::path::PathBuf) -> Result<(), String> {
         if !self.active.load(Acquire) {
@@ -537,7 +540,11 @@ impl Monitor {
             .start(path, self.hz.load(Acquire), self.now())
     }
     pub fn stop_recording(&self) {
-        if let Ok(h) = self.history.lock() {
+        if crate::shutdown::ending() {
+            if let Ok(h) = self.history.try_lock() {
+                self.record_history(&h);
+            }
+        } else if let Ok(h) = self.history.lock() {
             self.record_history(&h);
         }
         self.recording.stop();

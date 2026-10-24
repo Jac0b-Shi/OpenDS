@@ -219,6 +219,13 @@ impl Recording {
             }
         }
     }
+    pub fn finish(&self) {
+        self.stop();
+        let session = self.session.lock().ok().and_then(|mut s| s.take());
+        if let Some(s) = session {
+            let _ = crate::shutdown::join(s.worker);
+        }
+    }
     pub fn status(&self) -> Status {
         self.session
             .lock()
@@ -250,7 +257,7 @@ impl Drop for Recording {
         self.stop();
         if let Ok(guard) = self.session.get_mut() {
             if let Some(s) = guard.take() {
-                let _ = s.worker.join();
+                let _ = crate::shutdown::join(s.worker);
             }
         }
     }
