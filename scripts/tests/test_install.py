@@ -62,7 +62,10 @@ def main():
                 config.write_bytes(b'preserve existing settings')
                 environment = os.environ.copy()
                 environment.pop('PSModulePath', None)
-                environment.update(TEST_INSTALL=str(script), TEST_DEST=str(destination),
+                # Exercise a spelling that differs from Python's path. Windows
+                # may also expand 8.3 TEMP paths on hosted runners.
+                requested_destination = str(destination).lower() if mode == 'explicit' else str(destination)
+                environment.update(TEST_INSTALL=str(script), TEST_DEST=requested_destination,
                                    TEST_LINK=str(fixture / 'shortcut.json'))
                 result = subprocess.run([executable, '-NoProfile', '-NonInteractive',
                                          '-File', str(harness), mode], env=environment,
@@ -74,8 +77,8 @@ def main():
                 assert link.exists() == (mode == 'explicit')
                 if mode == 'explicit':
                     data = json.loads(link.read_text(encoding='utf-8-sig'))
-                    assert data['TargetPath'] == str(destination / 'opends.exe')
-                    assert data['WorkingDirectory'] == str(destination)
+                    assert Path(data['TargetPath']).samefile(destination / 'opends.exe'), data
+                    assert Path(data['WorkingDirectory']).samefile(destination), data
                     assert Path(data['RequestedPath']).name == 'OpenDS.lnk'
                 print(f'PASS {shell} {mode}')
 
