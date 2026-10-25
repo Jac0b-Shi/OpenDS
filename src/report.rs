@@ -149,6 +149,15 @@ pub mod buttons {
 }
 
 impl InputReport {
+    /// Battery is valid only in full, non-audio Bluetooth input reports.
+    /// The bridge validates the transport CRC before parsing any fields.
+    pub fn battery_byte(&self) -> Option<u8> {
+        if self.is_full_bluetooth() && !self.has_audio_payload() {
+            self.data.get(54).copied()
+        } else {
+            None
+        }
+    }
     pub fn new(data: Vec<u8>) -> Option<Self> {
         let mode = Mode::from_input_len(data.len())?;
         let report_id = *data.first()?;
@@ -521,6 +530,29 @@ mod tests {
             assert_eq!(forwarded.battery_level, source.battery_level);
             assert_eq!(forwarded.battery_status, source.battery_status);
         }
+    }
+    #[test]
+    fn battery_reading_excludes_compatibility_and_microphone_reports() {
+        let mut data = vec![0u8; 78];
+        data[0] = 0x31;
+        data[1] = 1;
+        data[54] = 0x17;
+        assert_eq!(
+            InputReport::new(data.clone()).unwrap().battery_byte(),
+            Some(0x17)
+        );
+        data[1] = 2;
+        assert!(InputReport::new(data.clone())
+            .unwrap()
+            .battery_byte()
+            .is_none());
+        data[0] = 1;
+        data[1] = 1;
+        assert!(InputReport::new(data).unwrap().battery_byte().is_none());
+        assert!(InputReport::new(neutral_usb_report().to_vec())
+            .unwrap()
+            .battery_byte()
+            .is_none());
     }
 
     #[test]

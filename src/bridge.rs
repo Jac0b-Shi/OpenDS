@@ -172,6 +172,7 @@ impl BridgeController {
             monitor: self.state.monitor.clone(),
             ..BridgeState::default()
         });
+        state.monitor.battery.resume();
         state.running.store(true, Ordering::Release);
         self.state = state.clone();
         self.worker = Some(
@@ -188,6 +189,7 @@ impl BridgeController {
                     }
                     state.connected.store(false, Ordering::Release);
                     state.monitor.connected.store(false, Ordering::Release);
+                    state.monitor.battery.disconnect();
                     state.monitor.reset();
                     state.hidhide_healthy.store(false, Ordering::Release);
                     state.running.store(false, Ordering::Release);
@@ -202,6 +204,7 @@ impl BridgeController {
     }
     pub fn stop(&self) {
         self.state.stop.store(true, Ordering::Release);
+        self.state.monitor.battery.suspend();
     }
     pub fn poll(&mut self) {
         if self.worker.as_ref().is_some_and(|h| h.is_finished()) {
@@ -321,6 +324,7 @@ struct Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        self.state.monitor.battery.disconnect();
         // During OS shutdown, release hiding before potentially slow DLL/driver
         // teardown. Normal disconnects retain the usual virtual-then-physical order.
         if crate::shutdown::ending() {
@@ -504,6 +508,7 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
         );
         state.connected.store(false, Ordering::Release);
         state.monitor.connected.store(false, Ordering::Release);
+        state.monitor.battery.disconnect();
         state.monitor.reset();
         match result {
             Ok(()) => break,
@@ -765,6 +770,7 @@ fn run_session(
     state.connected.store(true, Ordering::Release);
     state.monitor.reset();
     state.monitor.connected.store(true, Ordering::Release);
+    state.monitor.battery.connect();
     state.log_message(
         crate::i18n::MessageId::bridge_bridge_connected_input_output_and_audio_are,
         crate::tr!(bridge_bridge_connected_input_output_and_audio_are),
@@ -888,6 +894,9 @@ fn run_session(
                     continue;
                 }
                 if let Some(s) = report.parse() {
+                    if let Some(raw) = report.battery_byte() {
+                        state.monitor.battery.observe(raw);
+                    }
                     state.monitor.input(s);
                     gyro = s.motion.gyro;
                     if report.is_full_bluetooth() {

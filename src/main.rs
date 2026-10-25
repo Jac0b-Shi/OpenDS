@@ -10,6 +10,8 @@ mod audio_test;
 mod audio_test_source;
 mod audio_test_view;
 mod audio_thread;
+mod battery;
+mod battery_ui;
 mod bridge;
 mod config;
 mod dependencies;

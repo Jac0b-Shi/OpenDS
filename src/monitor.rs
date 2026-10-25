@@ -411,6 +411,7 @@ pub fn dpad_bits(value: u8) -> u8 {
 }
 
 pub struct Monitor {
+    pub battery: crate::battery::Telemetry,
     pub recording: crate::monitor_recording::Recording,
     origin: Instant,
     pub active: AtomicBool,
@@ -842,6 +843,7 @@ impl Monitor {
 impl Default for Monitor {
     fn default() -> Self {
         Self {
+            battery: crate::battery::Telemetry::default(),
             recording: crate::monitor_recording::Recording::default(),
             origin: Instant::now(),
             active: AtomicBool::new(false),
@@ -940,6 +942,22 @@ pub fn demo(m: Arc<Monitor>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn battery_is_live_without_capture_and_survives_capture_lifecycle() {
+        let monitor = super::Monitor::new();
+        monitor.battery.connect();
+        monitor.battery.observe(0x17);
+        assert!(!monitor.active.load(super::Relaxed));
+        let before = monitor.battery.snapshot();
+        monitor.start(100).unwrap();
+        monitor.reset();
+        monitor.clear();
+        monitor.stop();
+        let after = monitor.battery.snapshot();
+        assert_eq!(after.session, before.session);
+        assert_eq!(after.raw, Some(0x17));
+        assert_eq!(after.view(monitor.battery.now()).percent, Some(75));
+    }
     use super::*;
     fn wave_chunk(time: u64, index: u64) -> Chunk {
         Chunk {

@@ -5,9 +5,10 @@ use crate::{
 #[path = "monitor_plot.rs"]
 mod plotting;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     ptr::{null, null_mut},
+    rc::Rc,
     sync::{atomic::Ordering::*, Arc},
     time::Instant,
 };
@@ -281,6 +282,47 @@ impl Renderer {
             },
             self.brush.0 as _,
         );
+    }
+    unsafe fn battery(&self, x: f32, y: f32, view: crate::battery::View) {
+        let p = crate::appearance::palette();
+        let color = palette_color(crate::battery_ui::color(view));
+        self.rect(
+            x,
+            y + 5.,
+            35.,
+            19.,
+            3.,
+            if view.percent.is_some() || matches!(view.status, crate::battery::Status::Fault(_)) {
+                color
+            } else {
+                muted_color()
+            },
+        );
+        self.rect(x + 1., y + 6., 33., 17., 2., palette_color(p.surface));
+        self.rect(x + 35., y + 11., 3., 7., 1., muted_color());
+        let fill = 29. * crate::battery_ui::fill_fraction(view);
+        if fill > 0. {
+            self.rect(x + 3., y + 8., fill, 13., 1., color);
+        }
+        if view.status == crate::battery::Status::Charging {
+            let ink = palette_color(if p.kind == crate::appearance::Kind::Contrast {
+                p.surface
+            } else {
+                p.text
+            });
+            for pair in crate::battery_ui::BOLT.windows(2) {
+                self.line(
+                    (x + pair[0].0 * 35., y + 5. + pair[0].1 * 19.),
+                    (x + pair[1].0 * 35., y + 5. + pair[1].1 * 19.),
+                    1.5,
+                    ink,
+                );
+            }
+        }
+        if matches!(view.status, crate::battery::Status::Fault(_)) {
+            self.text(x + 11., y, 16., 28., "!", 1, ink_color());
+        }
+        self.text(x + 45., y, 49., 28., &view.number(), 1, ink_color());
     }
     unsafe fn line(&self, a: (f32, f32), b: (f32, f32), width: f32, c: D2D1_COLOR_F) {
         (*self.brush.0).SetColor(&c);
@@ -651,6 +693,9 @@ impl Drop for DrawClock {
 }
 
 struct ViewState {
+    battery: Rc<Cell<crate::battery::Display>>,
+    battery_observed: crate::battery::View,
+    battery_tip: Option<crate::battery_ui::Tooltip>,
     clock: Option<DrawClock>,
     hub: Arc<Monitor>,
     root: HWND,
@@ -688,12 +733,16 @@ impl MonitorView {
         hub: Arc<Monitor>,
         cfg: &Config,
         path: PathBuf,
+        battery: Rc<Cell<crate::battery::Display>>,
     ) -> Result<Self, String> {
         unsafe {
             register("OpenDSMonitorHost", Some(host_proc));
             register("OpenDSMonitorCanvas", Some(canvas_proc));
             register("OpenDSMonitorPopup", Some(popup_proc));
             let state = Box::new(ViewState {
+                battery,
+                battery_observed: crate::battery::View::default(),
+                battery_tip: None,
                 clock: None,
                 hub,
                 root: null_mut(),
@@ -744,6 +793,7 @@ impl MonitorView {
                 return Err(crate::tr!(monitor_view_could_not_create_monitor_window).into());
             }
             SetWindowLongPtrW(state_ref.root, GWLP_USERDATA, ptr as isize);
+            state_ref.battery_tip = Some(crate::battery_ui::Tooltip::new(state_ref.root));
             crate::appearance::install(state_ref.root);
             for (id, cls, text, style) in [
                 (
@@ -878,25 +928,33 @@ impl MonitorView {
         unsafe {
             let mut data = self.state.borrow_mut();
             let s = &mut *data;
+            let shown = visible && !s.page_visible;
+            let visibility_changed = visible != s.page_visible;
+            let geometry_changed = s.saved != (x, y, w, h);
             let size_changed = (s.saved.2, s.saved.3) != (w, h);
             s.saved = (x, y, w, h);
             s.page_visible = visible;
             if s.popup.is_null() {
-                SetWindowPos(
-                    s.root,
-                    null_mut(),
-                    x,
-                    y,
-                    w,
-                    h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-                ShowWindow(s.root, if visible { SW_SHOWNA } else { SW_HIDE });
+                if geometry_changed {
+                    SetWindowPos(
+                        s.root,
+                        null_mut(),
+                        x,
+                        y,
+                        w,
+                        h,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                if visibility_changed {
+                    ShowWindow(s.root, if visible { SW_SHOWNA } else { SW_HIDE });
+                }
             }
             if size_changed {
                 s.layout();
             }
             s.timer();
+            s.sync_battery(shown);
         }
     }
     pub fn preferences(&self) -> (u32, u32, u32) {
@@ -908,7 +966,42 @@ impl MonitorView {
             let mut state = self.state.borrow_mut();
             state.timer();
             state.status();
+            state.sync_battery(false);
         }
+    }
+    pub fn visible(&self) -> bool {
+        let state = self.state.borrow();
+        unsafe {
+            IsWindowVisible(state.root) != 0 && IsIconic(GetAncestor(state.root, GA_ROOT)) == 0
+        }
+    }
+    pub fn smoke_battery(
+        &mut self,
+        popup: bool,
+        expected: crate::battery::View,
+    ) -> Result<(), String> {
+        unsafe {
+            let mut state = self.state.borrow_mut();
+            if popup {
+                state.detach();
+            } else {
+                state.attach();
+            }
+            state.sync_battery(true);
+            if state.battery.get().view != expected {
+                return Err("Monitor battery differs from shared display".into());
+            }
+            if !state.hub.active.load(Acquire) && state.clock.is_some() {
+                return Err("Battery display started a capture rendering clock".into());
+            }
+            let rect = state.battery_rect();
+            if rect.right <= rect.left || rect.bottom <= rect.top {
+                return Err("Monitor battery has invalid bounds".into());
+            }
+            InvalidateRect(state.canvas, null(), 0);
+            UpdateWindow(state.canvas);
+        }
+        Ok(())
     }
     pub fn smoke(&mut self) {
         unsafe {
@@ -928,6 +1021,7 @@ impl Drop for MonitorView {
     fn drop(&mut self) {
         let s = self.state.get_mut();
         s.clock = None;
+        s.battery_tip.take();
         s.hub.stop();
         unsafe {
             s.renderer = None;
@@ -957,6 +1051,63 @@ unsafe fn register(name: &str, proc: WNDPROC) {
     RegisterClassW(&wc);
 }
 impl ViewState {
+    unsafe fn battery_rect(&self) -> RECT {
+        let mut rect: RECT = std::mem::zeroed();
+        GetClientRect(self.canvas, &mut rect);
+        let dpi = crate::gui_theme::window_dpi(self.canvas);
+        let width = rect.right as f32 * 96. / dpi as f32;
+        let model = if width < 680. { width } else { width * 0.41 };
+        let (_, x, extra) = crate::battery_ui::header(model);
+        let y = 12. + extra - self.scroll as f32;
+        RECT {
+            left: (x * dpi as f32 / 96.) as i32,
+            top: (y * dpi as f32 / 96.) as i32,
+            right: ((x + 94.) * dpi as f32 / 96.) as i32,
+            bottom: ((y + 28.) * dpi as f32 / 96.) as i32,
+        }
+    }
+    unsafe fn sync_battery(&mut self, force: bool) {
+        let mut display = self.battery.get();
+        display.update(self.hub.battery.snapshot(), self.hub.battery.now(), force);
+        self.battery.set(display);
+        let changed = self.battery_observed != display.view;
+        self.battery_observed = display.view;
+        let visible =
+            IsWindowVisible(self.root) != 0 && IsIconic(GetAncestor(self.root, GA_ROOT)) == 0;
+        let rect = self.battery_rect();
+        if visible && (changed || force) {
+            InvalidateRect(self.canvas, &rect, 0);
+        }
+        let mut tip_rect = rect;
+        if visible {
+            MapWindowPoints(
+                self.canvas,
+                self.root,
+                &mut tip_rect as *mut _ as *mut POINT,
+                2,
+            );
+            let mut canvas_rect: RECT = std::mem::zeroed();
+            GetWindowRect(self.canvas, &mut canvas_rect);
+            MapWindowPoints(
+                null_mut(),
+                self.root,
+                &mut canvas_rect as *mut _ as *mut POINT,
+                2,
+            );
+            tip_rect.top = tip_rect.top.max(canvas_rect.top);
+            tip_rect.bottom = tip_rect.bottom.min(canvas_rect.bottom);
+            if tip_rect.bottom <= tip_rect.top {
+                tip_rect = std::mem::zeroed();
+            }
+        } else {
+            tip_rect = std::mem::zeroed();
+        }
+        if let Some(tip) = self.battery_tip.as_mut() {
+            if changed || force || tip.needs_rect(tip_rect) {
+                tip.update(tip_rect, &display.view.tooltip());
+            }
+        }
+    }
     unsafe fn layout(&mut self) {
         let dpi = crate::gui_theme::window_dpi(self.root).max(96);
         let p = |v: i32| crate::gui_theme::px(v, dpi);
@@ -1015,7 +1166,7 @@ impl ViewState {
         let cw = w as f32 * 96. / dpi as f32;
         let viewport = (h - p(116)).max(1) as f32 * 96. / dpi as f32;
         let content = if cw < 680. {
-            model_bottom(cw) + 115. + 660.
+            model_bottom(cw) + crate::battery_ui::header(cw).2 + 115. + 660.
         } else {
             viewport.max(640.)
         };
@@ -1145,6 +1296,8 @@ impl ViewState {
         );
         self.layout();
         self.timer();
+        self.sync_battery(true);
+        PostMessageW(self.parent, WM_TIMER, 0x4f44, 0);
     }
     unsafe fn attach(&mut self) {
         if self.popup.is_null() {
@@ -1378,7 +1531,8 @@ impl ViewState {
             let offset = self.scroll as f32;
             let narrow = w < 680.;
             let left = if narrow { w } else { w * 0.41 };
-            let bottom = model_bottom(left);
+            let (title_width, battery_x, header_extra) = crate::battery_ui::header(left);
+            let bottom = model_bottom(left) + header_extra;
             let model_height = bottom + 115.;
             let graph_x = if narrow { 0. } else { left + 16. };
             let graph_y = if narrow {
@@ -1407,7 +1561,7 @@ impl ViewState {
             r.text(
                 16.,
                 12. - offset,
-                left - 32.,
+                title_width,
                 30.,
                 if self.hub.edge.load(Relaxed) {
                     "DualSense Edge"
@@ -1417,9 +1571,14 @@ impl ViewState {
                 2,
                 ink_color(),
             );
+            r.battery(
+                battery_x,
+                12. + header_extra - offset,
+                self.battery.get().view,
+            );
             r.text(
                 16.,
-                39. - offset,
+                39. + header_extra - offset,
                 left - 32.,
                 24.,
                 if !self.hub.active.load(Relaxed) {
@@ -1436,7 +1595,7 @@ impl ViewState {
             );
             r.controller(
                 4.,
-                86. - offset,
+                86. + header_extra - offset,
                 left - 8.,
                 &self.input,
                 pulse,
@@ -1674,6 +1833,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             s.scroll = (s.scroll - ((w >> 16) as i16 as i32 / 120) * 48).clamp(0, s.scroll_max);
             SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 1);
             InvalidateRect(s.canvas, null(), 0);
+            s.sync_battery(false);
             0
         }
         WM_VSCROLL => {
@@ -1693,6 +1853,7 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             s.scroll = s.scroll.clamp(0, s.scroll_max);
             SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 1);
             InvalidateRect(s.canvas, null(), 0);
+            s.sync_battery(false);
             0
         }
         _ => unreachable!(),
@@ -1739,8 +1900,10 @@ unsafe extern "system" fn popup_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM
                 GetClientRect(hwnd, &mut r);
                 MoveWindow(s.root, 0, 0, r.right, r.bottom, 1);
                 s.layout();
+                s.sync_battery(true);
             }
             s.timer();
+            PostMessageW(s.parent, WM_TIMER, 0x4f44, 0);
             0
         }
         WM_DPICHANGED => {

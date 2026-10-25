@@ -113,6 +113,11 @@ struct App {
     page: Cell<u8>,
     dpi: Cell<u32>,
     fonts: RefCell<theme::Fonts>,
+    battery: Rc<Cell<crate::battery::Display>>,
+    battery_tip: RefCell<Option<crate::battery_ui::Tooltip>>,
+    battery_observed: Cell<crate::battery::View>,
+    battery_preview: Cell<Option<u8>>,
+    placement: RefCell<theme::ControlLayout>,
     last_logs: RefCell<String>,
     smoke_deadline: Cell<Option<std::time::Instant>>,
     dependency_attention: Cell<bool>,
@@ -189,6 +194,11 @@ impl App {
             page: Cell::new(0),
             dpi: Cell::new(dpi),
             fonts: RefCell::new(fonts),
+            battery: Rc::new(Cell::new(crate::battery::Display::default())),
+            battery_tip: RefCell::new(None),
+            battery_observed: Cell::new(crate::battery::View::default()),
+            battery_preview: Cell::new(None),
+            placement: RefCell::new(theme::ControlLayout::default()),
             last_logs: RefCell::new(String::new()),
             smoke_deadline: Cell::new(None),
             dependency_attention: Cell::new(false),
@@ -539,12 +549,15 @@ impl App {
             SetWindowLongPtrW(h, GWL_STYLE, style | WS_CLIPCHILDREN as isize);
         }
         let a = Rc::new(a);
+        *a.battery_tip.borrow_mut() =
+            Some(unsafe { crate::battery_ui::Tooltip::new(theme::hwnd(&a.window.handle)) });
         a.show_dependency_locations(None, None);
         *a.monitor_view.borrow_mut() = Some(crate::monitor_view::MonitorView::new(
             theme::hwnd(&a.window.handle),
             a.controller.borrow().state.monitor.clone(),
             &cfg,
             a.path.clone(),
+            a.battery.clone(),
         )?);
         unsafe {
             crate::appearance::install(theme::hwnd(&a.window.handle));
@@ -667,7 +680,53 @@ impl App {
             )
         }
     }
+    fn overview_layout(&self, width: i32) -> crate::battery_ui::OverviewLayout {
+        unsafe {
+            let hwnd = theme::hwnd(&self.window.handle);
+            let dc = GetDC(hwnd);
+            let result =
+                crate::battery_ui::overview_layout(dc, self.dpi.get(), width, &self.fonts.borrow());
+            ReleaseDC(hwnd, dc);
+            result
+        }
+    }
+    fn refresh_battery(&self, force: bool) {
+        let hub = self.controller.borrow().state.monitor.clone();
+        let mut display = self.battery.get();
+        display.update(hub.battery.snapshot(), hub.battery.now(), force);
+        self.battery.set(display);
+        if self.battery_observed.replace(display.view) != display.view && self.page.get() == 0 {
+            let (w, _) = self.dimensions();
+            let b = self.overview_layout(w - 260).battery;
+            let dpi = self.dpi.get();
+            let rect = RECT {
+                left: theme::px(228 + b.left, dpi),
+                right: theme::px(228 + b.right, dpi),
+                top: theme::px(b.top, dpi),
+                bottom: theme::px(b.bottom, dpi),
+            };
+            unsafe {
+                InvalidateRect(theme::hwnd(&self.window.handle), &rect, 0);
+            }
+            if let Some(tip) = self.battery_tip.borrow_mut().as_mut() {
+                unsafe {
+                    tip.update(rect, &display.view.tooltip());
+                }
+            }
+        }
+    }
+    fn fast_tick(&self) -> bool {
+        let hwnd = theme::hwnd(&self.window.handle);
+        (unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 })
+            || self.exiting.get()
+            || self
+                .monitor_view
+                .borrow()
+                .as_ref()
+                .is_some_and(|view| view.visible())
+    }
     fn layout(&self) {
+        self.refresh_battery(true);
         let (w, h) = self.dimensions();
         let dpi = self.dpi.get();
         let x = 228;
@@ -682,10 +741,9 @@ impl App {
                 page == 1,
             );
         }
-        let mut visible = Vec::new();
+        let mut wanted = Vec::new();
         let mut put = |control: &nwg::ControlHandle, x, y, w, h| {
-            visible.push(theme::hwnd(control));
-            theme::place(control, x, y, w, h, dpi, true);
+            wanted.push((theme::hwnd(control), x, y, w, h));
         };
         for (i, b) in self.nav.iter().enumerate() {
             put(&b.handle, 16, 156 + i as i32 * 54, 176, 42);
@@ -694,23 +752,54 @@ impl App {
         put(&self.quit.handle, 16, h - 58, 176, 36);
         match page {
             0 => {
-                put(&self.status.handle, x + 28, 199, cw - 56, 24);
-                put(&self.start.handle, x + 28, 240, 128, 36);
-                put(&self.stop.handle, x + 168, 240, 88, 36);
+                let layout = self.overview_layout(cw);
+                put(
+                    &self.status.handle,
+                    x + 28,
+                    layout.status_y,
+                    layout.left_width,
+                    24,
+                );
+                put(&self.start.handle, x + 28, layout.button_y, 128, 36);
+                put(&self.stop.handle, x + 168, layout.button_y, 88, 36);
                 if self.connection_issue_visible.get() {
-                    put(&self.connection_details.handle, x + 272, 240, 156, 36);
+                    put(
+                        &self.connection_details.handle,
+                        x + 272,
+                        layout.button_y,
+                        156,
+                        36,
+                    );
                 }
                 let card = (cw - 32) / 3;
-                put(&self.count_input.handle, x + 24, 366, card - 48, 42);
-                put(&self.count_output.handle, x + card + 40, 366, card - 48, 42);
                 put(
-                    &self.count_audio.handle,
-                    x + card * 2 + 56,
-                    366,
+                    &self.count_input.handle,
+                    x + 24,
+                    layout.stats_y + 46,
                     card - 48,
                     42,
                 );
-                put(&self.logs.handle, x + 24, 498, cw - 48, (h - 546).max(52));
+                put(
+                    &self.count_output.handle,
+                    x + card + 40,
+                    layout.stats_y + 46,
+                    card - 48,
+                    42,
+                );
+                put(
+                    &self.count_audio.handle,
+                    x + card * 2 + 56,
+                    layout.stats_y + 46,
+                    card - 48,
+                    42,
+                );
+                put(
+                    &self.logs.handle,
+                    x + 24,
+                    layout.logs_y + 46,
+                    cw - 48,
+                    (h - layout.logs_y - 94).max(52),
+                );
             }
             1 => {}
             2 => {
@@ -796,21 +885,36 @@ impl App {
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
         }
-        for control in self.all() {
-            let hwnd = theme::hwnd(control);
-            if !visible.contains(&hwnd) {
-                unsafe {
-                    if GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE as isize != 0 {
-                        ShowWindow(hwnd, SW_HIDE);
-                    }
-                }
-            }
-        }
+        let all: Vec<_> = self
+            .all()
+            .into_iter()
+            .chain(self.nav.iter().map(|b| &b.handle))
+            .map(theme::hwnd)
+            .collect();
+        self.placement.borrow_mut().apply(&all, &wanted, dpi);
         unsafe {
-            InvalidateRect(theme::hwnd(&self.window.handle), std::ptr::null(), 1);
-            for b in &self.nav {
-                InvalidateRect(theme::hwnd(&b.handle), std::ptr::null(), 1);
+            if let Some(tip) = self.battery_tip.borrow_mut().as_mut() {
+                let rect = if page == 0 {
+                    let r = self.overview_layout(cw).battery;
+                    RECT {
+                        left: theme::px(x + r.left, dpi),
+                        right: theme::px(x + r.right, dpi),
+                        top: theme::px(r.top, dpi),
+                        bottom: theme::px(r.bottom, dpi),
+                    }
+                } else {
+                    std::mem::zeroed()
+                };
+                tip.update(rect, &self.battery.get().view.tooltip());
             }
+            // Child placement suppresses intermediate paints; invalidate once
+            // after every control has reached its final position and visibility.
+            RedrawWindow(
+                theme::hwnd(&self.window.handle),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME | RDW_ERASE,
+            );
         }
     }
     unsafe fn paint(&self, hwnd: HWND) {
@@ -906,21 +1010,22 @@ impl App {
         };
         match p {
             0 => {
-                card(x, 112, cw, 188);
+                let layout = self.overview_layout(cw);
+                card(x, 112, cw, layout.card_height);
                 text(
                     x + 28,
                     132,
-                    cw - 56,
-                    42,
+                    layout.left_width,
+                    layout.title_height,
                     crate::tr!(gui_native_feedback_wireless_freedom),
                     &f.title,
                     theme::palette().text,
                 );
                 text(
                     x + 28,
-                    176,
-                    cw - 56,
-                    23,
+                    layout.subtitle_y,
+                    layout.left_width,
+                    layout.subtitle_height,
                     crate::tr!(gui_dualsense_bluetooth_local_virtual_usb_controller),
                     &f.body,
                     theme::palette().muted,
@@ -935,10 +1040,10 @@ impl App {
                 .enumerate()
                 {
                     let left = x + i as i32 * (c + 16);
-                    card(left, 320, c, 112);
+                    card(left, layout.stats_y, c, 112);
                     text(
                         left + 24,
-                        337,
+                        layout.stats_y + 17,
                         c - 48,
                         24,
                         name,
@@ -946,10 +1051,19 @@ impl App {
                         theme::palette().muted,
                     );
                 }
-                card(x, 452, cw, h - 476);
+                let b = layout.battery;
+                crate::battery_ui::overview(
+                    dc,
+                    rect(x + b.left, b.top, b.right - b.left, b.bottom - b.top),
+                    dpi,
+                    self.battery.get().view,
+                    &f,
+                    layout.compact,
+                );
+                card(x, layout.logs_y, cw, (h - layout.logs_y - 24).max(98));
                 text(
                     x + 24,
-                    466,
+                    layout.logs_y + 14,
                     cw - 48,
                     26,
                     if self.connection_issue_visible.get() {
@@ -963,7 +1077,7 @@ impl App {
                 if self.last_logs.borrow().is_empty() {
                     text(
                         x + 24,
-                        506,
+                        layout.logs_y + 54,
                         cw - 48,
                         30,
                         crate::tr!(gui_ready_start_bridging_to_see_connection_and),
@@ -1110,12 +1224,7 @@ impl App {
                     SetTimer(
                         hwnd,
                         0x4f44,
-                        if (IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0) || self.exiting.get()
-                        {
-                            500
-                        } else {
-                            5000
-                        },
+                        if self.fast_tick() { 500 } else { 5000 },
                         None,
                     );
                     Some(0)
@@ -1559,6 +1668,9 @@ impl App {
         Ok(c)
     }
     fn start_bridge(&self) {
+        if self.smoke {
+            return;
+        }
         if self.installation.borrow().is_some() {
             self.error_message(
                 crate::i18n::MessageId::gui_driver_installation_is_in_progress_wait_for,
@@ -1765,6 +1877,12 @@ impl App {
         }
     }
     fn update(&self) {
+        if self.smoke {
+            if let Some(raw) = self.battery_preview.get() {
+                self.controller.borrow().state.monitor.battery.observe(raw);
+            }
+        }
+        self.refresh_battery(false);
         self.poll_diagnostics();
         if let Some(v) = self.monitor_view.borrow_mut().as_mut() {
             v.refresh();
@@ -1783,17 +1901,21 @@ impl App {
             }
         }
         let installing = self.installation.borrow().is_some();
+        let preview = self.battery_preview.get().is_some();
         let issue = s.connection_issue.lock().ok().and_then(|v| v.clone());
         let issue_visible = issue.is_some() && !s.stop.load(Ordering::Acquire);
         if self.connection_issue_visible.replace(issue_visible) != issue_visible {
             self.layout();
         }
-        self.start_menu.set_enabled(!running && !installing);
+        self.start_menu
+            .set_enabled(!preview && !running && !installing);
         self.stop_menu.set_enabled(running && !stopping);
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();
         }
-        let phase = if stopping {
+        let phase = if preview {
+            crate::tr!(battery_preview_hint).to_string()
+        } else if stopping {
             crate::tr!(gui_stopping_and_restoring_devices).to_string()
         } else if s.connected.load(Ordering::Acquire) && issue_visible {
             crate::tr!(gui_connection_confirming).to_string()
@@ -1845,8 +1967,9 @@ impl App {
                 label.set_text(&value);
             }
         }
-        self.start.set_enabled(!running && !installing);
-        self.start_menu.set_enabled(!running && !installing);
+        self.start.set_enabled(!preview && !running && !installing);
+        self.start_menu
+            .set_enabled(!preview && !running && !installing);
         self.stop.set_enabled(running && !stopping);
         self.stop_menu.set_enabled(running && !stopping);
         self.restore.set_enabled(!running);
@@ -1912,6 +2035,7 @@ impl App {
         if unsafe { IsIconic(theme::hwnd(&self.window.handle)) } != 0 {
             self.window.restore();
         }
+        self.refresh_battery(true);
         self.update();
         unsafe {
             SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 500, None);
@@ -1937,7 +2061,12 @@ impl App {
         }
         self.window.set_visible(false);
         unsafe {
-            SetTimer(theme::hwnd(&self.window.handle), 0x4f44, 5000, None);
+            SetTimer(
+                theme::hwnd(&self.window.handle),
+                0x4f44,
+                if self.fast_tick() { 500 } else { 5000 },
+                None,
+            );
         }
     }
     fn request_exit(&self) {
@@ -2329,6 +2458,7 @@ impl App {
 }
 impl Drop for App {
     fn drop(&mut self) {
+        self.battery_tip.get_mut().take();
         self.audio_test_view.get_mut().take();
         self.monitor_view.get_mut().take();
     }
@@ -2342,6 +2472,9 @@ pub fn run(
     run_inner(cfg, path, error, false, background)
 }
 pub fn smoke_test() -> Result<(), String> {
+    if std::env::args().any(|a| a == "--smoke-background-response") {
+        return theme_validation::background_response();
+    }
     // Exercise the ownerless startup-error path before NWG creates any window.
     crate::theme_dialog::smoke_unowned()?;
     let path = std::env::temp_dir().join(format!("opends-ui-smoke-{}.ini", std::process::id()));
@@ -2531,6 +2664,20 @@ fn run_inner(
     }
     if smoke && std::env::args().any(|a| a == "--smoke-responsiveness") {
         app.test_responsiveness()?;
+    }
+    if smoke && std::env::args().any(|a| a == "--smoke-battery") {
+        app.test_battery()?;
+        if std::env::args().any(|a| a == "--battery-preview") {
+            app.battery_preview.set(Some(7));
+            app.window.set_text(crate::tr!(battery_preview_title));
+            app.tray.set_visibility(false);
+            for button in app.nav.iter().skip(2) {
+                button.set_enabled(false);
+            }
+            app.smoke_deadline.set(Some(
+                std::time::Instant::now() + std::time::Duration::from_secs(600),
+            ));
+        }
     }
     if smoke && std::env::args().any(|a| a == "--smoke-dependencies") {
         app.test_dependency_directories()?;

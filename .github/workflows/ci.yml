@@ -49,6 +49,9 @@ jobs:
       - name: Verify native input backgrounds and page switching latency
         shell: pwsh
         run: ./scripts/Test-Responsiveness.ps1
+      - name: Verify battery telemetry and paused-capture layouts
+        shell: pwsh
+        run: ./scripts/Test-Battery.ps1
       - name: Validate themes and live switching without device access
         shell: pwsh
         run: ./scripts/Test-Themes.ps1

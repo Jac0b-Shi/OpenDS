@@ -4,7 +4,141 @@ use crate::{
     appearance::{self, Kind},
     theme_dialog::{Request, TestAction},
 };
+/// Measures the real navigation handler with an invisible top-level window.
+/// No dialogs, input injection, rendering clock or bridge session is started.
+pub(super) fn background_response() -> Result<(), String> {
+    let foreground = unsafe { GetForegroundWindow() };
+    let path = std::env::temp_dir().join(format!("opends-background-{}.ini", std::process::id()));
+    let app = App::build(Config::default(), path, None, true, true)?;
+    app.tray.set_visibility(false);
+    let hwnd = theme::hwnd(&app.window.handle);
+    let weak = Rc::downgrade(&app);
+    let handler = nwg::full_bind_event_handler(&app.window.handle, move |e, d, h| {
+        if let Some(a) = weak.upgrade() {
+            a.event(e, d, h);
+        }
+    });
+    let mut samples = Vec::new();
+    for round in 0..5 {
+        for page in 0..6 {
+            let started = std::time::Instant::now();
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_COMMAND,
+                    (BN_CLICKED as usize) << 16,
+                    theme::hwnd(&app.nav[page as usize].handle) as isize,
+                );
+            }
+            let command = started.elapsed().as_micros();
+            let started = std::time::Instant::now();
+            app.layout();
+            let layout = started.elapsed().as_micros();
+            app.update();
+            let update = started.elapsed().as_micros() - layout;
+            println!("Background page: round={round}, page={page}, layout_us={layout}, update_us={update}, command_us={command}");
+            samples.push(command);
+        }
+    }
+    nwg::unbind_event_handler(&handler);
+    if unsafe { IsWindowVisible(hwnd) != 0 || GetForegroundWindow() != foreground } {
+        return Err("Background validation changed window visibility or foreground".into());
+    }
+    samples.sort_unstable();
+    println!(
+        "Background response: command_p95_us={}, focus_preserved=true, window_hidden=true",
+        samples[samples.len() * 95 / 100]
+    );
+    Ok(())
+}
 impl App {
+    pub(super) fn test_battery(&self) -> Result<(), String> {
+        use crate::battery::{Band, Status, View};
+        let hub = self.controller.borrow().state.monitor.clone();
+        if hub.active.load(Ordering::Acquire) {
+            return Err("Battery fixture requires stopped capture".into());
+        }
+        hub.battery.connect();
+        hub.connected.store(true, Ordering::Release);
+        for (raw, percent, band) in [
+            (8, Some(85), Band::Green),
+            (4, Some(45), Band::Yellow),
+            (1, Some(15), Band::Red),
+            (0x14, Some(45), Band::Yellow),
+            (0x20, Some(100), Band::Green),
+            (0xa0, None, Band::Unknown),
+            (0x0b, None, Band::Unknown),
+        ] {
+            hub.battery.observe(raw);
+            self.refresh_battery(true);
+            let view = self.battery.get().view;
+            if view.percent != percent || view.band() != band {
+                return Err("Battery conversion fixture failed".into());
+            }
+            for width in [860, 980] {
+                self.window.set_size(
+                    theme::px(width, self.dpi.get()) as u32,
+                    theme::px(700, self.dpi.get()) as u32,
+                );
+                self.page.set(0);
+                self.layout();
+                let (w, h) = self.dimensions();
+                let layout = self.overview_layout(w - 260);
+                if layout.battery.right > w - 260 - 20 || layout.logs_y + 98 > h - 20 {
+                    return Err("Overview battery overlaps the minimum-size layout".into());
+                }
+                if !layout.compact && 28 + layout.left_width > layout.battery.left {
+                    return Err("Battery overlaps overview text".into());
+                }
+                unsafe {
+                    RedrawWindow(
+                        theme::hwnd(&self.window.handle),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                    );
+                }
+            }
+            self.page.set(1);
+            self.layout();
+            if let Some(monitor) = self.monitor_view.borrow_mut().as_mut() {
+                monitor.smoke_battery(true, view)?;
+            }
+            self.window.set_visible(false);
+            if !self.fast_tick() {
+                return Err("Visible independent monitor lost its 500 ms status tick".into());
+            }
+            self.update();
+            if hub.active.load(Ordering::Acquire) {
+                return Err("Battery update started capture".into());
+            }
+            if let Some(monitor) = self.monitor_view.borrow_mut().as_mut() {
+                monitor.smoke_battery(false, view)?;
+            }
+            self.window.set_visible(true);
+        }
+        hub.battery.disconnect();
+        self.refresh_battery(false);
+        if self.battery.get().view != View::default() {
+            return Err("Disconnected battery retained a reading".into());
+        }
+        hub.battery.connect();
+        self.refresh_battery(false);
+        if self.battery.get().view.status != Status::Awaiting {
+            return Err("Reconnected battery reused previous data".into());
+        }
+        hub.battery.observe(7);
+        self.refresh_battery(true);
+        hub.clear();
+        hub.reset();
+        if hub.battery.snapshot().raw != Some(7) {
+            return Err("Clearing capture cleared battery telemetry".into());
+        }
+        self.page.set(0);
+        self.layout();
+        println!("Battery validation: conversion, both views, minimum layout, independent window, paused capture and reconnect passed");
+        Ok(())
+    }
     pub(super) fn test_responsiveness(&self) -> Result<(), String> {
         use winapi::um::wingdi::*;
         unsafe {
@@ -55,6 +189,17 @@ impl App {
             // and cached status updates. Device access is excluded in smoke mode.
             let mut samples = Vec::new();
             let mut commands = Vec::new();
+            for page in 0..6 {
+                self.page.set(page);
+                let started = std::time::Instant::now();
+                self.layout();
+                let layout = started.elapsed().as_micros();
+                self.update();
+                println!(
+                    "Page latency: page={page}, layout_us={layout}, update_us={}",
+                    started.elapsed().as_micros() - layout
+                );
+            }
             for _ in 0..10 {
                 for button in &self.nav {
                     let started = std::time::Instant::now();

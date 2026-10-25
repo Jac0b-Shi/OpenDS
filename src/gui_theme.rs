@@ -1,6 +1,7 @@
 //! NWG 的轻量 GDI 外观层：原生控件仍负责键盘、焦点和可访问性。
 pub use crate::appearance::palette;
 use native_windows_gui as nwg;
+use std::collections::HashMap;
 use winapi::{
     shared::windef::*,
     um::{wingdi::*, winuser::*},
@@ -39,22 +40,76 @@ pub fn wide(s: &str) -> Vec<u16> {
 pub fn hwnd(h: &nwg::ControlHandle) -> HWND {
     h.hwnd().unwrap_or(std::ptr::null_mut())
 }
-pub fn place(h: &nwg::ControlHandle, x: i32, y: i32, w: i32, height: i32, dpi: u32, visible: bool) {
-    unsafe {
-        let h = hwnd(h);
-        if h.is_null() {
-            return;
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Placement {
+    rect: Option<(i32, i32, i32, i32)>,
+    visible: bool,
+}
+/// Apply only changed child geometry/visibility, in one native layout batch.
+#[derive(Default)]
+pub struct ControlLayout {
+    previous: HashMap<HWND, Placement>,
+}
+impl ControlLayout {
+    pub fn apply(&mut self, all: &[HWND], wanted: &[(HWND, i32, i32, i32, i32)], dpi: u32) {
+        unsafe {
+            let mut changes = Vec::new();
+            for &handle in all {
+                let old = *self.previous.entry(handle).or_insert_with(|| Placement {
+                    rect: None,
+                    visible: GetWindowLongPtrW(handle, GWL_STYLE) & WS_VISIBLE as isize != 0,
+                });
+                let new = wanted.iter().find(|p| p.0 == handle).map_or(
+                    Placement {
+                        visible: false,
+                        ..old
+                    },
+                    |&(_, x, y, w, h)| Placement {
+                        rect: Some((px(x, dpi), px(y, dpi), px(w.max(1), dpi), px(h.max(1), dpi))),
+                        visible: true,
+                    },
+                );
+                if new != old {
+                    let flags = SWP_NOZORDER
+                        | SWP_NOACTIVATE
+                        | SWP_NOREDRAW
+                        | SWP_NOCOPYBITS
+                        | if old.rect == new.rect {
+                            SWP_NOMOVE | SWP_NOSIZE
+                        } else {
+                            0
+                        }
+                        | if old.visible != new.visible {
+                            if new.visible {
+                                SWP_SHOWWINDOW
+                            } else {
+                                SWP_HIDEWINDOW
+                            }
+                        } else {
+                            0
+                        };
+                    changes.push((handle, new, flags));
+                }
+            }
+            if changes.is_empty() {
+                return;
+            }
+            let mut batch = BeginDeferWindowPos(changes.len() as i32);
+            for &(handle, new, flags) in &changes {
+                if batch.is_null() {
+                    break;
+                }
+                let (x, y, w, h) = new.rect.unwrap_or_default();
+                batch = DeferWindowPos(batch, handle, std::ptr::null_mut(), x, y, w, h, flags);
+            }
+            let applied = !batch.is_null() && EndDeferWindowPos(batch) != 0;
+            for (handle, new, flags) in changes {
+                let (x, y, w, h) = new.rect.unwrap_or_default();
+                if applied || SetWindowPos(handle, std::ptr::null_mut(), x, y, w, h, flags) != 0 {
+                    self.previous.insert(handle, new);
+                }
+            }
         }
-        SetWindowPos(
-            h,
-            std::ptr::null_mut(),
-            px(x, dpi),
-            px(y, dpi),
-            px(w.max(1), dpi),
-            px(height.max(1), dpi),
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-        ShowWindow(h, if visible { SW_SHOWNA } else { SW_HIDE });
     }
 }
 pub fn set_font(h: &nwg::ControlHandle, f: &nwg::Font) {
@@ -286,6 +341,96 @@ pub unsafe fn draw_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn child_layout_preserves_visibility_dpi_and_skips_redundant_resize() {
+        use winapi::{shared::minwindef::*, um::commctrl::*};
+        unsafe extern "system" fn count_position(
+            hwnd: HWND,
+            msg: UINT,
+            w: WPARAM,
+            l: LPARAM,
+            _: usize,
+            count: usize,
+        ) -> LRESULT {
+            if msg == WM_WINDOWPOSCHANGED {
+                *(count as *mut u32) += 1;
+            }
+            DefSubclassProc(hwnd, msg, w, l)
+        }
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide("").as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                600,
+                400,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert!(!parent.is_null());
+            let child = CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide("").as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                1,
+                1,
+                parent,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert!(!child.is_null());
+            let mut positions = 0u32;
+            SetWindowSubclass(
+                child,
+                Some(count_position),
+                1,
+                &mut positions as *mut _ as usize,
+            );
+            let mut layout = ControlLayout::default();
+            let desired = [(child, 10, 20, 100, 30)];
+            layout.apply(&[child], &desired, 96);
+            let count = positions;
+            layout.apply(&[child], &desired, 96);
+            assert_eq!(
+                positions, count,
+                "An unchanged layout sent native positioning messages"
+            );
+            layout.apply(&[child], &desired, 192);
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(child, &mut rect);
+            MapWindowPoints(
+                std::ptr::null_mut(),
+                parent,
+                &mut rect as *mut _ as *mut POINT,
+                2,
+            );
+            assert_eq!(
+                (
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top
+                ),
+                (20, 40, 200, 60)
+            );
+            layout.apply(&[child], &[], 192);
+            assert_eq!(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE as isize, 0);
+            layout.apply(&[child], &desired, 192);
+            assert_ne!(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE as isize, 0);
+            assert_eq!(IsWindowVisible(parent), 0);
+            RemoveWindowSubclass(child, Some(count_position), 1);
+            DestroyWindow(parent);
+        }
+    }
     #[test]
     fn count_units_round_at_boundaries_and_cover_u64() {
         for (value, expected) in [
