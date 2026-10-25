@@ -2683,6 +2683,9 @@ fn run_inner(
         app.test_dependency_directories()?;
     }
     if smoke && std::env::var("OPENDS_UI_SMOKE_THEME_STRESS").as_deref() == Ok("1") {
+        // Modal acceptance dialogs pump the main window's timer too. The normal
+        // two-second smoke exit must not close them during the stress loop.
+        app.smoke_deadline.set(None);
         app.test_themes()?;
         app.smoke_deadline.set(Some(
             std::time::Instant::now() + std::time::Duration::from_secs(2),
