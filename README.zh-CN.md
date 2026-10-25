@@ -184,6 +184,7 @@ GPL-3.0-or-later。完整文本见 [LICENSE](LICENSE)，第三方组件见 [THIR
 - [开发者指南](docs/guides/developer-guide.md)
 - [协议说明](docs/guides/protocol.md)
 - [常驻运行](docs/guides/resident.md)
+- [更新日志](CHANGELOG.md)
 
 ## 致谢
 

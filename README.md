@@ -186,6 +186,7 @@ When distributing binaries, include `vendor/viiper-source`; the release script p
 - [Developer guide](docs/guides/developer-guide.md)
 - [Protocol notes](docs/guides/protocol.md)
 - [Resident mode](docs/guides/resident.md)
+- [Changelog](CHANGELOG.md)
 
 ## Acknowledgements
 
