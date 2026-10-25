@@ -1,6 +1,6 @@
 # 更新日志
 
-面向用户的版本变更摘要。0.3.0 起，每个版本的完整说明（中英双语、升级提示、校验和与签名信息）同时发布在 [GitHub Releases](https://github.com/Jac0b-Shi/OpenDS/releases) 与 [Gitee Releases](https://gitee.com/Jac0b_Shi/OpenDS/releases)；更早版本以本文件为准。
+面向用户的版本变更摘要。每个版本的完整说明（中英双语、升级提示、校验和与签名信息）同时发布在 [GitHub Releases](https://github.com/Jac0b-Shi/OpenDS/releases) 与 [Gitee Releases](https://gitee.com/Jac0b_Shi/OpenDS/releases)；0.1.0 只在 GitHub 发布，Gitee 从 0.2.0 起。本文件是这些说明的汇总。
 
 版本号遵循 `主版本.次版本.修订号`。`0.x` 期间次版本号表示功能批次，修订号表示修正。
 
