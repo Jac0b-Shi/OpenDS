@@ -46,6 +46,10 @@ function Invoke-UiCheck([string]$Path, [string]$Locale, [int]$Dpi, [bool]$Expand
         if (!(Test-Path -LiteralPath $marker)) { throw 'Restarted test process did not finish.' }
         $handoff = (Get-Content -LiteralPath $marker -Raw).Split(':')
         if ($handoff[0] -eq $process.Id.ToString() -or $handoff[1] -ne $(if ($Restart -eq 'running') { 'true' } else { 'false' })) { throw 'Restart did not preserve the bridge state.' }
+        # The marker precedes process exit; inherited output handles may still
+        # be open until the restarted process has fully terminated.
+        $restarted = Get-Process -Id ([int]$handoff[0]) -ErrorAction SilentlyContinue
+        if ($restarted -and !$restarted.WaitForExit(25000)) { throw 'Restarted test process did not exit.' }
         Remove-Item -LiteralPath $marker
     }
     $results.Add([pscustomobject]@{executable=$Path; locale=$Locale; dpi=$Dpi; expanded=$Expand; restart=$Restart; first_window_ms=$firstWindow; elapsed_ms=$timer.ElapsedMilliseconds; sampled_peak_working_set_bytes=$peak; exit_code=$process.ExitCode})
