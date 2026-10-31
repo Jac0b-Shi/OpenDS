@@ -20,19 +20,19 @@ Closing the settings window keeps OpenDS in the tray. Stopping the bridge or exi
 
 ## Input history and overlay
 
-Start collection in **Live monitor** to show input history below the controller. It records button changes, stick directions and strength tiers. Right-stick recording is off by default. Input history settings provide text, icon or hidden source labels (hidden by default), configurable thresholds, and colors. Touchpad contact and motion are excluded; its physical click is recorded.
+Start collection in **Live monitor** to record button, stick-direction and strength changes below the controller. Right-stick recording is off by default; turn it on in **Input history settings**, where source labels (text, icon or hidden), thresholds and colors are also configurable. Touchpad contact and motion are excluded; its physical click is recorded.
 
-The current input state is at the top, with a live duration. Each older row shows how long that state lasted until the next change. Times use milliseconds or seconds and display `99+ s` at 99 seconds. Disconnect and reconnect events appear as plugs, with offline time included. Only visible history is retained; enlarging a window does not recover discarded events.
+The current input state stays pinned at the top with a live duration, and each older row shows how long that state lasted. Times display `99+ s` past 99 seconds. Disconnect and reconnect appear as plug events.
 
-Open **Overlay** for an independent window with optional always-on-top, adjustable size, separate background/content opacity and light/dark themes. Locking enables mouse passthrough. Unlock or restore it from the monitor controls or tray menu. Automatic colors swap neutral pure black/white in dark mode; disable this option to configure separate light and dark palettes.
+Open **Overlay** for an independent table with optional always-on-top, adjustable size, separate background and content opacity, and light/dark themes. Locking enables mouse passthrough; unlock from the panel, the tray menu, or **Restore overlay**. With automatic colors off, light and dark palettes can be set separately.
 
-File recording also creates a matching `.commands.csv`, containing individual input and connection events, classification settings and uncapped timestamps. Existing command files are not overwritten. Viewing and replaying historical files are not included in this version.
+**Record file** also writes a matching `.commands.csv` with each input and connection event, the classification settings and the raw timestamp.
 
 Times are based on received input, rather than game frame counts.
 
 ## Commands
 
-The GUI covers everyday use. The commands below are for scripting and troubleshooting.
+The GUI covers everyday use. The commands are for scripting, batch changes, and letting an AI agent inspect or configure the bridge — `doctor`, `list` and `startup status` all print plain text that can be fed to a model directly.
 
 ```powershell
 .\opends.exe              # open the settings window
@@ -102,13 +102,21 @@ Restart the bridge after changing anything.
 
 ## Start at Login
 
+Open **General settings** and tick **Run in tray when Windows starts**. You can also set it during installation:
+
+```powershell
+.\scripts\Install-OpenDS.ps1 -Startup
+```
+
+For scripting:
+
 ```powershell
 .\opends.exe startup enable
 .\opends.exe startup status
 .\opends.exe startup disable
 ```
 
-Or pass `-Startup` to `scripts/Install-OpenDS.ps1` during install. Startup uses the current user's Run key and needs no administrator rights.
+Startup uses the current user's Run key and needs no administrator rights.
 
 ## Troubleshooting
 
