@@ -1032,11 +1032,23 @@ impl WindowState {
                 let r = &surface.renderer;
                 (*r.target.0).BeginDraw();
                 let (bg, _) = cfg.palette(dark);
-                (*r.target.0).Clear(&if contrast {
-                    palette_color(crate::appearance::palette().bg)
-                } else {
-                    ink(bg, 1.)
-                });
+                (*r.target.0).Clear(&palette_color(crate::appearance::palette().surface));
+                if !preview {
+                    // The title and toolbar belong to the card; only the input
+                    // rows use the user's command background.
+                    r.rect(
+                        0.,
+                        60.,
+                        width,
+                        (height - 60.).max(0.),
+                        6.,
+                        if contrast {
+                            palette_color(crate::appearance::palette().bg)
+                        } else {
+                            ink(bg, 1.)
+                        },
+                    );
+                }
                 let start = if preview {
                     6.
                 } else {
@@ -1047,13 +1059,9 @@ impl WindowState {
                         24.,
                         crate::tr!(command_title),
                         1,
-                        if contrast {
-                            palette_color(crate::appearance::palette().text)
-                        } else {
-                            ink(cfg.palette(dark).1, 1.)
-                        },
+                        palette_color(crate::appearance::palette().text),
                     );
-                    60.
+                    66.
                 };
                 if preview {
                     (*r.target.0).Clear(&ink(0xb0b0b0, 1.));
@@ -1145,13 +1153,6 @@ impl WindowState {
                         self.main_surface = None;
                     }
                 } else {
-                    if !preview {
-                        let backdrop = crate::appearance::palette().bg;
-                        let backdrop = ((backdrop & 255) << 16)
-                            | (backdrop & 0xff00)
-                            | ((backdrop >> 16) & 255);
-                        surface.round_corners(rect.right, rect.bottom, dpi, Some(backdrop));
-                    }
                     BitBlt(dc, 0, 0, rect.right, rect.bottom, surface.dc, 0, 0, SRCCOPY);
                 }
             }
@@ -1192,7 +1193,7 @@ impl WindowState {
         } else {
             self.cfg.rows
         };
-        let mut remaining = height - if overlay { 28. } else { 60. };
+        let mut remaining = height - if overlay { 28. } else { 66. };
         let mut capacity = 0;
         for e in events.iter().take(rows) {
             let h = event_height(e, &self.cfg, width);

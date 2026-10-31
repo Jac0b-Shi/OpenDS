@@ -1026,7 +1026,7 @@ impl MonitorView {
                 GetClientRect(s.canvas, &mut r);
             }
             let w = r.right as f32 * 96. / crate::gui_theme::window_dpi(s.canvas).max(96) as f32;
-            s.scroll = (model_bottom(if w < 680. { w } else { w * 0.41 }) + 115.) as i32;
+            s.scroll = (model_bottom(if w < 680. { w } else { w * 0.41 }) + 130.) as i32;
             unsafe {
                 InvalidateRect(s.canvas, null(), 0);
                 UpdateWindow(s.canvas);
@@ -1252,7 +1252,7 @@ impl ViewState {
         let content = if cw < 680. {
             model_bottom(cw)
                 + crate::battery_ui::header(cw).2
-                + 115.
+                + 130.
                 + 660.
                 + self
                     .hub
@@ -1264,7 +1264,8 @@ impl ViewState {
         } else {
             viewport.max(
                 model_bottom(cw * 0.41)
-                    + 115.
+                    + crate::battery_ui::header(cw * 0.41).2
+                    + 130.
                     + self
                         .hub
                         .commands
@@ -1649,21 +1650,26 @@ impl ViewState {
                 .lock()
                 .map(|h| h.settings.rows as f32 * 30. * h.settings.content_scale() + 78.)
                 .unwrap_or(318.);
+            let model_height = bottom + 98.;
+            let command_top = model_height + 16.;
+            // One value drives both the scroll range and the page height so a
+            // shorter or taller table cannot leave a dead strip below it.
+            let stack_height = command_top + command_height + 16.;
             if let Some(v) = self.commands.as_mut() {
                 v.place(
                     self.canvas,
                     8.,
-                    bottom + 108. - offset,
+                    command_top + 8. - offset,
                     left - 16.,
                     command_height,
                     dpi,
                     IsWindowVisible(self.root) != 0,
                 );
             }
-            let model_height = bottom + 115. + command_height;
+
             let graph_x = if narrow { 0. } else { left + 16. };
             let graph_y = if narrow {
-                model_height + 12. - offset
+                stack_height + 12. - offset
             } else {
                 -offset
             };
@@ -1677,11 +1683,21 @@ impl ViewState {
                 0.,
                 -offset,
                 left,
-                if narrow {
-                    model_height
-                } else {
-                    h.max(model_height)
-                },
+                model_height,
+                12.,
+                palette_color(crate::appearance::palette().surface),
+            );
+            r.line(
+                (12., model_height + 8. - offset),
+                (left - 12., model_height + 8. - offset),
+                1.,
+                palette_color(crate::appearance::palette().line),
+            );
+            r.rect(
+                0.,
+                command_top - offset,
+                left,
+                command_height + 16.,
                 12.,
                 palette_color(crate::appearance::palette().surface),
             );

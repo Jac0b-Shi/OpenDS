@@ -595,6 +595,32 @@ unsafe extern "system" fn control_proc(
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     let readonly_text =
         kind == 3 && style & ES_MULTILINE as isize != 0 && style & ES_READONLY as isize != 0;
+    if readonly_text && msg == WM_NCPAINT && style & WS_VISIBLE as isize == 0 {
+        return 0;
+    }
+    // EDIT updates the scrollbar directly inside these messages, bypassing
+    // WM_NCPAINT. Suppress that intermediate native pass, then repaint client
+    // and scrollbar through our buffered paths. Never show a hidden control.
+    let native_edit_update = matches!(
+        msg,
+        WM_VSCROLL | WM_MOUSEWHEEL | WM_SETTEXT | WM_SIZE | WM_SETFONT
+    ) || [
+        EM_LINESCROLL as u32,
+        EM_SCROLL as u32,
+        EM_SCROLLCARET as u32,
+        EM_REPLACESEL as u32,
+    ]
+    .contains(&msg);
+    if readonly_text && style & WS_VISIBLE as isize != 0 && native_edit_update {
+        DefSubclassProc(hwnd, WM_SETREDRAW, 0, 0);
+        let result = DefSubclassProc(hwnd, msg, w, l);
+        if IsWindow(hwnd) != 0 {
+            DefSubclassProc(hwnd, WM_SETREDRAW, 1, 0);
+            RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_NOERASE);
+            scroll_bar(hwnd);
+        }
+        return result;
+    }
     if (kind == 5 || readonly_text) && msg == WM_ERASEBKGND {
         return 1;
     }
@@ -958,6 +984,7 @@ pub unsafe fn validate_scrollbar(hwnd: HWND) -> Result<(), String> {
 pub unsafe fn validate_hover_stability(hwnd: HWND) -> Result<(), String> {
     let c = class(hwnd);
     let saved = text(hwnd);
+    let visible = GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE as isize;
     let check = if c == "button" {
         Some(SendMessageW(hwnd, BM_GETCHECK, 0, 0))
     } else {
@@ -1050,6 +1077,9 @@ pub unsafe fn validate_hover_stability(hwnd: HWND) -> Result<(), String> {
         SendMessageW(hwnd, BM_SETCHECK, state as usize, 0);
     } else {
         SetWindowTextW(hwnd, wide(&saved).as_ptr());
+    }
+    if GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE as isize != visible {
+        return Err("Native text update changed visibility".into());
     }
     result
 }
