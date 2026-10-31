@@ -20,13 +20,19 @@ Closing the settings window keeps OpenDS in the tray. Stopping the bridge or exi
 
 ## Input history and overlay
 
-Start collection in **Live monitor** to record button, stick-direction and strength changes below the controller. Right-stick recording is off by default; turn it on in **Input history settings**, where source labels (text, icon or hidden), thresholds and colors are also configurable. Touchpad contact and motion are excluded; its physical click is recorded.
+Start collection in **Live monitor** to record button, stick-direction and strength changes below the controller. Right-stick recording is off by default; turn it on in **Input history settings**, where source labels (text, icon or hidden), thresholds and colors are also configurable. Source labels are hidden by default. Content size supports 50% to 500%, scaling text, icons and row heights together. Narrow windows place the duration below the combination. Touchpad contact and motion are excluded; its physical click is recorded.
 
 The current input state stays pinned at the top with a live duration, and each older row shows how long that state lasted. Times display `99+ s` past 99 seconds. Disconnect and reconnect appear as plug events.
+
+LS, RS, L2 and R2 each offer Distinguish strength (on by default). Turning it off records activation, release and stick direction changes without strength transitions, in both the table and command CSV. Tier controls are disabled while dead zones remain editable. Each ungraded color is independent and initially matches the full-strength color. Trigger dead zones use raw values 0–255, defaulting to 0; values at or below the dead zone are released. Other thresholds remain raw values. CSV strength fields use 0 for released, 1–3 for tiers and 4 for ungraded active input; raw input values are retained.
+
+Separators between complete records support light/dark colors, opacity and flat, fading or tapered ends. The overlay fits complete records to its window height by default; turn off automatic rows to set a fixed count.
 
 Open **Overlay** for an independent table with optional always-on-top, adjustable size, separate background and content opacity, and light/dark themes. Locking enables mouse passthrough; unlock from the panel, the tray menu, or **Restore overlay**. With automatic colors off, light and dark palettes can be set separately.
 
 **Record file** also writes a matching `.commands.csv` with each input and connection event, the classification settings and the raw timestamp.
+
+Input history has independent minimum-duration filters: display defaults to 16.67 ms, while the command file defaults to 0 ms (off). Both values are configurable; 0 disables filtering. A state appears or is written after reaching the threshold, retaining its original start time. Short excursions between identical combinations merge into one duration. Connection, disconnection and gap events always pass. Waveform recording is unaffected.
 
 Times are based on received input, rather than game frame counts.
 

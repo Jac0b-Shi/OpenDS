@@ -219,6 +219,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let mut section_ok = true;
+        let mut unified_seen = [[false; 4]; 2];
         for (i, line) in text.lines().enumerate() {
             let line = line.trim().trim_start_matches('\u{feff}');
             if line.is_empty() || line.starts_with([';', '#']) {
@@ -301,11 +302,35 @@ impl Config {
                 "hidhide_directory" => cfg.hidhide_directory = value.to_owned(),
                 key if key.starts_with("command_") => {
                     cfg.commands.set(&key[8..], value)?;
+                    let parts = key[8..].split('_').collect::<Vec<_>>();
+                    if let Some(i) = parts
+                        .get(1)
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|i| *i < 4)
+                    {
+                        if parts[0] == "unified" {
+                            unified_seen[0][i] = true;
+                        }
+                        if parts[0] == "darkunified" {
+                            unified_seen[1][i] = true;
+                        }
+                    }
                 }
                 "monitor_sample_hz" => number!(monitor_sample_hz),
                 "monitor_fps" => number!(monitor_fps),
                 "monitor_seconds" => number!(monitor_seconds),
                 _ => {}
+            }
+        }
+        // Unified colours were added after the per-tier palettes. A config written
+        // before that has no `command_unified_N` keys, so seed each one from the
+        // full-push tier of the matching palette instead of leaving it black.
+        for i in 0..4 {
+            if !unified_seen[0][i] {
+                cfg.commands.unified_colors[i] = cfg.commands.colors[i][2];
+            }
+            if !unified_seen[1][i] {
+                cfg.commands.dark_unified_colors[i] = cfg.commands.dark_colors[i][2];
             }
         }
         cfg.clamp();

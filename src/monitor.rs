@@ -595,6 +595,7 @@ impl Monitor {
             self.record_history(&h);
         }
         self.recording.stop();
+        self.commands.recording.advance(self.display_time());
         self.commands.recording.stop();
     }
     fn record_history(&self, h: &History) {

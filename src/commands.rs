@@ -16,8 +16,21 @@ pub struct Settings {
     pub source: u8,
     pub rows: usize,
     pub overlay_rows: usize,
+    pub overlay_auto_rows: bool,
+    pub separators: bool,
+    pub separator_alpha: u8,
+    pub separator_style: u8,
+    pub separator: u32,
+    pub dark_separator: u32,
+    pub content_size: u16,
+    pub display_min_ms: f64,
+    pub record_min_ms: f64,
     pub stick: [[f32; 3]; 2],
     pub trigger: [[u8; 2]; 2],
+    pub trigger_deadzone: [u8; 2],
+    pub ignore_strength: [bool; 4],
+    pub unified_colors: [u32; 4],
+    pub dark_unified_colors: [u32; 4],
     pub colors: [[u32; 3]; 4],
     pub dark_colors: [[u32; 3]; 4],
     pub dark_neutral: u32,
@@ -48,8 +61,21 @@ impl Default for Settings {
             source: 2,
             rows: 8,
             overlay_rows: 12,
+            overlay_auto_rows: true,
+            separators: true,
+            separator_alpha: 55,
+            separator_style: 1,
+            separator: 0x808080,
+            dark_separator: 0x808080,
+            content_size: 100,
+            display_min_ms: 16.67,
+            record_min_ms: 0.,
             stick: [[12., 51., 98.]; 2],
             trigger: [[128, 250]; 2],
+            trigger_deadzone: [0; 2],
+            ignore_strength: [false; 4],
+            unified_colors: [0xE54747, 0x36AC65, 0xE54747, 0xE54747],
+            dark_unified_colors: [0xE54747, 0x36AC65, 0xE54747, 0xE54747],
             colors: [
                 [0x9DDCF5, 0xE5B900, 0xE54747],
                 [0xBFE8C5, 0x83D69B, 0x36AC65],
@@ -95,6 +121,13 @@ impl Settings {
             source,
             rows,
             overlay_rows,
+            overlay_auto_rows,
+            separators,
+            separator_alpha,
+            separator_style,
+            content_size,
+            display_min_ms,
+            record_min_ms,
             neutral,
             dpad,
             button,
@@ -109,6 +142,23 @@ impl Settings {
             width,
             height
         );
+        for i in 0..4 {
+            v.push((format!("ignore_{i}"), self.ignore_strength[i].to_string()));
+            v.push((
+                format!("unified_{i}"),
+                format!("#{:06X}", self.unified_colors[i]),
+            ));
+            v.push((
+                format!("darkunified_{i}"),
+                format!("#{:06X}", self.dark_unified_colors[i]),
+            ));
+        }
+        for i in 0..2 {
+            v.push((
+                format!("triggerdead_{i}"),
+                self.trigger_deadzone[i].to_string(),
+            ));
+        }
         for (i, a) in self.stick.iter().enumerate() {
             for (j, n) in a.iter().enumerate() {
                 v.push((format!("stick_{i}_{j}"), n.to_string()));
@@ -134,6 +184,8 @@ impl Settings {
             ("dark_dpad", self.dark_dpad),
             ("dark_button", self.dark_button),
             ("dark_connection", self.dark_connection),
+            ("separator", self.separator),
+            ("dark_separator", self.dark_separator),
         ] {
             v.push((k.into(), format!("#{n:06X}")));
         }
@@ -154,7 +206,10 @@ impl Settings {
         v
     }
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
-        let value = if matches!(key, "enabled" | "right" | "auto_colors" | "topmost") {
+        let value = if matches!(
+            key,
+            "enabled" | "right" | "auto_colors" | "topmost" | "overlay_auto_rows" | "separators"
+        ) {
             match value {
                 "1" => "true",
                 "0" => "false",
@@ -180,6 +235,13 @@ impl Settings {
             source,
             rows,
             overlay_rows,
+            overlay_auto_rows,
+            separators,
+            separator_alpha,
+            separator_style,
+            content_size,
+            display_min_ms,
+            record_min_ms,
             auto_colors,
             theme,
             bg_alpha,
@@ -191,6 +253,8 @@ impl Settings {
             height
         );
         match key {
+            "separator" => self.separator = rgb(value)?,
+            "dark_separator" => self.dark_separator = rgb(value)?,
             "dark_neutral" => self.dark_neutral = rgb(value)?,
             "dark_dpad" => self.dark_dpad = rgb(value)?,
             "dark_button" => self.dark_button = rgb(value)?,
@@ -206,6 +270,10 @@ impl Settings {
                     .and_then(|s| s.parse::<usize>().ok())
                     .ok_or("Unknown command setting")?;
                 match parts[0] {
+                    "ignore" if i < 4 => self.ignore_strength[i] = number(value)?,
+                    "unified" if i < 4 => self.unified_colors[i] = rgb(value)?,
+                    "darkunified" if i < 4 => self.dark_unified_colors[i] = rgb(value)?,
+                    "triggerdead" if i < 2 => self.trigger_deadzone[i] = number(value)?,
                     "background" if i < 2 => self.background[i] = rgb(value)?,
                     "text" if i < 2 => self.text[i] = rgb(value)?,
                     "stick" | "trigger" | "color" | "darkcolor" => {
@@ -230,6 +298,12 @@ impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=64).contains(&self.rows)
             || !(1..=64).contains(&self.overlay_rows)
+            || !(50..=500).contains(&self.content_size)
+            || [self.display_min_ms, self.record_min_ms]
+                .iter()
+                .any(|v| !v.is_finite() || !(0. ..=60_000.).contains(v))
+            || self.separator_alpha > 100
+            || self.separator_style > 2
             || self.source > 2
             || self.theme > 2
             || self.bg_alpha > 100
@@ -239,23 +313,49 @@ impl Settings {
         {
             return Err("Invalid command display setting".into());
         }
-        if self.stick.iter().any(|a| {
+        if self.stick.iter().enumerate().any(|(i, a)| {
             a.iter().any(|v| !v.is_finite())
                 || a[0] < 0.
-                || a[0] >= a[1]
-                || a[1] >= a[2]
-                || a[2] > 100.
+                || a[0] >= 100.
+                || (!self.ignore_strength[i] && (a[0] >= a[1] || a[1] >= a[2] || a[2] > 100.))
         }) || self.trigger.iter().any(|a| a[0] == 0 || a[0] >= a[1])
         {
             return Err("Thresholds must increase: dead zone < medium < full".into());
         }
         Ok(())
     }
+    /// Controls which existing editor fields are relevant without erasing them.
+    pub fn field_enabled(&self, key: &str) -> bool {
+        let a = key.split('_').collect::<Vec<_>>();
+        let i = a
+            .get(1)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        let level = a.get(2).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        match a[0] {
+            "stick" if i < 2 && level > 0 => !self.ignore_strength[i],
+            "trigger" if i < 2 => !self.ignore_strength[i + 2],
+            "color" | "darkcolor" if i < 4 => !self.ignore_strength[i],
+            _ => true,
+        }
+    }
+    pub fn overlay_row_limit(&self) -> usize {
+        if self.overlay_auto_rows {
+            64
+        } else {
+            self.overlay_rows
+        }
+    }
+    pub fn content_scale(&self) -> f32 {
+        self.content_size as f32 / 100.
+    }
     pub fn classification_eq(&self, b: &Self) -> bool {
         self.enabled == b.enabled
             && self.right == b.right
             && self.stick == b.stick
             && self.trigger == b.trigger
+            && self.trigger_deadzone == b.trigger_deadzone
+            && self.ignore_strength == b.ignore_strength
     }
     pub fn color(&self, color: u32, dark: bool, semantic: bool) -> u32 {
         if self.auto_colors && dark && !semantic {
@@ -281,7 +381,7 @@ impl Settings {
 /// Normalised stick reading: eight directions plus a strength tier.
 ///
 /// `direction` is 1–8 clockwise from up and 0 when centred; `strength` is 0
-/// when inside the first threshold and 1..=3 outside it. Keeping the tier rather
+/// when inside the first threshold, 1..=3 for tiers, or 4 for ungraded active input. Keeping the tier rather
 /// than the raw axis value is what makes the history read as "pushed" instead of
 /// a stream of numbers.
 pub struct Axis {
@@ -362,6 +462,27 @@ fn trigger(v: u8, old: u8, threshold: [u8; 2]) -> u8 {
     }
     s
 }
+fn command_stick(x: u8, y: u8, old: Axis, cfg: &Settings, i: usize) -> Axis {
+    if !cfg.ignore_strength[i] {
+        return stick(x, y, old, cfg.stick[i]);
+    }
+    let mut baseline = old;
+    baseline.strength = u8::from(old.strength > 0);
+    let mut axis = stick(x, y, baseline, [cfg.stick[i][0], 101., 102.]);
+    if axis.strength > 0 {
+        axis.strength = 4;
+    }
+    axis
+}
+fn command_trigger(v: u8, old: u8, cfg: &Settings, i: usize) -> u8 {
+    if v <= cfg.trigger_deadzone[i] {
+        0
+    } else if cfg.ignore_strength[i + 2] {
+        4
+    } else {
+        trigger(v, old, cfg.trigger[i])
+    }
+}
 /// Reduce parsed input to the fields the history displays.
 ///
 /// `session` and `sequence` in [`History`] are assigned by the caller, not here;
@@ -374,16 +495,16 @@ pub fn classify(p: ParsedState, old: State, cfg: &Settings) -> State {
     buttons &= 0x00f7_fff0;
     State {
         sticks: [
-            stick(p.lx, p.ly, old.sticks[0], cfg.stick[0]),
+            command_stick(p.lx, p.ly, old.sticks[0], cfg, 0),
             if cfg.right {
-                stick(p.rx, p.ry, old.sticks[1], cfg.stick[1])
+                command_stick(p.rx, p.ry, old.sticks[1], cfg, 1)
             } else {
                 Axis::default()
             },
         ],
         triggers: [
-            trigger(p.l2, old.triggers[0], cfg.trigger[0]),
-            trigger(p.r2, old.triggers[1], cfg.trigger[1]),
+            command_trigger(p.l2, old.triggers[0], cfg, 0),
+            command_trigger(p.r2, old.triggers[1], cfg, 1),
         ],
         dpad: crate::monitor::dpad_bits(p.buttons0),
         buttons,
@@ -420,6 +541,68 @@ pub struct Event {
     pub state: State,
     pub raw: [u8; 9],
 }
+/// Bounded dwell filter: one undecided state and one last published state.
+/// Boundaries always pass; short excursions returning to the prior state merge.
+#[derive(Default)]
+pub struct DurationFilter {
+    /// Candidate state and the dwell it must reach before it is published.
+    /// Replaced outright when a different state arrives, so two short-lived
+    /// states in a row are both dropped rather than summed.
+    pending: Option<(Event, u64)>,
+    /// Last published event, used to merge returns to the previous state and to
+    /// compute each published event's delta.
+    last: Option<Event>,
+}
+impl DurationFilter {
+    fn publish(&mut self, mut event: Event) -> Event {
+        event.delta = self
+            .last
+            .as_ref()
+            .filter(|last| last.session == event.session)
+            .map(|last| event.time.saturating_sub(last.time));
+        self.last = Some(event.clone());
+        event
+    }
+    pub fn advance(&mut self, now: u64) -> Option<Event> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(e, threshold)| now.saturating_sub(e.time) >= *threshold)
+        {
+            let (event, _) = self.pending.take().unwrap();
+            return Some(self.publish(event));
+        }
+        None
+    }
+    pub fn receive(&mut self, event: Event, minimum_ms: f64) -> [Option<Event>; 2] {
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|last| last.session != event.session)
+        {
+            *self = Self::default();
+        }
+        let completed = self.advance(event.time);
+        self.pending = None;
+        if event.kind != Kind::Input {
+            let boundary = self.publish(event);
+            return [completed, Some(boundary)];
+        }
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|last| last.kind == Kind::Input && last.state == event.state)
+        {
+            return [completed, None];
+        }
+        self.pending = Some((event, (minimum_ms * 1_000_000.).round() as u64));
+        [
+            completed,
+            self.advance(self.pending.as_ref().unwrap().0.time),
+        ]
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Message {
     Input(ParsedState),
@@ -440,6 +623,7 @@ pub struct History {
     previous: Option<State>,
     time: Option<u64>,
     connected: bool,
+    display: DurationFilter,
 }
 impl Default for History {
     fn default() -> Self {
@@ -453,6 +637,7 @@ impl Default for History {
             previous: None,
             time: None,
             connected: false,
+            display: DurationFilter::default(),
         }
     }
 }
@@ -461,6 +646,7 @@ impl History {
         self.session += 1;
         self.sequence = 0;
         self.events.clear();
+        self.display = DurationFilter::default();
         self.latest = None;
         self.previous = None;
         self.time = None;
@@ -502,10 +688,27 @@ impl History {
         };
         self.time = Some(time);
         self.latest = Some(e.clone());
-        self.events.push_front(e.clone());
+        for visible in self
+            .display
+            .receive(e.clone(), self.settings.display_min_ms)
+            .into_iter()
+            .flatten()
+        {
+            self.events.push_front(visible);
+        }
         self.trim(capacity);
         self.revision = self.revision.wrapping_add(1);
         e
+    }
+    pub fn visible_latest(&self) -> Option<&Event> {
+        self.display.last.as_ref()
+    }
+    pub fn advance_display(&mut self, now: u64, capacity: usize) {
+        if let Some(event) = self.display.advance(now) {
+            self.events.push_front(event);
+            self.trim(capacity);
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
     pub fn trim(&mut self, capacity: usize) {
         let previous = self.events.len();
@@ -565,6 +768,7 @@ impl History {
     pub fn clear(&mut self, time: u64) -> Event {
         let e = self.boundary(time, Kind::Clear, 0);
         self.latest = None;
+        self.display = DurationFilter::default();
         self.time = None;
         self.revision += 1;
         e
@@ -644,6 +848,9 @@ impl Commands {
     }
     pub fn pause(&self) {
         self.running.store(false, Release);
+        if let Ok(mut h) = self.history.lock() {
+            h.display.pending = None;
+        }
     }
     pub fn start(&self, time: u64, connected: bool) {
         self.running.store(true, Release);
@@ -671,13 +878,19 @@ impl Commands {
                     self.recording.submit(&e, &h.settings);
                 }
             }
+            if self.running.load(Acquire) {
+                h.advance_display(now, self.capacity());
+                self.recording.advance(now);
+            }
             h.trim(self.capacity());
         }
     }
     pub fn configure(&self, settings: Settings, now: u64) {
         self.work(now);
         if let Ok(mut h) = self.history.lock() {
-            let changed = !h.settings.classification_eq(&settings);
+            let changed = !h.settings.classification_eq(&settings)
+                || h.settings.display_min_ms != settings.display_min_ms
+                || h.settings.record_min_ms != settings.record_min_ms;
             h.settings = settings;
             self.enabled.store(h.settings.enabled, Release);
             if changed && self.running.load(Acquire) {
@@ -759,7 +972,11 @@ pub fn combination(s: State, right: bool) -> String {
     }
     for (i, label) in ["L2", "R2"].iter().enumerate() {
         if s.triggers[i] > 0 {
-            parts.push(format!("{label}:{}", s.triggers[i]));
+            parts.push(if s.triggers[i] == 4 {
+                label.to_string()
+            } else {
+                format!("{label}:{}", s.triggers[i])
+            });
         }
     }
     parts.join(" + ")
@@ -768,6 +985,219 @@ pub fn combination(s: State, right: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn event(time: u64, kind: Kind, pressed: bool) -> Event {
+        let mut state = State::default();
+        state.buttons = if pressed { 16 } else { 0 };
+        Event {
+            session: 1,
+            sequence: time + 1,
+            time,
+            delta: None,
+            kind,
+            state,
+            raw: [0; 9],
+        }
+    }
+    #[test]
+    fn ungraded_inputs_keep_dead_zones_and_direction_without_pressure_events() {
+        let mut cfg = Settings::default();
+        assert_eq!(cfg.ignore_strength, [false; 4]);
+        assert_eq!(cfg.trigger_deadzone, [0; 2]);
+        cfg.ignore_strength = [true; 4];
+        cfg.right = true;
+        cfg.trigger_deadzone = [10, 20];
+        let mut p = p();
+        p.lx = 150;
+        p.rx = 150;
+        p.l2 = 11;
+        p.r2 = 21;
+        let initial = classify(p, State::default(), &cfg);
+        assert_eq!(
+            initial.sticks[0],
+            Axis {
+                direction: 3,
+                strength: 4
+            }
+        );
+        assert_eq!(initial.triggers, [4; 2]);
+        p.lx = 255;
+        p.rx = 255;
+        p.l2 = 255;
+        p.r2 = 255;
+        assert_eq!(classify(p, initial, &cfg), initial);
+        p.ly = 0;
+        assert_ne!(
+            classify(p, initial, &cfg).sticks[0].direction,
+            initial.sticks[0].direction
+        );
+        p = crate::monitor::neutral();
+        p.l2 = 10;
+        p.r2 = 20;
+        assert_eq!(classify(p, initial, &cfg), State::default());
+        cfg.ignore_strength[1] = false;
+        p.rx = 255;
+        assert_eq!(classify(p, State::default(), &cfg).sticks[1].strength, 3);
+        assert!(cfg.field_enabled("stick_0_0"));
+        assert!(!cfg.field_enabled("stick_0_1"));
+        assert!(!cfg.field_enabled("trigger_0_1"));
+        assert!(cfg.field_enabled("triggerdead_0"));
+        assert!(!cfg.field_enabled("color_0_0"));
+        assert!(cfg.field_enabled("unified_0"));
+    }
+    #[test]
+    fn legacy_max_colors_seed_new_colors_and_explicit_choices_round_trip() {
+        let cfg = crate::config::Config::parse(
+            "command_color_0_2=#123456\ncommand_darkcolor_0_2=#ABCDEF\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.commands.unified_colors[0], 0x123456);
+        assert_eq!(cfg.commands.dark_unified_colors[0], 0xabcdef);
+        let cfg =
+            crate::config::Config::parse("command_color_0_2=#123456\ncommand_unified_0=#112233\n")
+                .unwrap();
+        assert_eq!(cfg.commands.unified_colors[0], 0x112233);
+        let mut settings = cfg.commands;
+        settings.ignore_strength[3] = true;
+        settings.trigger_deadzone[1] = 255;
+        let mut restored = Settings::default();
+        for (k, v) in settings.fields() {
+            restored.set(&k, &v).unwrap();
+        }
+        assert_eq!(restored, settings);
+    }
+    #[test]
+    fn separators_and_auto_rows_round_trip_without_changing_inputs() {
+        let defaults = Settings::default();
+        assert!(defaults.overlay_auto_rows && defaults.separators);
+        assert_eq!(defaults.overlay_row_limit(), 64);
+        let mut cfg = defaults.clone();
+        cfg.overlay_auto_rows = false;
+        cfg.overlay_rows = 7;
+        cfg.separator_alpha = 35;
+        cfg.separator_style = 2;
+        cfg.separator = 0x123456;
+        cfg.dark_separator = 0xabcdef;
+        assert_eq!(cfg.overlay_row_limit(), 7);
+        assert!(cfg.classification_eq(&defaults));
+        let mut restored = Settings::default();
+        for (key, value) in cfg.fields() {
+            restored.set(&key, &value).unwrap();
+        }
+        assert_eq!(cfg, restored);
+        cfg.separator_style = 3;
+        assert!(cfg.validate().is_err());
+        cfg.separator_style = 0;
+        cfg.separator_alpha = 101;
+        assert!(cfg.validate().is_err());
+    }
+    #[test]
+    fn dwell_filter_has_exact_boundary_and_retains_original_timestamps() {
+        let mut filter = DurationFilter::default();
+        assert!(filter
+            .receive(event(100, Kind::Input, true), 16.67)
+            .iter()
+            .all(Option::is_none));
+        assert!(filter.advance(16_670_099).is_none());
+        let held = filter.advance(16_670_100).unwrap();
+        assert_eq!(held.time, 100);
+        assert!(filter.advance(99_000_000).is_none());
+        let result = filter.receive(event(99_000_000, Kind::Disconnected, false), 16.67);
+        assert_eq!(result[1].as_ref().unwrap().kind, Kind::Disconnected);
+    }
+    #[test]
+    fn short_excursions_merge_and_boundaries_always_pass() {
+        let mut filter = DurationFilter::default();
+        filter.receive(event(0, Kind::Input, false), 16.67);
+        filter.advance(20_000_000).unwrap();
+        filter.receive(event(100_000_000, Kind::Input, true), 16.67);
+        assert!(filter
+            .receive(event(110_000_000, Kind::Input, false), 16.67)
+            .iter()
+            .all(Option::is_none));
+        assert!(filter.advance(200_000_000).is_none());
+        assert_eq!(filter.last.as_ref().unwrap().time, 0);
+        for kind in [
+            Kind::Gap,
+            Kind::Settings,
+            Kind::Clear,
+            Kind::Disconnected,
+            Kind::Connected,
+        ] {
+            let rows = filter.receive(event(300_000_000, kind, false), 60_000.);
+            assert_eq!(rows[1].as_ref().unwrap().kind, kind);
+        }
+    }
+    #[test]
+    fn display_filter_defaults_and_invalid_thresholds() {
+        let cfg = Settings::default();
+        assert_eq!((cfg.display_min_ms, cfg.record_min_ms), (16.67, 0.));
+        for value in [0., 0.001, 16.67, 60_000.] {
+            let mut configured = cfg.clone();
+            configured.display_min_ms = value;
+            configured.record_min_ms = value;
+            configured.validate().unwrap();
+            let mut restored = Settings::default();
+            for (key, value) in configured.fields() {
+                restored.set(&key, &value).unwrap();
+            }
+            assert_eq!(restored, configured);
+        }
+        for value in [-1., f64::NAN, f64::INFINITY, 60_001.] {
+            let mut configured = cfg.clone();
+            configured.display_min_ms = value;
+            assert!(configured.validate().is_err());
+        }
+    }
+    #[test]
+    fn visible_pending_state_is_bounded_and_not_revived_after_pause() {
+        let c = Commands::default();
+        c.visible_capacity(false, 8);
+        c.start(0, true);
+        let mut pressed = p();
+        pressed.buttons0 |= 16;
+        c.submit(1, Message::Input(pressed));
+        c.work(10);
+        assert_eq!(
+            c.history.lock().unwrap().visible_latest().unwrap().kind,
+            Kind::Connected
+        );
+        c.pause();
+        c.work(100_000_000);
+        assert_eq!(
+            c.history.lock().unwrap().visible_latest().unwrap().kind,
+            Kind::Connected
+        );
+        c.start(200_000_000, true);
+        c.submit(200_000_001, Message::Input(pressed));
+        c.work(216_670_001);
+        assert_eq!(
+            c.history.lock().unwrap().visible_latest().unwrap().time,
+            200_000_001
+        );
+        c.visible_capacity(false, 0);
+        assert!(c.history.lock().unwrap().events.is_empty());
+    }
+    #[test]
+    fn content_size_defaults_validates_and_round_trips_without_reclassification() {
+        let initial = Settings::default();
+        assert_eq!(initial.content_size, 100);
+        for size in [50, 100, 200, 300, 500] {
+            let mut cfg = initial.clone();
+            cfg.set("content_size", &size.to_string()).unwrap();
+            cfg.validate().unwrap();
+            assert!(cfg.classification_eq(&initial));
+            let mut restored = Settings::default();
+            for (key, value) in cfg.fields() {
+                restored.set(&key, &value).unwrap();
+            }
+            assert_eq!(restored, cfg);
+        }
+        for size in [0, 49, 501] {
+            let mut cfg = initial.clone();
+            cfg.content_size = size;
+            assert!(cfg.validate().is_err());
+        }
+    }
     #[test]
     fn manual_theme_palettes_are_independent_and_do_not_invert_colors() {
         let mut cfg = Settings {
@@ -811,6 +1241,7 @@ mod tests {
     #[test]
     fn shrinking_a_paused_view_discards_rows_permanently() {
         let c = Commands::default();
+        c.history.lock().unwrap().settings.display_min_ms = 0.;
         c.visible_capacity(false, 8);
         c.start(0, true);
         for time in 1..8 {
@@ -852,6 +1283,7 @@ mod tests {
     #[test]
     fn input_pipeline_retains_a_press_released_before_the_ui_refreshes() {
         let m = crate::monitor::Monitor::new();
+        m.commands.history.lock().unwrap().settings.display_min_ms = 0.;
         m.commands.main_capacity.store(8, Relaxed);
         m.start(20).unwrap();
         m.connection(true);
@@ -925,6 +1357,7 @@ mod tests {
     fn rows_measure_their_own_state_duration() {
         let ms = 1_000_000;
         let mut h = History::default();
+        h.settings.display_min_ms = 0.;
         h.start(0, true, 8);
         h.receive(0, Message::Input(p()), 8).unwrap();
         let mut pressed = p();
@@ -952,6 +1385,7 @@ mod tests {
     #[test]
     fn transitions_and_short_press() {
         let mut h = History::default();
+        h.settings.display_min_ms = 0.;
         h.start(0, true, 8);
         assert!(h.receive(1, Message::Connection(true), 8).is_none());
         h.receive(2, Message::Input(p()), 8).unwrap();
@@ -998,6 +1432,7 @@ mod tests {
     #[test]
     fn bounded_and_hidden() {
         let mut h = History::default();
+        h.settings.display_min_ms = 0.;
         h.start(0, true, 3);
         for t in 1..100 {
             let mut p = p();

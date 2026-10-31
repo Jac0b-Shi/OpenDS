@@ -1,12 +1,12 @@
-//! Lossless event CSV until a bounded queue or disk error explicitly stops recording.
-use crate::commands::{Event, Settings};
+//! Event CSV with optional dwell filtering and explicit bounded-queue/disk errors.
+use crate::commands::{DurationFilter, Event, Settings};
 use crossbeam_queue::ArrayQueue;
 use std::{
     fs::OpenOptions,
     io::{BufWriter, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering::*},
+        atomic::{AtomicBool, AtomicU64, Ordering::*},
         Arc, Mutex,
     },
     thread::JoinHandle,
@@ -19,6 +19,7 @@ struct Row {
 struct Session {
     queue: Arc<ArrayQueue<Row>>,
     stop: Arc<AtomicBool>,
+    clock: Arc<AtomicU64>,
     error: Arc<Mutex<Option<String>>>,
     worker: JoinHandle<()>,
 }
@@ -67,11 +68,12 @@ impl Recording {
         let queue: Arc<ArrayQueue<Row>> = Arc::new(ArrayQueue::new(2048));
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
-        let (q, s, e) = (queue.clone(), stop.clone(), error.clone());
+        let clock = Arc::new(AtomicU64::new(0));
+        let (q, s, e, c) = (queue.clone(), stop.clone(), error.clone(), clock.clone());
         let worker = std::thread::Builder::new()
             .name("opends-command-file".into())
             .spawn(move || {
-                if let Err(err) = write_events(file, &location, &q, &s) {
+                if let Err(err) = write_events(file, &location, &q, &s, &c) {
                     if let Ok(mut error) = e.lock() {
                         *error = Some(err.to_string());
                     }
@@ -85,6 +87,7 @@ impl Recording {
             .map_err(|_| "Command writer unavailable")? = Some(Session {
             queue,
             stop,
+            clock,
             error,
             worker,
         });
@@ -108,6 +111,13 @@ impl Recording {
                     }
                     s.worker.thread().unpark();
                 }
+            }
+        }
+    }
+    pub fn advance(&self, now: u64) {
+        if let Ok(g) = self.session.lock() {
+            if let Some(s) = g.as_ref() {
+                s.clock.fetch_max(now, Release);
             }
         }
     }
@@ -137,14 +147,36 @@ fn write_events(
     location: &Path,
     queue: &ArrayQueue<Row>,
     stop: &AtomicBool,
+    clock: &AtomicU64,
 ) -> std::io::Result<()> {
     let mut out = BufWriter::new(file);
     writeln!(out,"session,sequence,event,elapsed_ns,interval_ns,lx,ly,rx,ry,l2,r2,buttons0,buttons1,buttons2,ls_direction,ls_strength,rs_direction,rs_strength,l2_strength,r2_strength,dpad,buttons,combination,classification")?;
+    let mut filter = DurationFilter::default();
+    let mut pending_settings = Settings::default();
     let mut flushed = std::time::Instant::now();
     loop {
         for _ in 0..128 {
             let Some(row) = queue.pop() else { break };
-            write_event(&mut out, &row.event, &row.settings)?;
+            let current_sequence = row.event.sequence;
+            let prior_settings = pending_settings.clone();
+            for event in filter
+                .receive(row.event, row.settings.record_min_ms)
+                .into_iter()
+                .flatten()
+            {
+                let settings = if event.sequence == current_sequence {
+                    &row.settings
+                } else {
+                    &prior_settings
+                };
+                write_event(&mut out, &event, settings)?;
+            }
+            pending_settings = row.settings;
+        }
+        if queue.is_empty() {
+            if let Some(event) = filter.advance(clock.load(Acquire)) {
+                write_event(&mut out, &event, &pending_settings)?;
+            }
         }
         if stop.load(Acquire) && queue.is_empty() {
             break;
@@ -169,7 +201,13 @@ fn write_event(out: &mut impl Write, event: &Event, settings: &Settings) -> std:
         .fields()
         .into_iter()
         .filter(|(k, _)| {
-            k.starts_with("stick_") || k.starts_with("trigger_") || k == "right" || k == "enabled"
+            k.starts_with("stick_")
+                || k.starts_with("trigger_")
+                || k.starts_with("ignore_")
+                || k.starts_with("triggerdead_")
+                || k == "right"
+                || k == "enabled"
+                || k == "record_min_ms"
         })
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
@@ -211,6 +249,110 @@ impl Drop for Recording {
 mod tests {
     use super::*;
     #[test]
+    fn ungraded_csv_records_active_mode_and_does_not_repeat_pressure_changes() {
+        let mut h = crate::commands::History::default();
+        h.settings.ignore_strength = [true; 4];
+        h.settings.right = true;
+        h.settings.trigger_deadzone = [10, 0];
+        h.start(0, true, 8);
+        let mut p = crate::monitor::neutral();
+        p.lx = 150;
+        p.rx = 150;
+        p.l2 = 11;
+        p.r2 = 1;
+        let event = h.receive(1, crate::commands::Message::Input(p), 8).unwrap();
+        p.lx = 255;
+        p.rx = 255;
+        p.l2 = 255;
+        p.r2 = 255;
+        assert!(h
+            .receive(2, crate::commands::Message::Input(p), 8)
+            .is_none());
+        let mut out = Vec::new();
+        write_event(&mut out, &event, &h.settings).unwrap();
+        let row = String::from_utf8(out).unwrap();
+        let columns = row.split(',').collect::<Vec<_>>();
+        for index in [15, 17, 18, 19] {
+            assert_eq!(columns[index], "4");
+        }
+        assert!(row.contains("ignore_0=true") && row.contains("triggerdead_0=10"));
+        assert!(!columns[22].contains("L2:4"));
+    }
+    #[test]
+    fn file_filter_is_independent_and_flushes_held_state_at_stop() {
+        for minimum in [0., 16.67] {
+            let path = std::env::temp_dir().join(format!(
+                "opends-filter-{}-{minimum}.csv",
+                std::process::id()
+            ));
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            let queue = ArrayQueue::new(32);
+            let mut h = crate::commands::History::default();
+            h.settings.display_min_ms = 50.;
+            h.settings.record_min_ms = minimum;
+            h.start(0, true, 8);
+            queue
+                .push(Row {
+                    event: h.latest.clone().unwrap(),
+                    settings: h.settings.clone(),
+                })
+                .ok()
+                .unwrap();
+            for (ms, pressed) in [
+                (0, false),
+                (100, true),
+                (110, false),
+                (200, true),
+                (230, false),
+                (249, true),
+            ] {
+                let mut p = crate::monitor::neutral();
+                if pressed {
+                    p.buttons0 |= 16;
+                }
+                let event = h
+                    .receive(ms * 1_000_000, crate::commands::Message::Input(p), 8)
+                    .unwrap();
+                queue
+                    .push(Row {
+                        event,
+                        settings: h.settings.clone(),
+                    })
+                    .ok()
+                    .unwrap();
+            }
+            h.advance_display(254_000_000, 8);
+            assert!(!h
+                .events
+                .iter()
+                .any(|e| e.kind == crate::commands::Kind::Input && e.state.buttons != 0));
+            write_events(
+                file,
+                &path,
+                &queue,
+                &AtomicBool::new(true),
+                &AtomicU64::new(254_000_000),
+            )
+            .unwrap();
+            let csv = std::fs::read_to_string(&path).unwrap();
+            let inputs = csv
+                .lines()
+                .filter(|line| line.contains(",input,"))
+                .collect::<Vec<_>>();
+            assert_eq!(inputs.len(), if minimum == 0. { 6 } else { 3 });
+            if minimum != 0. {
+                assert!(inputs[1].contains(",200000000,200000000,"));
+                assert!(inputs[2].contains(",230000000,30000000,"));
+                assert!(csv.contains("record_min_ms=16.67"));
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    #[test]
     fn queue_overflow_is_explicit_and_bounded() {
         let recording = Recording::default();
         let queue = Arc::new(ArrayQueue::new(2));
@@ -223,6 +365,7 @@ mod tests {
         *recording.session.lock().unwrap() = Some(Session {
             queue: queue.clone(),
             stop: stop.clone(),
+            clock: Arc::new(AtomicU64::new(0)),
             error,
             worker,
         });

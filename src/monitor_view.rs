@@ -1250,7 +1250,7 @@ impl ViewState {
                     .commands
                     .history
                     .lock()
-                    .map(|h| h.settings.rows as f32 * 30. + 78.)
+                    .map(|h| h.settings.rows as f32 * 30. * h.settings.content_scale() + 78.)
                     .unwrap_or(318.)
         } else {
             viewport.max(
@@ -1261,7 +1261,7 @@ impl ViewState {
                         .commands
                         .history
                         .lock()
-                        .map(|h| h.settings.rows as f32 * 30. + 78.)
+                        .map(|h| h.settings.rows as f32 * 30. * h.settings.content_scale() + 78.)
                         .unwrap_or(318.),
             )
         };
@@ -1637,7 +1637,7 @@ impl ViewState {
                 .commands
                 .history
                 .lock()
-                .map(|h| h.settings.rows as f32 * 30. + 78.)
+                .map(|h| h.settings.rows as f32 * 30. * h.settings.content_scale() + 78.)
                 .unwrap_or(318.);
             if let Some(v) = self.commands.as_mut() {
                 v.place(

@@ -682,3 +682,28 @@ command-file-failed = Input history file recording failed
 command-unlock = Unlock
 
 command-color-preview = Color preview
+
+command-content-size = Content size (50–500%)
+
+command-display-min-ms = Hide states shorter than (ms, 0=off)
+command-record-min-ms = Skip states in command file below (ms, 0=off)
+
+command-overlay-auto-rows = Fit overlay rows to window
+command-separators = Show record separators
+command-separator-alpha = Separator opacity (%)
+command-separator-style = Separator end style
+command-separator-color = Separator color
+command-separator-flat = Flat
+command-separator-fade = Fade
+command-separator-taper = Taper
+
+command-ignore-strength = Ignore strength
+command-unified-color = Unified color
+
+command-group-record = Recording and display
+command-group-window = Window and layout
+command-group-strength = Strength and dead zones
+command-group-separator = Separators
+command-group-colors = Colors and theme palettes
+
+command-distinguish-strength = Distinguish strength

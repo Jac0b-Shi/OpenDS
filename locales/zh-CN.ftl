@@ -681,3 +681,28 @@ command-file-failed = 指令文件记录失败
 command-unlock = 解锁
 
 command-color-preview = 颜色预览
+
+command-content-size = 内容大小（50–500%）
+
+command-display-min-ms = 小于此时长不显示（ms，0=关闭）
+command-record-min-ms = 小于此时长不写指令文件（ms，0=关闭）
+
+command-overlay-auto-rows = 悬浮窗行数自适应
+command-separators = 显示记录分隔线
+command-separator-alpha = 分隔线不透明度（%）
+command-separator-style = 分隔线两端样式
+command-separator-color = 分隔线颜色
+command-separator-flat = 平直
+command-separator-fade = 渐隐
+command-separator-taper = 渐尖
+
+command-ignore-strength = 不区分力度
+command-unified-color = 统一颜色
+
+command-group-record = 记录与显示
+command-group-window = 窗口与布局
+command-group-strength = 力度与死区
+command-group-separator = 分隔线
+command-group-colors = 颜色与主题配色
+
+command-distinguish-strength = 区分力度

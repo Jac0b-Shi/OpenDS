@@ -274,6 +274,43 @@ unsafe extern "system" fn control_proc(
     if let Some(r) = parent_message(hwnd, msg, w, l) {
         return r;
     }
+    if kind == 5 && msg == WM_ERASEBKGND {
+        return 1;
+    }
+    if kind == 5 && matches!(msg, WM_PAINT | WM_PRINTCLIENT) {
+        // Render the complete list client atomically. Native scrolling can leave
+        // partial rows exposed between background erasure and text painting.
+        let mut ps: PAINTSTRUCT = std::mem::zeroed();
+        let dc = if msg == WM_PAINT {
+            BeginPaint(hwnd, &mut ps)
+        } else {
+            w as HDC
+        };
+        let mut rect: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect);
+        let buffer = CreateCompatibleDC(dc);
+        let bitmap = CreateCompatibleBitmap(dc, rect.right.max(1), rect.bottom.max(1));
+        if !buffer.is_null() && !bitmap.is_null() {
+            let old = SelectObject(buffer, bitmap as _);
+            FillRect(buffer, &rect, a::surface_brush());
+            DefSubclassProc(hwnd, WM_PRINTCLIENT, buffer as usize, PRF_CLIENT as isize);
+            BitBlt(dc, 0, 0, rect.right, rect.bottom, buffer, 0, 0, SRCCOPY);
+            SelectObject(buffer, old);
+        } else {
+            DefSubclassProc(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+        }
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
+        if !buffer.is_null() {
+            DeleteDC(buffer);
+        }
+        if msg == WM_PAINT {
+            EndPaint(hwnd, &ps);
+            scroll_bar(hwnd);
+        }
+        return 0;
+    }
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     let cb = kind == 1 && matches!(style & 0xf, 2 | 3 | 5 | 6 | 9);
     let push = kind == 1 && !cb && style & 0xf != BS_OWNERDRAW as isize;
@@ -414,21 +451,23 @@ unsafe extern "system" fn control_proc(
     ) {
         scroll_bar(hwnd);
     }
-    if matches!(
-        msg,
-        WM_SETTEXT
-            | BM_SETSTATE
-            | WM_SETFOCUS
-            | WM_KILLFOCUS
-            | WM_ENABLE
-            | BM_SETCHECK
-            | WM_UPDATEUISTATE
-            | WM_LBUTTONDOWN
-            | WM_LBUTTONUP
-            | WM_MOUSEMOVE
-            | WM_MOUSELEAVE
-            | WM_KEYUP
-    ) {
+    if kind != 5
+        && matches!(
+            msg,
+            WM_SETTEXT
+                | BM_SETSTATE
+                | WM_SETFOCUS
+                | WM_KILLFOCUS
+                | WM_ENABLE
+                | BM_SETCHECK
+                | WM_UPDATEUISTATE
+                | WM_LBUTTONDOWN
+                | WM_LBUTTONUP
+                | WM_MOUSEMOVE
+                | WM_MOUSELEAVE
+                | WM_KEYUP
+        )
+    {
         InvalidateRect(hwnd, null(), 0);
         // Native buttons repaint synchronously when their label or enabled state
         // changes. Restore our palette before returning to the caller.
@@ -532,7 +571,11 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
     }
     if msg == WM_MEASUREITEM && l != 0 {
         let m = &mut *(l as *mut MEASUREITEMSTRUCT);
-        if m.CtlType == ODT_COMBOBOX {
+        if m.CtlType == ODT_COMBOBOX
+            || (m.CtlType == ODT_LISTBOX
+                && class(hwnd) == "opendscommandsettings"
+                && m.CtlID == 201)
+        {
             m.itemHeight = crate::gui_theme::px(22, crate::gui_theme::window_dpi(hwnd)) as u32;
             return Some(1);
         }
@@ -571,27 +614,41 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
     }
     if msg == WM_DRAWITEM && l != 0 {
         let d = &*(l as *const DRAWITEMSTRUCT);
-        if d.CtlType == ODT_COMBOBOX || d.CtlType == ODT_MENU {
-            let selected = d.itemState & ODS_SELECTED != 0;
-            let disabled = d.itemState & ODS_DISABLED != 0;
+        let list =
+            d.CtlType == ODT_LISTBOX && class(hwnd) == "opendscommandsettings" && d.CtlID == 201;
+        if d.CtlType == ODT_COMBOBOX || d.CtlType == ODT_MENU || list {
+            let heading = list && d.itemData == 1;
+            let selected = d.itemState & ODS_SELECTED != 0 && !heading;
+            let disabled = d.itemState & ODS_DISABLED != 0 || (list && d.itemData == 2);
             fill(
                 d.hDC,
                 &d.rcItem,
-                if selected { p.selected } else { p.surface },
+                if heading {
+                    p.disabled
+                } else if selected {
+                    p.selected
+                } else {
+                    p.surface
+                },
             );
             let value = if d.CtlType == ODT_MENU {
                 MENUS.with(|m| m.borrow().get(&d.itemID).cloned().unwrap_or_default())
             } else if d.itemID == u32::MAX {
                 String::new()
             } else {
-                let len = SendMessageW(d.hwndItem, CB_GETLBTEXTLEN, d.itemID as usize, 0);
+                let len = SendMessageW(
+                    d.hwndItem,
+                    if list { LB_GETTEXTLEN } else { CB_GETLBTEXTLEN },
+                    d.itemID as usize,
+                    0,
+                );
                 if !(0..32768).contains(&len) {
                     String::new()
                 } else {
                     let mut b = vec![0u16; len as usize + 1];
                     SendMessageW(
                         d.hwndItem,
-                        CB_GETLBTEXT,
+                        if list { LB_GETTEXT } else { CB_GETLBTEXT },
                         d.itemID as usize,
                         b.as_mut_ptr() as isize,
                     );
@@ -612,7 +669,9 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
                 },
                 &value,
                 &r,
-                if disabled {
+                if heading {
+                    p.muted
+                } else if disabled {
                     p.disabled_text
                 } else if selected && p.kind == a::Kind::Contrast {
                     p.primary_text
@@ -621,7 +680,7 @@ pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Opt
                 },
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
             );
-            if d.itemState & ODS_FOCUS != 0 {
+            if d.itemState & ODS_FOCUS != 0 && !heading {
                 DrawFocusRect(d.hDC, &r);
             }
             return Some(1);

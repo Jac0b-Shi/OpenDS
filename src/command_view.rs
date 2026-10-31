@@ -17,6 +17,7 @@ const SETTINGS: u32 = 104;
 /// released with the window (`Drop`) so a closed overlay frees its surface.
 struct Surface {
     renderer: Renderer,
+    separator: RefCell<Option<SeparatorPaint>>,
     dc: HDC,
     bitmap: HBITMAP,
     pixels: *mut u32,
@@ -83,6 +84,7 @@ impl Surface {
         match make {
             Ok(renderer) => Ok(Self {
                 renderer,
+                separator: RefCell::new(None),
                 dc,
                 bitmap,
                 pixels: bits as *mut u32,
@@ -97,9 +99,49 @@ impl Surface {
         }
     }
 }
+impl Surface {
+    /// Clip only the small corner regions of the premultiplied DIB. The radius
+    /// follows DPI, independently of the content size, and covers foreground too.
+    unsafe fn round_corners(&self, w: i32, h: i32, dpi: f32, backdrop: Option<u32>) {
+        let radius = (6. * dpi / 96.).min(w as f32 / 2.).min(h as f32 / 2.);
+        let edge = radius.ceil() as i32;
+        for y in 0..edge {
+            for x in 0..edge {
+                let mut inside = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let dx = radius - (x as f32 + (sx as f32 + 0.5) / 4.);
+                        let dy = radius - (y as f32 + (sy as f32 + 0.5) / 4.);
+                        if dx * dx + dy * dy <= radius * radius {
+                            inside += 1;
+                        }
+                    }
+                }
+                for (xx, yy) in [
+                    (x, y),
+                    (w - 1 - x, y),
+                    (x, h - 1 - y),
+                    (w - 1 - x, h - 1 - y),
+                ] {
+                    let pixel = &mut *self.pixels.add((yy * w + xx) as usize);
+                    let mut result = 0;
+                    for shift in [0, 8, 16, 24] {
+                        let base = backdrop
+                            .map(|c| if shift == 24 { 255 } else { (c >> shift) & 255 })
+                            .unwrap_or(0);
+                        let channel = ((*pixel >> shift) & 255) * inside + base * (16 - inside);
+                        result |= ((channel + 8) / 16) << shift;
+                    }
+                    *pixel = result;
+                }
+            }
+        }
+    }
+}
 impl Drop for Surface {
     fn drop(&mut self) {
         unsafe {
+            self.separator.get_mut().take();
             self.renderer.brush = Com::empty();
             self.renderer.target = Com::empty();
             SelectObject(self.dc, self.old);
@@ -124,6 +166,7 @@ struct WindowState {
     status: HWND,
     preview: HWND,
     keys: Vec<String>,
+    selected_index: usize,
     locked: bool,
     show_main: bool,
     main_surface: Option<Surface>,
@@ -213,6 +256,25 @@ impl View {
             return Err("Overlay was not created".into());
         }
         let original = s.cfg.clone();
+        for dpi in [96., 144., 192.] {
+            let surface = Surface::new(s.overlay, 64, 64, dpi)?;
+            std::slice::from_raw_parts_mut(surface.pixels, 64 * 64).fill(0xffffffff);
+            surface.round_corners(64, 64, dpi, Some(0x15181f));
+            let pixels = std::slice::from_raw_parts(surface.pixels, 64 * 64);
+            if [pixels[0], pixels[63], pixels[64 * 63], pixels[64 * 64 - 1]] != [0xff15181f; 4]
+                || pixels[32 * 64 + 32] != 0xffffffff
+            {
+                return Err(format!("Embedded corner composition failed at DPI {dpi}"));
+            }
+            std::slice::from_raw_parts_mut(surface.pixels, 64 * 64).fill(0xffffffff);
+            surface.round_corners(64, 64, dpi, None);
+            let pixels = std::slice::from_raw_parts(surface.pixels, 64 * 64);
+            if [pixels[0], pixels[63], pixels[64 * 63], pixels[64 * 64 - 1]] != [0; 4]
+                || pixels[32 * 64 + 32] != 0xffffffff
+            {
+                return Err(format!("Overlay corner transparency failed at DPI {dpi}"));
+            }
+        }
         s.locked = true;
         s.styles();
         if IsWindowVisible(s.overlay) == 0 {
@@ -264,9 +326,20 @@ impl View {
                 .iter()
                 .map(|p| p >> 24)
                 .fold((255, 0), |(min, max), a| (min.min(a), max.max(a)));
+            if [
+                pixels[0],
+                pixels[559],
+                pixels[560 * 429],
+                pixels[560 * 430 - 1],
+            ]
+            .iter()
+            .any(|p| *p != 0)
+            {
+                return Err("Overlay corners are not transparent".into());
+            }
             if (bg == 0 && fg == 0 && max != 0)
-                || (bg == 55 && fg == 100 && (min < 139 || max < 250))
-                || (bg == 100 && fg == 0 && (min != 255 || max != 255))
+                || (bg == 55 && fg == 100 && (min != 0 || max < 250))
+                || (bg == 100 && fg == 0 && (min != 0 || max != 255))
             {
                 return Err(format!(
                     "Unexpected alpha: bg={bg} fg={fg} min={min} max={max}"
@@ -301,14 +374,39 @@ impl View {
                 }
             }
         }
+        s.cfg.bg_alpha = 0;
+        s.cfg.fg_alpha = 100;
+        let mut previous_ink = 0;
+        for size in [50, 100, 200, 300, 500] {
+            s.cfg.content_size = size;
+            let hwnd = s.overlay;
+            s.draw_overlay(hwnd, 560, 430, 96., &[e.clone()], Some(&e));
+            let surface = s
+                .surface
+                .as_ref()
+                .ok_or("Scaled drawing surface unavailable")?;
+            let pixels = std::slice::from_raw_parts(surface.pixels, 560 * 430);
+            let ink = pixels[560 * 28..]
+                .iter()
+                .filter(|pixel| **pixel >> 24 > 0)
+                .count();
+            if !s.layered_ok || ink <= previous_ink {
+                return Err(format!(
+                    "Content did not grow at size {size}%: {ink} pixels"
+                ));
+            }
+            previous_ink = ink;
+        }
         s.cfg = original;
         s.open_settings(ptr);
         for color in [false, true, false] {
             let fields = s.cfg.fields();
-            let index = fields
+            let key = &fields
                 .iter()
-                .position(|(_, v)| v.starts_with('#') == color)
-                .ok_or("No matching setting for label check")?;
+                .find(|(_, v)| v.starts_with('#') == color)
+                .ok_or("No matching setting for label check")?
+                .0;
+            let index = s.keys.iter().position(|k| k == key).unwrap();
             SendMessageW(s.list, LB_SETCURSEL, index, 0);
             s.select_setting();
             let mut text = [0u16; 128];
@@ -341,8 +439,192 @@ impl View {
                 s.select_setting();
             }
         }
+        if s.keys.iter().any(|key| key == "overlay_auto_rows") {
+            return Err("Auto rows appeared as a separate setting".into());
+        }
+        let before_modes = s.cfg.clone();
+        for enabled in [true, false] {
+            s.cfg.ignore_strength = [enabled; 4];
+            for i in 0..4 {
+                let index = s
+                    .keys
+                    .iter()
+                    .position(|key| key == &format!("ignore_{i}"))
+                    .unwrap();
+                SendMessageW(s.list, LB_SETCURSEL, index, 0);
+                s.select_setting();
+                let expected = if enabled { 0 } else { 1 };
+                if SendMessageW(s.choices, CB_GETCURSEL, 0, 0) != expected {
+                    return Err("Positive strength switch is inverted".into());
+                }
+            }
+            for (key, disabled) in [
+                ("stick_0_0", false),
+                ("stick_0_1", enabled),
+                ("triggerdead_0", false),
+                ("trigger_0_0", enabled),
+                ("color_0_0", enabled),
+                ("unified_0", false),
+            ] {
+                let index = s.keys.iter().position(|k| k == key).unwrap();
+                SendMessageW(s.list, LB_SETCURSEL, index, 0);
+                s.select_setting();
+                if (IsWindowEnabled(s.edit) == 0) != disabled {
+                    return Err(format!("Incorrect strength field state: {key}"));
+                }
+            }
+            let mut event = e.clone();
+            event.state.sticks[0].strength = 4;
+            event.state.triggers = [4; 2];
+            let items = tokens(&event, &s.cfg);
+            if items[0].color != s.cfg.unified_colors[0] {
+                return Err("Ungraded stick color was not preserved".into());
+            }
+        }
+        s.cfg = before_modes;
+        let row_index = s.keys.iter().position(|key| key == "overlay_rows").unwrap();
+        for auto in [true, false, true] {
+            s.cfg.overlay_auto_rows = auto;
+            SendMessageW(s.list, LB_SETCURSEL, row_index, 0);
+            s.select_setting();
+            if IsWindowEnabled(GetDlgItem(s.settings, 205)) == 0
+                || IsWindowEnabled(GetDlgItem(s.settings, 206)) == 0
+            {
+                return Err("Auto rows disabled an action button".into());
+            }
+            if SendMessageW(s.list, LB_GETITEMDATA, row_index, 0) != 0 {
+                return Err("Auto rows disabled the settings list entry".into());
+            }
+            if (IsWindowEnabled(s.edit) == 0) != auto {
+                return Err("Fixed row input does not follow auto rows checkbox".into());
+            }
+            if (GetWindowLongPtrW(GetDlgItem(s.settings, 211), GWL_STYLE) & WS_VISIBLE as isize)
+                == 0
+            {
+                return Err("Auto rows checkbox is hidden next to fixed row input".into());
+            }
+        }
+        SendMessageW(s.list, LB_SETCURSEL, 0, 0);
+        s.select_setting();
+        // Exercise the common separator renderer, including independent opacity.
+        let surface = Surface::new(s.overlay, 400, 100, 96.)?;
+        let mut cfg = s.cfg.clone();
+        cfg.content_size = 100;
+        cfg.auto_colors = true;
+        cfg.separator = 0xffffff;
+        cfg.separator_alpha = 100;
+        let mut second = e.clone();
+        second.sequence += 1;
+        for style in 0..=2 {
+            cfg.separator_style = style;
+            let r = &surface.renderer;
+            (*r.target.0).BeginDraw();
+            (*r.target.0).Clear(&ink(0, 0.));
+            draw(
+                &surface,
+                &cfg,
+                &[e.clone(), second.clone()],
+                Some(&e),
+                0,
+                400.,
+                100.,
+                0.,
+                false,
+                1.,
+                2,
+            );
+            hr((*r.target.0).EndDraw(null_mut(), null_mut()))?;
+            let pixels = std::slice::from_raw_parts(surface.pixels, 400 * 100);
+            let height = event_height(&e, &cfg, 400.);
+            let y = (height - 3.) as usize;
+            let opacity = |x: usize| {
+                (y.saturating_sub(1)..=y + 1)
+                    .map(|yy| pixels[yy * 400 + x] >> 24)
+                    .max()
+                    .unwrap()
+            };
+            let (edge, center) = (opacity(10), opacity(200));
+            if center == 0 || (style == 0 && edge != center) || (style != 0 && edge >= center) {
+                return Err(format!(
+                    "Separator style {style} has incorrect ends: {edge}/{center}"
+                ));
+            }
+        }
+        let saved = s.cfg.clone();
+        s.cfg.content_size = 100;
+        s.cfg.overlay_rows = 1;
+        s.cfg.bg_alpha = 0;
+        s.cfg.fg_alpha = 100;
+        s.cfg.separator_alpha = 100;
+        s.cfg.separator = 0xffffff;
+        s.cfg.dark_separator = 0xffffff;
+        let records = (1..=20)
+            .map(|sequence| {
+                let mut event = e.clone();
+                event.sequence = sequence;
+                event
+            })
+            .collect::<Vec<_>>();
+        for automatic in [false, true] {
+            s.cfg.overlay_auto_rows = automatic;
+            let hwnd = s.overlay;
+            s.draw_overlay(hwnd, 560, 430, 96., &records, records.first());
+            let pixels = std::slice::from_raw_parts(s.surface.as_ref().unwrap().pixels, 560 * 430);
+            let lines = (28..430)
+                .filter(|y| pixels[y * 560 + 200] >> 24 > 0)
+                .count();
+            if (!automatic && lines != 0) || (automatic && lines < 5) {
+                return Err(format!("Overlay did not fit rows to height: automatic={automatic}, separator pixels={lines}"));
+            }
+        }
+        s.cfg = saved;
         for id in [202, 203, 205, 206, 207] {
             crate::theme_controls::validate_palette(GetDlgItem(s.settings, id))?;
+        }
+        let mut rect: RECT = std::mem::zeroed();
+        GetClientRect(s.list, &mut rect);
+        let surface = Surface::new(s.list, rect.right, rect.bottom, 96.)?;
+        let row_height = SendMessageW(s.list, LB_GETITEMHEIGHT, 0, 0).max(1) as usize;
+        let text = crate::appearance::palette().text;
+        let text_pixel = ((text & 255) << 16) | (text & 0xff00) | ((text >> 16) & 255);
+        for direction in [
+            SB_LINEDOWN,
+            SB_LINEDOWN,
+            SB_LINEDOWN,
+            SB_LINEUP,
+            SB_LINEUP,
+            SB_LINEUP,
+        ] {
+            SendMessageW(s.list, WM_VSCROLL, direction as usize, 0);
+            SendMessageW(s.list, WM_MOUSEMOVE, 0, (10 << 16) | 10);
+            SendMessageW(
+                s.list,
+                WM_PRINTCLIENT,
+                surface.dc as usize,
+                PRF_CLIENT as isize,
+            );
+            let pixels =
+                std::slice::from_raw_parts(surface.pixels, (rect.right * rect.bottom) as usize);
+            let top = SendMessageW(s.list, LB_GETTOPINDEX, 0, 0) as usize;
+            for row in 0..(rect.bottom as usize / row_height).min(s.keys.len() - top) {
+                let selected = SendMessageW(s.list, LB_GETCURSEL, 0, 0) as usize == top + row;
+                if selected
+                    || s.keys[top + row].starts_with('@')
+                    || SendMessageW(s.list, LB_GETITEMDATA, top + row, 0) == 2
+                {
+                    continue;
+                }
+                let ink = (row * row_height..(row + 1) * row_height).any(|y| {
+                    (4..(rect.right as usize - 32).min(300))
+                        .any(|x| pixels[y * rect.right as usize + x] & 0xffffff == text_pixel)
+                });
+                if !ink {
+                    return Err(format!(
+                        "List row {} disappeared after scrolling",
+                        top + row
+                    ));
+                }
+            }
         }
         ShowWindow(s.settings, SW_HIDE);
         s.restore_bounds();
@@ -377,6 +659,7 @@ impl View {
             status: null_mut(),
             preview: null_mut(),
             keys: vec![],
+            selected_index: 0,
             locked: false,
             show_main: !(std::env::args().any(|a| a == "--smoke-command-benchmark")
                 && matches!(
@@ -727,11 +1010,11 @@ impl WindowState {
                 .map(|h| {
                     (
                         if h.events.is_empty() {
-                            h.latest.iter().cloned().collect::<Vec<_>>()
+                            h.visible_latest().into_iter().cloned().collect::<Vec<_>>()
                         } else {
                             h.events.iter().cloned().collect::<Vec<_>>()
                         },
-                        h.latest.clone(),
+                        h.visible_latest().cloned(),
                     )
                 })
                 .unwrap_or_default();
@@ -803,14 +1086,17 @@ impl WindowState {
                             state.sticks = [
                                 commands::Axis {
                                     direction: 2,
-                                    strength: level,
+                                    strength: if cfg.ignore_strength[0] { 4 } else { level },
                                 },
                                 commands::Axis {
                                     direction: 7,
-                                    strength: level,
+                                    strength: if cfg.ignore_strength[1] { 4 } else { level },
                                 },
                             ];
-                            state.triggers = [level; 2];
+                            state.triggers = [
+                                if cfg.ignore_strength[2] { 4 } else { level },
+                                if cfg.ignore_strength[3] { 4 } else { level },
+                            ];
                             state.buttons = 16;
                             Event {
                                 session: 0,
@@ -824,7 +1110,7 @@ impl WindowState {
                         })
                         .collect::<Vec<_>>();
                     draw(
-                        r,
+                        surface,
                         &cfg,
                         &samples,
                         samples.first(),
@@ -838,7 +1124,7 @@ impl WindowState {
                     );
                 } else {
                     draw(
-                        r,
+                        surface,
                         &cfg,
                         &events,
                         latest.as_ref(),
@@ -858,6 +1144,13 @@ impl WindowState {
                         self.main_surface = None;
                     }
                 } else {
+                    if !preview {
+                        let backdrop = crate::appearance::palette().bg;
+                        let backdrop = ((backdrop & 255) << 16)
+                            | (backdrop & 0xff00)
+                            | ((backdrop >> 16) & 255);
+                        surface.round_corners(rect.right, rect.bottom, dpi, Some(backdrop));
+                    }
                     BitBlt(dc, 0, 0, rect.right, rect.bottom, surface.dc, 0, 0, SRCCOPY);
                 }
             }
@@ -883,18 +1176,18 @@ impl WindowState {
         let (events, revision, latest) = if let Ok(h) = self.hub.commands.history.try_lock() {
             (
                 if h.events.is_empty() {
-                    h.latest.iter().cloned().collect::<Vec<_>>()
+                    h.visible_latest().into_iter().cloned().collect::<Vec<_>>()
                 } else {
                     h.events.iter().cloned().collect::<Vec<_>>()
                 },
                 h.revision,
-                h.latest.clone(),
+                h.visible_latest().cloned(),
             )
         } else {
             return;
         };
         let rows = if overlay {
-            self.cfg.overlay_rows
+            self.cfg.overlay_row_limit()
         } else {
             self.cfg.rows
         };
@@ -909,8 +1202,11 @@ impl WindowState {
             capacity += 1;
         }
         if capacity == events.len() && events.len() < rows {
-            capacity +=
-                ((remaining / row_height(width)).floor().max(0.) as usize).min(rows - events.len());
+            capacity += ((remaining
+                / (row_height(width / self.cfg.content_scale()) * self.cfg.content_scale()))
+            .floor()
+            .max(0.) as usize)
+                .min(rows - events.len());
         }
         self.hub.commands.visible_capacity(overlay, capacity);
         let wait = latest
@@ -1020,7 +1316,7 @@ impl WindowState {
             },
         );
         draw(
-            r,
+            s,
             &self.cfg,
             events,
             latest,
@@ -1030,12 +1326,13 @@ impl WindowState {
             28.,
             dark,
             self.cfg.fg_alpha as f32 / 100.,
-            self.cfg.overlay_rows,
+            self.cfg.overlay_row_limit(),
         );
         if (*r.target.0).EndDraw(null_mut(), null_mut()) < 0 {
             self.surface = None;
             return;
         }
+        s.round_corners(w, h, dpi, None);
         let mut wr: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut wr);
         let mut dest = POINT {
@@ -1080,7 +1377,7 @@ impl WindowState {
             WS_EX_TOOLWINDOW,
             wide("OpenDSCommandSettings").as_ptr(),
             wide(crate::tr!(command_settings)).as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
             100,
             100,
             820 * dpi / 96,
@@ -1097,7 +1394,7 @@ impl WindowState {
             h,
             "LISTBOX",
             "",
-            LBS_NOTIFY | WS_VSCROLL | WS_BORDER,
+            LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | WS_VSCROLL | WS_BORDER,
             201,
             12,
             12,
@@ -1205,6 +1502,17 @@ impl WindowState {
             28,
         );
         SetWindowLongPtrW(swatch, GWLP_USERDATA, ptr as isize);
+        control(
+            h,
+            "BUTTON",
+            crate::tr!(command_overlay_auto_rows),
+            BS_AUTOCHECKBOX,
+            211,
+            400,
+            45,
+            370,
+            28,
+        );
         // The controls must exist before the theme adapters enumerate children.
         crate::appearance::install(h);
         self.fill_settings();
@@ -1224,6 +1532,17 @@ impl WindowState {
             (208, 12, 420, 770, 65),
             (209, 400, 130, 370, 270),
             (210, 628, 45, 28, 28),
+            (
+                211,
+                400,
+                if self.selected().as_deref() == Some("overlay_rows") {
+                    15
+                } else {
+                    45
+                },
+                370,
+                28,
+            ),
         ] {
             let c = GetDlgItem(self.settings, id);
             SetWindowPos(
@@ -1250,19 +1569,91 @@ impl WindowState {
     unsafe fn fill_settings(&mut self) {
         SendMessageW(self.list, LB_RESETCONTENT, 0, 0);
         self.keys.clear();
-        for (k, _) in self.cfg.fields() {
-            let label = setting_label(&k);
-            SendMessageW(self.list, LB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
-            self.keys.push(k);
+        let mut fields = self.cfg.fields();
+        fields.retain(|(key, _)| key != "overlay_auto_rows");
+        fields.sort_by_key(|(key, _)| {
+            let parts = key.split('_').collect::<Vec<_>>();
+            let i = parts
+                .get(1)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            let j = parts
+                .get(2)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            match parts[0] {
+                "ignore" => (i, 0),
+                "stick" => (i, j + 1),
+                "triggerdead" => (i + 2, 1),
+                "trigger" => (i + 2, j + 2),
+                _ => (10, 0),
+            }
+        });
+        for (group, title) in [
+            crate::tr!(command_group_record),
+            crate::tr!(command_group_window),
+            crate::tr!(command_group_strength),
+            crate::tr!(command_group_separator),
+            crate::tr!(command_group_colors),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let index = SendMessageW(self.list, LB_ADDSTRING, 0, wide(title).as_ptr() as isize);
+            SendMessageW(self.list, LB_SETITEMDATA, index as usize, 1);
+            self.keys.push(format!("@group{group}"));
+            for (key, _) in fields.iter().filter(|(key, _)| setting_group(key) == group) {
+                let label = setting_label(key);
+                SendMessageW(self.list, LB_ADDSTRING, 0, wide(&label).as_ptr() as isize);
+                self.keys.push(key.clone());
+            }
         }
+        self.selected_index = 0;
         SendMessageW(self.list, LB_SETCURSEL, 0, 0);
         self.select_setting();
     }
     unsafe fn selected(&self) -> Option<String> {
         let i = SendMessageW(self.list, LB_GETCURSEL, 0, 0);
-        self.keys.get(i as usize).cloned()
+        self.keys
+            .get(i as usize)
+            .filter(|key| !key.starts_with('@'))
+            .cloned()
     }
     unsafe fn select_setting(&mut self) {
+        let mut index = SendMessageW(self.list, LB_GETCURSEL, 0, 0);
+        if self
+            .keys
+            .get(index as usize)
+            .is_some_and(|key| key.starts_with('@'))
+        {
+            let step = if index < (self.selected_index as isize) {
+                -1
+            } else {
+                1
+            };
+            while self
+                .keys
+                .get(index as usize)
+                .is_some_and(|key| key.starts_with('@'))
+            {
+                index += step;
+            }
+            if self.keys.get(index as usize).is_none() {
+                return;
+            }
+            SendMessageW(self.list, LB_SETCURSEL, index as usize, 0);
+        }
+        self.selected_index = index as usize;
+        for (i, key) in self
+            .keys
+            .iter()
+            .enumerate()
+            .filter(|(_, key)| !key.starts_with('@'))
+        {
+            let disabled = !self.cfg.field_enabled(key);
+            SendMessageW(self.list, LB_SETITEMDATA, i, if disabled { 2 } else { 0 });
+        }
+        InvalidateRect(self.list, null(), 0);
         let Some(key) = self.selected() else {
             return;
         };
@@ -1274,6 +1665,48 @@ impl WindowState {
             .unwrap()
             .1;
         let choices = options(&key);
+        let editable = self.cfg.field_enabled(&key);
+        // Preserve INI/CSV semantics while presenting a positive switch.
+        let value = if key.starts_with("ignore_") {
+            (value != "true").to_string()
+        } else {
+            value
+        };
+
+        let fixed_rows = key == "overlay_rows";
+        let dpi = crate::gui_theme::window_dpi(self.settings).max(96) as i32;
+        SetWindowPos(
+            GetDlgItem(self.settings, 211),
+            null_mut(),
+            400 * dpi / 96,
+            (if fixed_rows { 15 } else { 45 }) * dpi / 96,
+            370 * dpi / 96,
+            28 * dpi / 96,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        ShowWindow(
+            GetDlgItem(self.settings, 204),
+            if fixed_rows { SW_HIDE } else { SW_SHOW },
+        );
+        ShowWindow(
+            GetDlgItem(self.settings, 211),
+            if fixed_rows { SW_SHOW } else { SW_HIDE },
+        );
+        SendMessageW(
+            GetDlgItem(self.settings, 211),
+            BM_SETCHECK,
+            if self.cfg.overlay_auto_rows {
+                BST_CHECKED as usize
+            } else {
+                BST_UNCHECKED as usize
+            },
+            0,
+        );
+        EnableWindow(
+            self.edit,
+            (editable && !(key == "overlay_rows" && self.cfg.overlay_auto_rows)) as i32,
+        );
+        EnableWindow(GetDlgItem(self.settings, 205), 1);
         SetWindowTextW(
             GetDlgItem(self.settings, 204),
             wide(if value.starts_with('#') {
@@ -1293,10 +1726,7 @@ impl WindowState {
             },
         );
         InvalidateRect(swatch, null(), 0);
-        EnableWindow(
-            GetDlgItem(self.settings, 206),
-            value.starts_with('#') as i32,
-        );
+        EnableWindow(GetDlgItem(self.settings, 206), 1);
         ShowWindow(
             self.edit,
             if choices.is_empty() { SW_SHOW } else { SW_HIDE },
@@ -1338,13 +1768,20 @@ impl WindowState {
             return;
         };
         let choices = options(&key);
+        if !self.cfg.field_enabled(&key) || (key == "overlay_rows" && self.cfg.overlay_auto_rows) {
+            return;
+        }
         let value = if choices.is_empty() {
             let mut b = [0u16; 128];
             let n = GetWindowTextW(self.edit, b.as_mut_ptr(), 128);
             String::from_utf16_lossy(&b[..n.max(0) as usize])
         } else {
             let i = SendMessageW(self.choices, CB_GETCURSEL, 0, 0);
-            if ["enabled", "right", "auto_colors", "topmost"].contains(&key.as_str()) {
+            if key.starts_with("ignore_") {
+                (i == 0).to_string()
+            } else if ["enabled", "right", "auto_colors", "topmost", "separators"]
+                .contains(&key.as_str())
+            {
                 (i == 1).to_string()
             } else {
                 i.to_string()
@@ -1357,7 +1794,7 @@ impl WindowState {
         }
         self.cfg = cfg;
         self.persist();
-        if key == "rows" {
+        if matches!(key.as_str(), "rows" | "content_size") {
             self.notify_layout();
         }
         if !self.overlay.is_null() {
@@ -1390,18 +1827,29 @@ fn ink(rgb: u32, alpha: f32) -> D2D1_COLOR_F {
     }
 }
 fn options(key: &str) -> Vec<String> {
+    if key.starts_with("ignore_") {
+        return vec![
+            crate::tr!(command_no).into(),
+            crate::tr!(command_yes).into(),
+        ];
+    }
     match key {
         "source" => vec![
             crate::tr!(command_source_text),
             crate::tr!(command_source_icon),
             crate::tr!(command_source_hidden),
         ],
+        "separator_style" => vec![
+            crate::tr!(command_separator_flat),
+            crate::tr!(command_separator_fade),
+            crate::tr!(command_separator_taper),
+        ],
         "theme" => vec![
             crate::tr!(command_follow),
             crate::tr!(command_light),
             crate::tr!(command_dark),
         ],
-        "enabled" | "right" | "auto_colors" | "topmost" => {
+        "enabled" | "right" | "auto_colors" | "topmost" | "separators" => {
             vec![crate::tr!(command_no), crate::tr!(command_yes)]
         }
         _ => vec![],
@@ -1409,6 +1857,43 @@ fn options(key: &str) -> Vec<String> {
     .into_iter()
     .map(str::to_string)
     .collect()
+}
+fn setting_group(key: &str) -> usize {
+    if [
+        "enabled",
+        "right",
+        "source",
+        "display_min_ms",
+        "record_min_ms",
+    ]
+    .contains(&key)
+    {
+        0
+    } else if [
+        "rows",
+        "overlay_rows",
+        "overlay_auto_rows",
+        "content_size",
+        "theme",
+        "bg_alpha",
+        "fg_alpha",
+        "topmost",
+        "x",
+        "y",
+        "width",
+        "height",
+    ]
+    .contains(&key)
+    {
+        1
+    } else if key.starts_with("ignore_") || key.starts_with("stick_") || key.starts_with("trigger")
+    {
+        2
+    } else if ["separators", "separator_alpha", "separator_style"].contains(&key) {
+        3
+    } else {
+        4
+    }
 }
 fn setting_label(k: &str) -> String {
     let (key, mode) = if let Some(k) = k.strip_prefix("dark_") {
@@ -1421,6 +1906,7 @@ fn setting_label(k: &str) -> String {
         "dpad" => Some(crate::tr!(command_dpad)),
         "button" => Some(crate::tr!(command_button)),
         "connection" => Some(crate::tr!(command_connection)),
+        "separator" => Some(crate::tr!(command_separator_color)),
         _ => None,
     } {
         return format!("{mode} · {label}");
@@ -1431,7 +1917,14 @@ fn setting_label(k: &str) -> String {
         "right" => crate::tr!(command_right),
         "source" => crate::tr!(command_source),
         "rows" => crate::tr!(command_rows),
+        "content_size" => crate::tr!(command_content_size),
+        "display_min_ms" => crate::tr!(command_display_min_ms),
+        "record_min_ms" => crate::tr!(command_record_min_ms),
         "overlay_rows" => crate::tr!(command_overlay_rows),
+        "overlay_auto_rows" => crate::tr!(command_overlay_auto_rows),
+        "separators" => crate::tr!(command_separators),
+        "separator_alpha" => crate::tr!(command_separator_alpha),
+        "separator_style" => crate::tr!(command_separator_style),
         "auto_colors" => crate::tr!(command_auto_colors),
         "theme" => crate::tr!(command_theme),
         "bg_alpha" => crate::tr!(command_bg_alpha),
@@ -1454,6 +1947,26 @@ fn setting_label(k: &str) -> String {
     let i = a.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     let j = a.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     match a[0] {
+        "ignore" => format!(
+            "{} · {}",
+            ["LS", "RS", "L2", "R2"][i],
+            crate::tr!(command_distinguish_strength)
+        ),
+        "triggerdead" => format!(
+            "{} · {} (0–255)",
+            ["L2", "R2"][i],
+            crate::tr!(command_deadzone)
+        ),
+        "unified" | "darkunified" => format!(
+            "{} · {} · {}",
+            if a[0] == "unified" {
+                crate::tr!(command_light)
+            } else {
+                crate::tr!(command_dark)
+            },
+            ["LS", "RS", "L2", "R2"][i],
+            crate::tr!(command_unified_color)
+        ),
         "stick" => format!(
             "{} · {} (%)",
             ["LS", "RS"][i],
@@ -1532,18 +2045,22 @@ fn tokens(e: &Event, cfg: &Settings) -> Vec<Token> {
                 "{prefix}{}{}",
                 commands::ARROWS[a.direction as usize],
                 if crate::appearance::palette().kind == crate::appearance::Kind::Contrast {
-                    ["", "¹", "²", "³"][a.strength as usize]
+                    ["", "¹", "²", "³", ""][a.strength as usize]
                 } else {
                     ""
                 }
             ),
             color: if a.strength == 0 {
                 cfg.neutral
+            } else if a.strength == 4 {
+                cfg.unified_colors[i]
             } else {
                 cfg.colors[i][a.strength as usize - 1]
             },
             dark_color: if a.strength == 0 {
                 cfg.dark_neutral
+            } else if a.strength == 4 {
+                cfg.dark_unified_colors[i]
             } else {
                 cfg.dark_colors[i][a.strength as usize - 1]
             },
@@ -1595,13 +2112,21 @@ fn tokens(e: &Event, cfg: &Settings) -> Vec<Token> {
                 label: format!(
                     "{label}{}",
                     if crate::appearance::palette().kind == crate::appearance::Kind::Contrast {
-                        ["", "¹", "²", "³"][s.triggers[i] as usize]
+                        ["", "¹", "²", "³", ""][s.triggers[i] as usize]
                     } else {
                         ""
                     }
                 ),
-                color: cfg.colors[i + 2][s.triggers[i] as usize - 1],
-                dark_color: cfg.dark_colors[i + 2][s.triggers[i] as usize - 1],
+                color: if s.triggers[i] == 4 {
+                    cfg.unified_colors[i + 2]
+                } else {
+                    cfg.colors[i + 2][s.triggers[i] as usize - 1]
+                },
+                dark_color: if s.triggers[i] == 4 {
+                    cfg.dark_unified_colors[i + 2]
+                } else {
+                    cfg.dark_colors[i + 2][s.triggers[i] as usize - 1]
+                },
                 source: None,
                 semantic: true,
             });
@@ -1613,11 +2138,25 @@ fn token_width(t: &Token) -> f32 {
     (t.label.chars().count() as f32 * 10. + if t.source.is_some() { 20. } else { 0. } + 16.)
         .max(38.)
 }
-fn row_height(_w: f32) -> f32 {
-    30.
+fn row_height(w: f32) -> f32 {
+    if w < 260. {
+        54.
+    } else {
+        30.
+    }
+}
+fn combination_width(w: f32) -> f32 {
+    if w < 260. {
+        (w - 20.).max(1.)
+    } else {
+        w - 170.
+    }
 }
 fn event_height(e: &Event, cfg: &Settings, w: f32) -> f32 {
-    let available = (w - 180.).max(50.);
+    event_height_base(e, cfg, w / cfg.content_scale()) * cfg.content_scale()
+}
+fn event_height_base(e: &Event, cfg: &Settings, w: f32) -> f32 {
+    let available = combination_width(w) - 10.;
     let mut x = if matches!(e.kind, Kind::Connected | Kind::Disconnected) {
         38.
     } else {
@@ -1632,7 +2171,7 @@ fn event_height(e: &Event, cfg: &Settings, w: f32) -> f32 {
         }
         x += tw;
     }
-    (lines as f32 * 24. + 6.).max(row_height(w))
+    (lines as f32 * 24. + 6. + if w < 260. { 24. } else { 0. }).max(row_height(w))
 }
 unsafe fn source_icon(r: &Renderer, i: usize, x: f32, y: f32, c: D2D1_COLOR_F) {
     if i == 2 {
@@ -1657,8 +2196,147 @@ unsafe fn plug(r: &Renderer, connected: bool, x: f32, y: f32, c: D2D1_COLOR_F) {
     r.line((x - 4., y + 10.), (x, y + 10.), 2., c);
     r.line((x + 22. + gap, y + 10.), (x + 27. + gap, y + 10.), 2., c);
 }
+struct SeparatorPaint {
+    key: [u32; 7],
+    style: u8,
+    left: f32,
+    right: f32,
+    half: f32,
+    gradient: Com<ID2D1LinearGradientBrush>,
+    shape: Com<ID2D1PathGeometry>,
+}
+impl SeparatorPaint {
+    unsafe fn new(
+        r: &Renderer,
+        key: [u32; 7],
+        w: f32,
+        scale: f32,
+        color: D2D1_COLOR_F,
+        style: u8,
+    ) -> Result<Self, String> {
+        let left = 8. / scale;
+        let right = (w - left).max(left);
+        let half = 0.6 / scale;
+        let mut gradient: Com<ID2D1LinearGradientBrush> = Com::empty();
+        let mut shape: Com<ID2D1PathGeometry> = Com::empty();
+        if style == 1 {
+            let mut clear = color;
+            clear.a = 0.;
+            let stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.,
+                    color: clear,
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.18,
+                    color,
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.82,
+                    color,
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.,
+                    color: clear,
+                },
+            ];
+            let mut collection: Com<ID2D1GradientStopCollection> = Com::empty();
+            hr((*r.target.0).CreateGradientStopCollection(
+                stops.as_ptr(),
+                4,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+                collection.out(),
+            ))?;
+            hr((*r.target.0).CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: D2D1_POINT_2F { x: left, y: 0. },
+                    endPoint: D2D1_POINT_2F { x: right, y: 0. },
+                },
+                null(),
+                collection.0,
+                gradient.out(),
+            ))?;
+        } else if style == 2 {
+            hr((*r.factory.0).CreatePathGeometry(shape.out()))?;
+            let mut sink: Com<ID2D1GeometrySink> = Com::empty();
+            hr((*shape.0).Open(sink.out()))?;
+            let end = (right - left) * 0.18;
+            (*sink.0).BeginFigure(D2D1_POINT_2F { x: left, y: 0. }, D2D1_FIGURE_BEGIN_FILLED);
+            let points = [
+                D2D1_POINT_2F {
+                    x: left + end,
+                    y: -half,
+                },
+                D2D1_POINT_2F {
+                    x: right - end,
+                    y: -half,
+                },
+                D2D1_POINT_2F { x: right, y: 0. },
+                D2D1_POINT_2F {
+                    x: right - end,
+                    y: half,
+                },
+                D2D1_POINT_2F {
+                    x: left + end,
+                    y: half,
+                },
+            ];
+            (*sink.0).AddLines(points.as_ptr(), points.len() as u32);
+            (*sink.0).EndFigure(D2D1_FIGURE_END_CLOSED);
+            hr((*sink.0).Close())?;
+        }
+        Ok(Self {
+            key,
+            style,
+            left,
+            right,
+            half,
+            gradient,
+            shape,
+        })
+    }
+    unsafe fn draw(
+        &self,
+        r: &Renderer,
+        y: f32,
+        scale: f32,
+        start: f32,
+        transform: &D2D1_MATRIX_3X2_F,
+        color: D2D1_COLOR_F,
+    ) {
+        if self.style == 2 {
+            let mut shifted = identity();
+            shifted.matrix = [[scale, 0.], [0., scale], [0., start + y * scale]];
+            (*r.target.0).SetTransform(&shifted);
+            (*r.brush.0).SetColor(&color);
+            (*r.target.0).FillGeometry(self.shape.0 as _, r.brush.0 as _, null_mut());
+            (*r.target.0).SetTransform(transform);
+        } else if self.style == 1 {
+            (*r.target.0).FillRectangle(
+                &D2D1_RECT_F {
+                    left: self.left,
+                    top: y - self.half,
+                    right: self.right,
+                    bottom: y + self.half,
+                },
+                self.gradient.0 as _,
+            );
+        } else {
+            r.rect(
+                self.left,
+                y - self.half,
+                self.right - self.left,
+                self.half * 2.,
+                0.,
+                color,
+            );
+        }
+    }
+}
+
 unsafe fn draw(
-    r: &Renderer,
+    surface: &Surface,
     cfg: &Settings,
     events: &[Event],
     _latest: Option<&Event>,
@@ -1670,6 +2348,12 @@ unsafe fn draw(
     alpha: f32,
     rows: usize,
 ) {
+    let r = &surface.renderer;
+    let scale = cfg.content_scale();
+    let mut transform = identity();
+    transform.matrix = [[scale, 0.], [0., scale], [0., start]];
+    (*r.target.0).SetTransform(&transform);
+    let (w, h) = (w / scale, (h - start) / scale);
     let (_, text) = cfg.palette(dark);
     let contrast = crate::appearance::palette().kind == crate::appearance::Kind::Contrast;
     let color_for = |c: u32, semantic: bool| {
@@ -1683,7 +2367,32 @@ unsafe fn draw(
             ink(cfg.color(c, dark, semantic), alpha)
         }
     };
-    let mut y = start;
+    let mut line_color = color_for(
+        if dark && !cfg.auto_colors {
+            cfg.dark_separator
+        } else {
+            cfg.separator
+        },
+        false,
+    );
+    line_color.a *= cfg.separator_alpha as f32 / 100.;
+    let mut separator = surface.separator.borrow_mut();
+    if cfg.separators && line_color.a > 0. {
+        let key = [
+            w.to_bits(),
+            scale.to_bits(),
+            line_color.r.to_bits(),
+            line_color.g.to_bits(),
+            line_color.b.to_bits(),
+            line_color.a.to_bits(),
+            cfg.separator_style as u32,
+        ];
+        if separator.as_ref().is_none_or(|paint| paint.key != key) {
+            *separator =
+                SeparatorPaint::new(r, key, w, scale, line_color, cfg.separator_style).ok();
+        }
+    }
+    let mut y = 0.;
     if events.is_empty() {
         r.text(
             10.,
@@ -1694,16 +2403,22 @@ unsafe fn draw(
             1,
             color_for(text, true),
         );
+        (*r.target.0).SetTransform(&identity());
         return;
     }
     for (index, e) in events.iter().take(rows).enumerate() {
-        let height = event_height(e, cfg, w);
+        let height = event_height_base(e, cfg, w);
         if y + height > h {
             break;
         }
+        if index > 0 && cfg.separators && line_color.a > 0. {
+            if let Some(paint) = separator.as_ref() {
+                paint.draw(r, y - 3., scale, start, &transform, line_color);
+            }
+        }
         let mut x = 10.;
         let mut yy = y;
-        let available = (w - 170.).max(60.);
+        let available = combination_width(w);
         if matches!(e.kind, Kind::Connected | Kind::Disconnected) {
             plug(
                 r,
@@ -1750,9 +2465,23 @@ unsafe fn draw(
             x += tw;
         }
         let duration = commands::duration(commands::state_duration(events, index, now));
-        r.text(w - 156., y, 146., 22., &duration, 0, color_for(text, true));
+        let (time_x, time_y, time_width) = if w < 260. {
+            (10., y + height - 30., (w - 20.).max(1.))
+        } else {
+            (w - 156., y, 146.)
+        };
+        r.text(
+            time_x,
+            time_y,
+            time_width,
+            22.,
+            &duration,
+            0,
+            color_for(text, true),
+        );
         y += height;
     }
+    (*r.target.0).SetTransform(&identity());
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -1876,6 +2605,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> L
                     InvalidateRect(GetDlgItem(s.settings, 210), null(), 0);
                 }
                 205 => s.apply_setting(),
+                211 => {
+                    s.cfg.overlay_auto_rows =
+                        SendMessageW(GetDlgItem(s.settings, 211), BM_GETCHECK, 0, 0)
+                            == BST_CHECKED as isize;
+                    s.persist();
+                    s.select_setting();
+                }
                 206 => {
                     let Some(key) = s.selected() else { return 0 };
                     let value = s
@@ -1885,7 +2621,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> L
                         .find(|(k, _)| *k == key)
                         .map(|(_, v)| v)
                         .unwrap_or_default();
-                    if !value.starts_with('#') {
+                    if !s.cfg.field_enabled(&key) || !value.starts_with('#') {
                         return 0;
                     }
                     let rgb = u32::from_str_radix(&value[1..], 16).unwrap_or(0);
@@ -1990,5 +2726,29 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> L
             0
         }
         _ => DefWindowProcW(hwnd, msg, w, l),
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    #[test]
+    fn content_size_scales_rows_and_wraps_time_in_narrow_windows() {
+        let mut cfg = Settings::default();
+        let event = Event {
+            session: 1,
+            sequence: 1,
+            time: 0,
+            delta: None,
+            kind: Kind::Input,
+            state: commands::State::default(),
+            raw: [0; 9],
+        };
+        let normal = event_height(&event, &cfg, 560.);
+        cfg.content_size = 200;
+        assert_eq!(event_height(&event, &cfg, 1120.), normal * 2.);
+        assert!(event_height(&event, &cfg, 320.) > normal * 2.);
+        assert!(combination_width(160.) < 160.);
+        assert!(row_height(160.) > row_height(560.));
     }
 }
