@@ -18,6 +18,18 @@ Turns a Bluetooth DualSense into a local virtual USB DualSense, so games treat i
 
 Closing the settings window keeps OpenDS in the tray. Stopping the bridge or exiting from the tray releases keys, removes the virtual device and makes the controller visible again.
 
+## Input history and overlay
+
+Start collection in **Live monitor** to show input history below the controller. It records button changes, stick directions and strength tiers. Right-stick recording is off by default. Input history settings provide text, icon or hidden source labels (hidden by default), configurable thresholds, and colors. Touchpad contact and motion are excluded; its physical click is recorded.
+
+The current input state is at the top, with a live duration. Each older row shows how long that state lasted until the next change. Times use milliseconds or seconds and display `99+ s` at 99 seconds. Disconnect and reconnect events appear as plugs, with offline time included. Only visible history is retained; enlarging a window does not recover discarded events.
+
+Open **Overlay** for an independent window with optional always-on-top, adjustable size, separate background/content opacity and light/dark themes. Locking enables mouse passthrough. Unlock or restore it from the monitor controls or tray menu. Automatic colors swap neutral pure black/white in dark mode; disable this option to configure separate light and dark palettes.
+
+File recording also creates a matching `.commands.csv`, containing individual input and connection events, classification settings and uncapped timestamps. Existing command files are not overwritten. Viewing and replaying historical files are not included in this version.
+
+Times are based on received input, rather than game frame counts.
+
 ## Commands
 
 The GUI covers everyday use. The commands below are for scripting and troubleshooting.

@@ -13,6 +13,8 @@ mod audio_thread;
 mod battery;
 mod battery_ui;
 mod bridge;
+mod command_recording;
+mod commands;
 mod config;
 mod dependencies;
 mod dependency_paths;

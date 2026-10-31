@@ -2,6 +2,8 @@ use crate::{
     config::Config,
     monitor::{neutral, wave_state, Bucket, Monitor, WaveState},
 };
+#[path = "command_view.rs"]
+mod command_view;
 #[path = "monitor_plot.rs"]
 mod plotting;
 use std::{
@@ -129,7 +131,7 @@ fn orange_color() -> D2D1_COLOR_F {
 
 struct Renderer {
     factory: Com<ID2D1Factory>,
-    target: Com<ID2D1HwndRenderTarget>,
+    target: Com<ID2D1RenderTarget>,
     _dw: Com<IDWriteFactory>,
     brush: Com<ID2D1SolidColorBrush>,
     body: Com<IDWriteTextFormat>,
@@ -178,6 +180,16 @@ impl Renderer {
         };
         let mut target: Com<ID2D1HwndRenderTarget> = Com::empty();
         hr((*factory.0).CreateHwndRenderTarget(&props, &hp, target.out()))?;
+        let ptr = target.0;
+        target.0 = null_mut();
+        let target = Com(ptr as *mut ID2D1RenderTarget);
+        Self::from_target(factory, dw, target)
+    }
+    unsafe fn from_target(
+        factory: Com<ID2D1Factory>,
+        dw: Com<IDWriteFactory>,
+        target: Com<ID2D1RenderTarget>,
+    ) -> Result<Self, String> {
         let mut brush = Com::empty();
         hr((*target.0).CreateSolidColorBrush(&ink_color(), null(), brush.out()))?;
         let make = |size| -> Result<Com<IDWriteTextFormat>, String> {
@@ -693,6 +705,7 @@ impl Drop for DrawClock {
 }
 
 struct ViewState {
+    commands: Option<command_view::View>,
     battery: Rc<Cell<crate::battery::Display>>,
     battery_observed: crate::battery::View,
     battery_tip: Option<crate::battery_ui::Tooltip>,
@@ -739,7 +752,9 @@ impl MonitorView {
             register("OpenDSMonitorHost", Some(host_proc));
             register("OpenDSMonitorCanvas", Some(canvas_proc));
             register("OpenDSMonitorPopup", Some(popup_proc));
+            hub.commands.configure(cfg.commands.clone(), hub.now());
             let state = Box::new(ViewState {
+                commands: None,
                 battery,
                 battery_observed: crate::battery::View::default(),
                 battery_tip: None,
@@ -795,6 +810,12 @@ impl MonitorView {
             SetWindowLongPtrW(state_ref.root, GWLP_USERDATA, ptr as isize);
             state_ref.battery_tip = Some(crate::battery_ui::Tooltip::new(state_ref.root));
             crate::appearance::install(state_ref.root);
+            state_ref.commands = Some(command_view::View::new(
+                state_ref.root,
+                state_ref.hub.clone(),
+                cfg.commands.clone(),
+                state_ref.path.clone(),
+            )?);
             for (id, cls, text, style) in [
                 (
                     1,
@@ -957,6 +978,59 @@ impl MonitorView {
             s.sync_battery(shown);
         }
     }
+    pub fn validate_commands(&self) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        if let Some(v) = state.commands.as_mut() {
+            unsafe {
+                v.validate()?;
+            }
+        }
+        unsafe {
+            crate::theme_controls::validate_palette(state.controls[13])?;
+        }
+        Ok(())
+    }
+    pub fn command_action(&self, action: u32) {
+        if action == 111 {
+            let mut s = self.state.borrow_mut();
+            let parent = s.parent;
+            let dpi = crate::gui_theme::window_dpi(parent).max(96) as f32;
+            s.page_visible = false;
+            unsafe {
+                ShowWindow(s.root, SW_HIDE);
+            }
+            unsafe {
+                s.timer();
+            }
+            if let Some(v) = s.commands.as_mut() {
+                unsafe {
+                    v.place(parent, 230., 110., 560., 430., dpi, true);
+                }
+            }
+            return;
+        }
+
+        if action == 110 {
+            let mut s = self.state.borrow_mut();
+            let mut r: RECT = unsafe { std::mem::zeroed() };
+            unsafe {
+                GetClientRect(s.canvas, &mut r);
+            }
+            let w = r.right as f32 * 96. / crate::gui_theme::window_dpi(s.canvas).max(96) as f32;
+            s.scroll = (model_bottom(if w < 680. { w } else { w * 0.41 }) + 115.) as i32;
+            unsafe {
+                InvalidateRect(s.canvas, null(), 0);
+                UpdateWindow(s.canvas);
+            }
+            return;
+        }
+
+        if let Some(v) = self.state.borrow_mut().commands.as_mut() {
+            unsafe {
+                v.action(action);
+            }
+        }
+    }
     pub fn preferences(&self) -> (u32, u32, u32) {
         let s = self.state.borrow();
         (s.hz, s.fps, s.seconds)
@@ -1021,6 +1095,7 @@ impl Drop for MonitorView {
     fn drop(&mut self) {
         let s = self.state.get_mut();
         s.clock = None;
+        s.commands.take();
         s.battery_tip.take();
         s.hub.stop();
         unsafe {
@@ -1166,9 +1241,29 @@ impl ViewState {
         let cw = w as f32 * 96. / dpi as f32;
         let viewport = (h - p(116)).max(1) as f32 * 96. / dpi as f32;
         let content = if cw < 680. {
-            model_bottom(cw) + crate::battery_ui::header(cw).2 + 115. + 660.
+            model_bottom(cw)
+                + crate::battery_ui::header(cw).2
+                + 115.
+                + 660.
+                + self
+                    .hub
+                    .commands
+                    .history
+                    .lock()
+                    .map(|h| h.settings.rows as f32 * 30. + 78.)
+                    .unwrap_or(318.)
         } else {
-            viewport.max(640.)
+            viewport.max(
+                model_bottom(cw * 0.41)
+                    + 115.
+                    + self
+                        .hub
+                        .commands
+                        .history
+                        .lock()
+                        .map(|h| h.settings.rows as f32 * 30. + 78.)
+                        .unwrap_or(318.),
+            )
         };
         self.scroll_max = (content - viewport).max(0.) as i32;
         let mut si: SCROLLINFO = std::mem::zeroed();
@@ -1404,23 +1499,27 @@ impl ViewState {
     unsafe fn status(&mut self) {
         self.has_collected |= self.hub.active.load(Acquire);
         let recording = self.hub.recording.status();
-        SetWindowTextW(
-            self.controls[13],
-            wide(if recording.starting {
-                crate::tr!(monitor_view_checking)
-            } else if recording.active {
-                crate::tr!(monitor_view_stop_file_recording)
-            } else if recording.finishing {
-                crate::tr!(monitor_view_saving)
-            } else {
-                crate::tr!(monitor_view_start_file_recording)
-            })
-            .as_ptr(),
-        );
-        EnableWindow(
-            self.controls[13],
-            (self.hub.active.load(Acquire) && !recording.finishing && !recording.starting) as i32,
-        );
+        if let Some(error) = self.hub.commands.recording.error() {
+            self.error = format!("{}: {error}", crate::tr!(command_file_failed));
+        }
+        let label = if recording.starting {
+            crate::tr!(monitor_view_checking)
+        } else if recording.active {
+            crate::tr!(monitor_view_stop_file_recording)
+        } else if recording.finishing {
+            crate::tr!(monitor_view_saving)
+        } else {
+            crate::tr!(monitor_view_start_file_recording)
+        };
+        let mut current = [0u16; 256];
+        let length = GetWindowTextW(self.controls[13], current.as_mut_ptr(), 256);
+        if String::from_utf16_lossy(&current[..length.max(0) as usize]) != label {
+            SetWindowTextW(self.controls[13], wide(label).as_ptr());
+        }
+        let enabled = self.hub.active.load(Acquire) && !recording.finishing && !recording.starting;
+        if (IsWindowEnabled(self.controls[13]) != 0) != enabled {
+            EnableWindow(self.controls[13], enabled as i32);
+        }
         if recording.error.is_some() && !self.recording_error_shown {
             if PostMessageW(self.root, RECORDING_ERROR_MESSAGE, 0, 0) != 0 {
                 self.recording_error_shown = true;
@@ -1533,7 +1632,25 @@ impl ViewState {
             let left = if narrow { w } else { w * 0.41 };
             let (title_width, battery_x, header_extra) = crate::battery_ui::header(left);
             let bottom = model_bottom(left) + header_extra;
-            let model_height = bottom + 115.;
+            let command_height = self
+                .hub
+                .commands
+                .history
+                .lock()
+                .map(|h| h.settings.rows as f32 * 30. + 78.)
+                .unwrap_or(318.);
+            if let Some(v) = self.commands.as_mut() {
+                v.place(
+                    self.canvas,
+                    8.,
+                    bottom + 108. - offset,
+                    left - 16.,
+                    command_height,
+                    dpi,
+                    IsWindowVisible(self.root) != 0,
+                );
+            }
+            let model_height = bottom + 115. + command_height;
             let graph_x = if narrow { 0. } else { left + 16. };
             let graph_y = if narrow {
                 model_height + 12. - offset
@@ -1818,6 +1935,9 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             0
         }
         FRAME_MESSAGE => {
+            if let Some(v) = s.commands.as_mut() {
+                v.pulse();
+            }
             if let Some(c) = s.clock.as_ref() {
                 c.pending.store(false, Release);
             }
@@ -1826,6 +1946,9 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
             if s.last_status.elapsed().as_millis() >= 500 {
                 s.status();
                 s.last_status = Instant::now();
+                // A continuously rendered surface can keep low-priority native timers pending.
+                // Queue the ordinary status poll so active drawing cannot starve app lifecycle work.
+                PostMessageW(s.parent, WM_TIMER, 0x4f44, 0);
             }
             0
         }

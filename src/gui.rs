@@ -36,6 +36,9 @@ struct Controls {
     start_menu: nwg::MenuItem,
     stop_menu: nwg::MenuItem,
     show_menu: nwg::MenuItem,
+    command_show_menu: nwg::MenuItem,
+    command_lock_menu: nwg::MenuItem,
+    command_reset_menu: nwg::MenuItem,
     exit_menu: nwg::MenuItem,
     start: nwg::Button,
     stop: nwg::Button,
@@ -511,6 +514,9 @@ impl App {
                 (crate::tr!(gui_start_bridge), &mut ui.start_menu),
                 (crate::tr!(gui_stop_bridge), &mut ui.stop_menu),
                 (crate::tr!(gui_open_settings), &mut ui.show_menu),
+                (crate::tr!(command_menu_show), &mut ui.command_show_menu),
+                (crate::tr!(command_menu_lock), &mut ui.command_lock_menu),
+                (crate::tr!(command_reset), &mut ui.command_reset_menu),
                 (crate::tr!(gui_exit_opends), &mut ui.exit_menu),
             ] {
                 nwg::MenuItem::builder()
@@ -1481,6 +1487,15 @@ impl App {
     }
     fn read_config(&self) -> Result<Config, String> {
         let mut c = self.config.borrow().clone();
+        // The command editor saves independently from the general settings form.
+        let monitor = self.controller.borrow().state.monitor.clone();
+        c.commands = monitor
+            .commands
+            .history
+            .lock()
+            .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))?
+            .settings
+            .clone();
         c.port = self
             .port
             .text()
@@ -2306,6 +2321,20 @@ impl App {
                 self.controller.borrow().stop();
             } else if handle == self.show_menu {
                 self.show_window();
+            } else if handle == self.command_show_menu
+                || handle == self.command_lock_menu
+                || handle == self.command_reset_menu
+            {
+                let action = if handle == self.command_show_menu {
+                    101
+                } else if handle == self.command_lock_menu {
+                    102
+                } else {
+                    103
+                };
+                if let Some(v) = self.monitor_view.borrow().as_ref() {
+                    v.command_action(action);
+                }
             } else if handle == self.exit_menu {
                 self.request_exit();
             }
@@ -2495,6 +2524,11 @@ fn run_inner(
             &std::env::var("OPENDS_UI_SMOKE_THEME").unwrap_or_else(|_| "system".into()),
         );
     }
+    let command_benchmark = smoke && std::env::args().any(|a| a == "--smoke-command-benchmark");
+    if command_benchmark {
+        cfg.commands.enabled =
+            std::env::var("OPENDS_COMMAND_BENCH_MODE").as_deref() != Ok("disabled");
+    }
     let app = App::build(cfg, path, error, background, smoke)?;
     #[cfg(debug_assertions)]
     let demo = if smoke && std::env::var_os("OPENDS_UI_SMOKE_DEMO").is_some() {
@@ -2619,6 +2653,37 @@ fn run_inner(
         if let Some(v) = app.monitor_view.borrow_mut().as_mut() {
             v.smoke();
         }
+        if std::env::args().any(|a| a == "--smoke-commands") {
+            let m = app.controller.borrow().state.monitor.clone();
+            m.start(100)?;
+            m.connection(true);
+            m.input(crate::monitor::neutral());
+            let original = m
+                .commands
+                .history
+                .lock()
+                .map_err(|e| e.to_string())?
+                .settings
+                .clone();
+            let mut changed = original.clone();
+            changed.source = 1;
+            changed.rows = 6;
+            m.commands.configure(changed.clone(), m.now());
+            if app.read_config()?.commands != changed {
+                return Err("General preferences discarded command settings".into());
+            }
+            m.commands.configure(original, m.now());
+            if let Some(v) = app.monitor_view.borrow().as_ref() {
+                v.command_action(101);
+                if !std::env::args().any(|a| a == "--smoke-commands-locked") {
+                    v.command_action(104);
+                }
+                v.validate_commands()?;
+                if std::env::args().any(|a| a == "--smoke-commands-locked") {
+                    v.command_action(102);
+                }
+            }
+        }
         let hwnd = theme::hwnd(&app.window.handle);
         for kind in [ICON_SMALL, ICON_BIG] {
             if unsafe { SendMessageW(hwnd, WM_GETICON, kind as usize, 0) } == 0 {
@@ -2641,6 +2706,74 @@ fn run_inner(
                 ),
         ));
     }
+    let command_fixture = if command_benchmark {
+        let mode = std::env::var("OPENDS_COMMAND_BENCH_MODE").unwrap_or_else(|_| "main".into());
+        app.page.set(0);
+        app.layout();
+        if let Some(v) = app.monitor_view.borrow().as_ref() {
+            v.command_action(111);
+        }
+        let m = app.controller.borrow().state.monitor.clone();
+        m.start(100)?;
+        m.connection(true);
+        if matches!(mode.as_str(), "overlay" | "both") {
+            if let Some(v) = app.monitor_view.borrow().as_ref() {
+                v.command_action(101);
+            }
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let end = stop.clone();
+        let workload =
+            std::env::var("OPENDS_COMMAND_BENCH_WORKLOAD").unwrap_or_else(|_| "idle".into());
+        let thread = std::thread::spawn(move || {
+            let mut i = 0u64;
+            let mut connected = true;
+            let clock = std::time::Instant::now();
+            while !end.load(Ordering::Acquire) {
+                let mut p = crate::monitor::neutral();
+                let phase = if workload == "mixed" {
+                    ["idle", "held", "rapid", "offline"]
+                        [(clock.elapsed().as_secs().saturating_sub(3) / 15).min(3) as usize]
+                } else {
+                    workload.as_str()
+                };
+                let want_connected = phase != "offline";
+                if want_connected != connected {
+                    m.connection(want_connected);
+                    connected = want_connected;
+                }
+                match phase {
+                    "held" => {
+                        p.ly = 0;
+                        p.buttons0 |= 16;
+                        p.l2 = 200;
+                    }
+                    "rapid" => {
+                        p.lx = if i % 2 == 0 { 0 } else { 255 };
+                        p.ly = if i % 3 == 0 { 0 } else { 128 };
+                        p.buttons0 |= if i % 2 == 0 { 16 } else { 32 };
+                        p.l2 = (i % 256) as u8;
+                    }
+                    "offline" => {
+                        if connected {
+                            m.connection(false);
+                            connected = false;
+                        }
+                    }
+                    _ => {}
+                }
+                if connected {
+                    m.input(p);
+                }
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+        });
+        println!("command_benchmark_ready mode={mode}");
+        Some((stop, thread))
+    } else {
+        None
+    };
     let weak = Rc::downgrade(&app);
     let handler = nwg::full_bind_event_handler(&app.window.handle, move |e, d, h| {
         if let Some(a) = weak.upgrade() {
@@ -2746,6 +2879,10 @@ fn run_inner(
         let _ = std::fs::remove_file(csv);
     }
     nwg::dispatch_thread_events();
+    if let Some((stop, thread)) = command_fixture {
+        stop.store(true, Ordering::Release);
+        let _ = thread.join();
+    }
     #[cfg(debug_assertions)]
     if let Some((stop, worker)) = demo {
         stop.store(true, Ordering::Release);

@@ -26,7 +26,7 @@ extern "system" {
         free: *mut u64,
     ) -> i32;
 }
-fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
+pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -61,7 +61,7 @@ fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     }
     Ok(available)
 }
-fn require_space(available: u64) -> std::io::Result<()> {
+pub(crate) fn require_space(available: u64) -> std::io::Result<()> {
     if available < DISK_RESERVE + WRITE_BUFFER as u64 {
         return Err(std::io::Error::other(crate::tr!(
             monitor_recording_only_mib_remain_on_the_target_disk,

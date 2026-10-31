@@ -188,7 +188,7 @@ impl BridgeController {
                         _ => {}
                     }
                     state.connected.store(false, Ordering::Release);
-                    state.monitor.connected.store(false, Ordering::Release);
+                    state.monitor.connection(false);
                     state.monitor.battery.disconnect();
                     state.monitor.reset();
                     state.hidhide_healthy.store(false, Ordering::Release);
@@ -507,7 +507,7 @@ fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result
             &mut progress,
         );
         state.connected.store(false, Ordering::Release);
-        state.monitor.connected.store(false, Ordering::Release);
+        state.monitor.connection(false);
         state.monitor.battery.disconnect();
         state.monitor.reset();
         match result {
@@ -769,7 +769,7 @@ fn run_session(
     let mut stable = false;
     state.connected.store(true, Ordering::Release);
     state.monitor.reset();
-    state.monitor.connected.store(true, Ordering::Release);
+    state.monitor.connection(true);
     state.monitor.battery.connect();
     state.log_message(
         crate::i18n::MessageId::bridge_bridge_connected_input_output_and_audio_are,

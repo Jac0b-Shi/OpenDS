@@ -411,9 +411,11 @@ pub fn dpad_bits(value: u8) -> u8 {
 }
 
 pub struct Monitor {
+    pub commands: crate::commands::Commands,
     pub battery: crate::battery::Telemetry,
     pub recording: crate::monitor_recording::Recording,
     origin: Instant,
+    connection_gate: Mutex<()>,
     pub active: AtomicBool,
     pub source: AtomicBool,
     pub forwarded: AtomicBool,
@@ -498,13 +500,22 @@ impl Monitor {
             .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))? = history;
         self.history_bytes.store(history_bytes as u64, Release);
         self.epoch.fetch_add(1, AcqRel);
-        self.active.store(true, Release);
+        {
+            let _gate = self
+                .connection_gate
+                .lock()
+                .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))?;
+            self.commands
+                .start(self.now(), self.connected.load(Acquire));
+            self.active.store(true, Release);
+        }
         let monitor = self.clone();
         let thread = std::thread::Builder::new()
             .name("opends-monitor".into())
             .spawn(move || monitor.work())
             .map_err(|e| {
                 self.active.store(false, Release);
+                self.commands.pause();
                 e.to_string()
             })?;
         *self
@@ -521,6 +532,8 @@ impl Monitor {
                 let _ = crate::shutdown::join(w);
             }
         }
+        self.commands.work(self.now());
+        self.commands.pause();
         self.stop_recording();
         if crate::shutdown::ending() {
             self.recording.finish();
@@ -533,12 +546,45 @@ impl Monitor {
         if self.queue_bytes()
             + self.history_bytes.load(Acquire) as usize
             + crate::monitor_recording::queue_bytes()
+            + crate::command_recording::queue_bytes()
             > CACHE_LIMIT
         {
             return Err(crate::tr!(monitor_recording_would_exceed_the_monitor_cache_limit).into());
         }
-        self.recording
+        let mut command_path = path.clone();
+        command_path.set_extension("commands.csv");
+        {
+            let h = self
+                .commands
+                .history
+                .lock()
+                .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))?;
+            self.commands.recording.start(&command_path)?;
+            if let Some(e) = h.latest.as_ref() {
+                self.commands.recording.submit(e, &h.settings);
+            } else {
+                self.commands.recording.submit(
+                    &crate::commands::Event {
+                        session: h.session,
+                        sequence: 0,
+                        time: self.now(),
+                        delta: None,
+                        kind: crate::commands::Kind::Settings,
+                        state: Default::default(),
+                        raw: [0; 9],
+                    },
+                    &h.settings,
+                );
+            }
+        }
+        if let Err(e) = self
+            .recording
             .start(path, self.hz.load(Acquire), self.now())
+        {
+            self.commands.recording.finish();
+            return Err(e);
+        }
+        Ok(())
     }
     pub fn stop_recording(&self) {
         if crate::shutdown::ending() {
@@ -549,6 +595,7 @@ impl Monitor {
             self.record_history(&h);
         }
         self.recording.stop();
+        self.commands.recording.stop();
     }
     fn record_history(&self, h: &History) {
         if !self.recording.active() {
@@ -586,6 +633,7 @@ impl Monitor {
         });
     }
     pub fn clear(&self) {
+        self.commands.clear(self.now());
         self.epoch.fetch_add(1, AcqRel);
         if let Ok(mut h) = self.history.lock() {
             *h = if self.active.load(Acquire) {
@@ -661,10 +709,23 @@ impl Monitor {
                 })
                 .unwrap_or(0)
     }
+    pub fn connection(&self, connected: bool) {
+        let _gate = self
+            .connection_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let old = self.connected.swap(connected, AcqRel);
+        if old != connected && self.active.load(Acquire) {
+            self.commands
+                .submit(self.now(), crate::commands::Message::Connection(connected));
+        }
+    }
     pub fn input(&self, state: ParsedState) {
         if !self.active.load(Relaxed) {
             return;
         }
+        self.commands
+            .submit(self.now(), crate::commands::Message::Input(state));
         if let Some(q) = self.queues.get() {
             if q.input
                 .push((self.epoch.load(Acquire), self.now(), state))
@@ -766,6 +827,7 @@ impl Monitor {
     fn work(&self) {
         let q = self.queues.get().unwrap();
         while self.active.load(Acquire) {
+            self.commands.work(self.now());
             let epoch = self.epoch.load(Acquire);
             if let Ok(mut h) = self.history.lock() {
                 let mask = if self.source.load(Relaxed) { 31 } else { 0 }
@@ -822,17 +884,19 @@ impl Monitor {
         }
     }
     fn queue_bytes(&self) -> usize {
-        self.queues
-            .get()
-            .map(|_| {
-                (GAME_QUEUE_CAPACITY + 4 * QUEUE_CAPACITY)
-                    * (std::mem::size_of::<Chunk>() + std::mem::size_of::<usize>())
-                    + 4096
-                        * (std::mem::size_of::<(u64, u64, ParsedState)>()
-                            + std::mem::size_of::<usize>())
-                    + std::mem::size_of::<Queues>()
-            })
-            .unwrap_or(0)
+        self.commands.allocated_bytes()
+            + self
+                .queues
+                .get()
+                .map(|_| {
+                    (GAME_QUEUE_CAPACITY + 4 * QUEUE_CAPACITY)
+                        * (std::mem::size_of::<Chunk>() + std::mem::size_of::<usize>())
+                        + 4096
+                            * (std::mem::size_of::<(u64, u64, ParsedState)>()
+                                + std::mem::size_of::<usize>())
+                        + std::mem::size_of::<Queues>()
+                })
+                .unwrap_or(0)
     }
     pub fn allocated_bytes(&self) -> usize {
         self.queue_bytes()
@@ -845,7 +909,9 @@ impl Default for Monitor {
         Self {
             battery: crate::battery::Telemetry::default(),
             recording: crate::monitor_recording::Recording::default(),
+            commands: Default::default(),
             origin: Instant::now(),
+            connection_gate: Mutex::new(()),
             active: AtomicBool::new(false),
             source: AtomicBool::new(true),
             forwarded: AtomicBool::new(false),

@@ -1,6 +1,8 @@
 # OpenDS
 
-**简体中文** | [English](README.md)
+|          |                      |
+| -------- | -------------------- |
+| **简体中文** | [English](README.md) |
 
 把通过蓝牙连接的 DualSense 手柄变成一只本机虚拟 USB DualSense，让游戏按有线手柄对待，并把灯光、自适应扳机、震动、扬声器音频和触觉原样送回真实手柄。
 
@@ -9,12 +11,24 @@
 1. 解压 `OpenDS-…-windows-x64.zip` 到本地磁盘，保留全部文件。需要固定安装时，用 PowerShell 运行 `scripts/Install-OpenDS.ps1`。
 2. 在 Windows 蓝牙设置里配对 DualSense，退出其他占用该手柄的工具。手柄之前连过别的设备时，先进入配对模式：
    > 确认玩家指示灯已熄灭。如果亮着，长按 PS 键直到熄灭，并断开 USB 线。按住**创建键**，同时按住 **PS 键**，直到光条开始闪烁。然后在 Windows 蓝牙设置里选择手柄。
-   步骤摘自 [PlayStation 官方配对教程](https://www.playstation.com/zh-hans-cn/support/hardware/pair-dualsense-controller-bluetooth/)。[Apple 支持文档](https://support.apple.com/zh-cn/HT211813) 对创建键的位置有更清楚的示意，配对按键相同。
+   > 步骤摘自 [PlayStation 官方配对教程](https://www.playstation.com/zh-hans-cn/support/hardware/pair-dualsense-controller-bluetooth/)。[Apple 支持文档](https://support.apple.com/zh-cn/HT211813) 对创建键的位置有更清楚的示意，配对按键相同。
 3. 双击 `opends.exe`。缺少驱动时按提示安装 USB/IP Win2 和 HidHide，并重启系统。
 4. 在「连接与反馈」选中手柄并保存，回到概览点击「启动桥接」。
 5. 进入游戏。桥接启动后再开游戏，手柄才会被识别为完整设备。
 
 关闭设置窗口会留在托盘。停止桥接或从托盘退出会释放按键、移除虚拟设备并恢复手柄可见。
+
+## 指令表与悬浮窗
+
+在「实时监视」开始采集后，手柄图形下方的指令表会开始记录按键、左摇杆方向与力度变化；右摇杆默认不记录，但可在「指令表设置」内开启。来源标识支持文字、图标或隐藏，默认隐藏；阈值与颜色均可调整。触摸板只记录机械按压。
+
+当前输入状态在最上方并持续计时，历史行显示该状态从开始到下一次变化的持续时长；时间使用毫秒或秒，达到 99 秒显示 `99+ s`。断开和重新连接显示插头事件，离线时间继续计入。界面只保留可见记录，扩大窗口不会找回已淘汰历史。
+
+点击「悬浮窗」可独立显示指令表。悬浮窗支持置顶、拖动缩放、背景与内容分别调透明度，以及跟随软件或固定深浅主题。锁定后鼠标穿透；在主面板或托盘菜单解锁，或使用「恢复悬浮窗」找回窗口。自动配色在深色主题下交换中性纯黑白；关闭自动配色后可分别设置深浅配色。
+
+开启「记录文件」还会创建同名 `.commands.csv`，逐条保存指令、连接事件、分类设置和原始时间；该文件不会覆盖已有文件。本版不提供历史文件查看或回放。
+
+时间以软件收到输入的时刻为准，不按游戏帧数换算。
 
 ## 命令
 
@@ -80,9 +94,9 @@ haptics_gain=10
 | `monitor_sample_hz`    | 监视采样率，20 / 50 / 100 / 200                                                    |
 | `monitor_fps`          | 监视刷新率，15 / 30 / 60                                                           |
 | `monitor_seconds`      | 监视时间跨度，30–900 秒                                                              |
-| `language`             | 界面语言，`auto` 跟随系统，或语言代码如 `zh-CN`                                      |
-| `theme`                | 外观，`system` / `light` / `dark`                                                    |
-| `close_action`         | 关闭行为，`ask` / `tray` / `exit`                                                    |
+| `language`             | 界面语言，`auto` 跟随系统，或语言代码如 `zh-CN`                                              |
+| `theme`                | 外观，`system` / `light` / `dark`                                               |
+| `close_action`         | 关闭行为，`ask` / `tray` / `exit`                                                 |
 
 修改后重启桥接生效。
 

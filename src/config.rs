@@ -68,6 +68,7 @@ impl fmt::Display for ThemeMode {
 /// 配置项，对应配置结构布局。
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub commands: crate::commands::Settings,
     /// 本机 USB/IP 监听端口，默认 3241，避免占用其他 USB/IP 服务。
     pub port: u16,
     /// 音频缓冲上限（512 帧/块），默认 4，范围 1..=128。
@@ -118,6 +119,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            commands: Default::default(),
             port: 3241,
             buffer: 4,
             speaker_gain: 0,
@@ -297,6 +299,9 @@ impl Config {
                 "device_path" => cfg.device_path = value.to_owned(),
                 "usbip_directory" => cfg.usbip_directory = value.to_owned(),
                 "hidhide_directory" => cfg.hidhide_directory = value.to_owned(),
+                key if key.starts_with("command_") => {
+                    cfg.commands.set(&key[8..], value)?;
+                }
                 "monitor_sample_hz" => number!(monitor_sample_hz),
                 "monitor_fps" => number!(monitor_fps),
                 "monitor_seconds" => number!(monitor_seconds),
@@ -304,11 +309,15 @@ impl Config {
             }
         }
         cfg.clamp();
+        cfg.commands.validate()?;
         Ok(cfg)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let mut s = String::from("[opends]\n");
+        for (key, value) in self.commands.fields() {
+            s.push_str(&format!("command_{key}={value}\n"));
+        }
         macro_rules! fields { ($($field:ident),+) => { $(s.push_str(&format!("{}={}\n", stringify!($field), self.$field));)+ }; }
         fields!(
             port,

@@ -416,7 +416,9 @@ unsafe extern "system" fn control_proc(
     }
     if matches!(
         msg,
-        WM_SETFOCUS
+        WM_SETTEXT
+            | BM_SETSTATE
+            | WM_SETFOCUS
             | WM_KILLFOCUS
             | WM_ENABLE
             | BM_SETCHECK
@@ -428,9 +430,45 @@ unsafe extern "system" fn control_proc(
             | WM_KEYUP
     ) {
         InvalidateRect(hwnd, null(), 0);
+        // Native buttons repaint synchronously when their label or enabled state
+        // changes. Restore our palette before returning to the caller.
+        if kind == 1 && matches!(msg, WM_SETTEXT | WM_ENABLE | BM_SETSTATE) {
+            UpdateWindow(hwnd);
+        }
     }
     result
 }
+/// Checks the real native-control paint path during isolated UI smoke runs.
+pub unsafe fn validate_palette(hwnd: HWND) -> Result<(), String> {
+    let mut rect: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut rect);
+    let dc = CreateCompatibleDC(null_mut());
+    let screen = GetDC(hwnd);
+    let bitmap = CreateCompatibleBitmap(screen, rect.right.max(1), rect.bottom.max(1));
+    ReleaseDC(hwnd, screen);
+    let old = SelectObject(dc, bitmap as _);
+    SendMessageW(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+    let color = GetPixel(dc, (rect.right - 5).max(0), (rect.bottom - 5).max(0));
+    SelectObject(dc, old);
+    DeleteObject(bitmap as _);
+    DeleteDC(dc);
+    let p = a::palette();
+    let expected =
+        if IsWindowEnabled(hwnd) == 0 && matches!(class(hwnd).as_str(), "button" | "combobox") {
+            p.disabled
+        } else {
+            p.surface
+        };
+    if color != expected {
+        return Err(format!(
+            "{} control {} background {color:06x} != {expected:06x}",
+            class(hwnd),
+            GetDlgCtrlID(hwnd)
+        ));
+    }
+    Ok(())
+}
+
 pub unsafe fn parent_message(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
     let p = a::palette();
     if matches!(
