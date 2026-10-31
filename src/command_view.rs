@@ -626,6 +626,7 @@ impl View {
                 }
             }
         }
+        crate::theme_controls::validate_scrollbar(s.list)?;
         ShowWindow(s.settings, SW_HIDE);
         s.restore_bounds();
         s.styles();

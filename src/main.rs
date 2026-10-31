@@ -18,6 +18,7 @@ mod commands;
 mod config;
 mod dependencies;
 mod dependency_paths;
+mod gdi_buffer;
 mod gui;
 mod gui_close;
 mod gui_language;

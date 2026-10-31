@@ -2642,7 +2642,13 @@ fn run_inner(
             app.page.set(page);
             app.layout();
             if std::env::args().any(|arg| arg == "--smoke-commands") {
+                if let Some(view) = app.monitor_view.borrow().as_ref() {
+                    view.validate_scroll_motion()?;
+                }
                 unsafe {
+                    for button in &app.nav {
+                        crate::theme_controls::validate_button_motion(theme::hwnd(&button.handle))?;
+                    }
                     for control in [
                         &app.logs.handle,
                         &app.dependencies.handle,

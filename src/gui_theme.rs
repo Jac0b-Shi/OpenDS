@@ -260,6 +260,47 @@ pub unsafe fn draw_button(
     selected: bool,
     dpi: u32,
 ) {
+    let cached = crate::gdi_buffer::PaintBuffer::acquire(
+        item.hwndItem,
+        0,
+        item.hDC,
+        item.rcItem.right - item.rcItem.left,
+        item.rcItem.bottom - item.rcItem.top,
+    );
+    if let Some(lease) = cached.as_ref() {
+        let buffer = lease.dc();
+        SetWindowOrgEx(
+            buffer,
+            item.rcItem.left,
+            item.rcItem.top,
+            std::ptr::null_mut(),
+        );
+        let mut target = *item;
+        target.hDC = buffer;
+        draw_button_contents(&target, fonts, primary, nav, selected, dpi);
+        BitBlt(
+            item.hDC,
+            item.rcItem.left,
+            item.rcItem.top,
+            item.rcItem.right - item.rcItem.left,
+            item.rcItem.bottom - item.rcItem.top,
+            buffer,
+            item.rcItem.left,
+            item.rcItem.top,
+            SRCCOPY,
+        );
+    } else {
+        draw_button_contents(item, fonts, primary, nav, selected, dpi);
+    }
+}
+unsafe fn draw_button_contents(
+    item: &DRAWITEMSTRUCT,
+    fonts: &Fonts,
+    primary: bool,
+    nav: bool,
+    selected: bool,
+    dpi: u32,
+) {
     let disabled = item.itemState & ODS_DISABLED != 0;
     let pressed = item.itemState & ODS_SELECTED != 0;
     let mut cursor: POINT = std::mem::zeroed();

@@ -342,7 +342,11 @@ unsafe extern "system" fn window_proc(
     _: usize,
     _: usize,
 ) -> LRESULT {
+    if let Some(result) = crate::theme_controls::scroll_message(hwnd, msg, w, l) {
+        return result;
+    }
     if msg == WM_NCDESTROY {
+        crate::gdi_buffer::release(hwnd);
         let next = STATE.with(|s| {
             let mut s = s.borrow_mut();
             s.windows.retain(|h| *h != hwnd);

@@ -978,6 +978,15 @@ impl MonitorView {
             s.sync_battery(shown);
         }
     }
+    pub fn validate_scroll_motion(&self) -> Result<(), String> {
+        let root = self.state.borrow().root;
+        unsafe {
+            if IsWindowVisible(root) != 0 {
+                crate::theme_controls::validate_scrollbar(root)?;
+            }
+        }
+        Ok(())
+    }
     pub fn validate_commands(&self) -> Result<(), String> {
         let mut state = self.state.borrow_mut();
         if let Some(v) = state.commands.as_mut() {
@@ -1271,8 +1280,9 @@ impl ViewState {
         si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
         si.nMax = content as i32;
         si.nPage = viewport as u32;
-        SetScrollInfo(self.root, SB_VERT as i32, &si, 1);
+        SetScrollInfo(self.root, SB_VERT as i32, &si, 0);
         ShowScrollBar(self.root, SB_VERT as i32, (self.scroll_max > 0) as i32);
+        crate::theme_controls::refresh_scrollbar(self.root);
         // Showing a non-client scrollbar reduces the client width synchronously.
         // WM_SIZE may be reentrant, so apply the final width here as well.
         GetClientRect(self.root, &mut r);
@@ -1954,7 +1964,8 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
         }
         WM_MOUSEWHEEL => {
             s.scroll = (s.scroll - ((w >> 16) as i16 as i32 / 120) * 48).clamp(0, s.scroll_max);
-            SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 1);
+            SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 0);
+            crate::theme_controls::refresh_scrollbar(hwnd);
             InvalidateRect(s.canvas, null(), 0);
             s.sync_battery(false);
             0
@@ -1974,7 +1985,8 @@ unsafe extern "system" fn host_proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM)
                 s.scroll += delta;
             }
             s.scroll = s.scroll.clamp(0, s.scroll_max);
-            SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 1);
+            SetScrollPos(hwnd, SB_VERT as i32, s.scroll, 0);
+            crate::theme_controls::refresh_scrollbar(hwnd);
             InvalidateRect(s.canvas, null(), 0);
             s.sync_battery(false);
             0
