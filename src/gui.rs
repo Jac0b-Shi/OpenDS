@@ -2641,6 +2641,26 @@ fn run_inner(
         for page in 0..6 {
             app.page.set(page);
             app.layout();
+            if std::env::args().any(|arg| arg == "--smoke-commands") {
+                unsafe {
+                    for control in [
+                        &app.logs.handle,
+                        &app.dependencies.handle,
+                        &app.install_status.handle,
+                        &app.auto_start.handle,
+                        &app.reconnect.handle,
+                        &app.hide.handle,
+                        &app.audio.handle,
+                        &app.haptics.handle,
+                        &app.microphone.handle,
+                    ] {
+                        let hwnd = theme::hwnd(control);
+                        if IsWindowVisible(hwnd) != 0 {
+                            crate::theme_controls::validate_hover_stability(hwnd)?;
+                        }
+                    }
+                }
+            }
         }
         app.page.set(
             std::env::var("OPENDS_UI_SMOKE_PAGE")

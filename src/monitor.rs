@@ -828,6 +828,8 @@ impl Monitor {
     fn work(&self) {
         let q = self.queues.get().unwrap();
         while self.active.load(Acquire) {
+            // Run even when both input and PCM queues are empty: dwell-filter
+            // candidates must mature after the final release without another report.
             self.commands.work(self.now());
             let epoch = self.epoch.load(Acquire);
             if let Ok(mut h) = self.history.lock() {
@@ -1009,6 +1011,54 @@ pub fn demo(m: Arc<Monitor>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dwell_filter_publishes_press_and_final_release_on_idle_worker() {
+        use crate::commands::Kind;
+        let monitor = super::Monitor::new();
+        monitor.commands.visible_capacity(false, 8);
+        monitor.connection(true);
+        monitor.start(100).unwrap();
+        let wait_for = |pressed: bool, after: u64| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let found = monitor
+                    .commands
+                    .history
+                    .lock()
+                    .unwrap()
+                    .visible_latest()
+                    .filter(|event| {
+                        event.kind == Kind::Input
+                            && event.sequence > after
+                            && (event.state.buttons & 16 != 0) == pressed
+                    })
+                    .map(|event| event.sequence);
+                if found.is_some() || std::time::Instant::now() >= deadline {
+                    break found;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        monitor.input(super::neutral());
+        let neutral = wait_for(false, 0);
+        let mut pressed = super::neutral();
+        pressed.buttons0 |= 16;
+        monitor.input(pressed);
+        let press = wait_for(true, neutral.unwrap_or(0));
+        monitor.input(super::neutral());
+        // No UI, configure call, commands.work call or further input follows.
+        let release = wait_for(false, press.unwrap_or(0));
+        monitor.stop();
+        assert!(
+            neutral.is_some() && press.is_some() && release.is_some(),
+            "Idle worker failed to mature state: {neutral:?}/{press:?}/{release:?}"
+        );
+        let history = monitor.commands.history.lock().unwrap();
+        assert_eq!(
+            history.visible_latest().unwrap().sequence,
+            history.latest.as_ref().unwrap().sequence
+        );
+    }
     #[test]
     fn battery_is_live_without_capture_and_survives_capture_lifecycle() {
         let monitor = super::Monitor::new();

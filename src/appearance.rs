@@ -285,6 +285,12 @@ pub unsafe fn install(hwnd: HWND) {
     if first {
         SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS, 0);
     }
+    // Parent erasure must never paint over live child text/checkboxes.
+    SetWindowLongPtrW(
+        hwnd,
+        GWL_STYLE,
+        GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_CLIPCHILDREN as isize,
+    );
     apply(hwnd);
 }
 unsafe fn apply(hwnd: HWND) {

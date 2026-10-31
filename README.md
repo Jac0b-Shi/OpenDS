@@ -32,7 +32,7 @@ Open **Overlay** for an independent table with optional always-on-top, adjustabl
 
 **Record file** also writes a matching `.commands.csv` with each input and connection event, the classification settings and the raw timestamp.
 
-Input history has independent minimum-duration filters: display defaults to 16.67 ms, while the command file defaults to 0 ms (off). Both values are configurable; 0 disables filtering. A state appears or is written after reaching the threshold, retaining its original start time. Short excursions between identical combinations merge into one duration. Connection, disconnection and gap events always pass. Waveform recording is unaffected.
+Input history has independent minimum-duration filters: display defaults to 16.67 ms, while the command file defaults to 0 ms (off). Both values are configurable; 0 disables filtering. A state appears or is written after reaching the threshold, retaining its original start time. Short excursions between identical combinations merge into one duration. Filtering applies per state, so two consecutive different states that both fall below the threshold are dropped rather than summed. Connection, disconnection and gap events always pass. Waveform recording is unaffected.
 
 Times are based on received input, rather than game frame counts.
 

@@ -35,6 +35,13 @@ pub unsafe fn install(h: HWND) {
         _ => 0,
     };
     SetWindowSubclass(h, Some(control_proc), ID, kind);
+    if kind == 0 {
+        SetWindowLongPtrW(
+            h,
+            GWL_STYLE,
+            GetWindowLongPtrW(h, GWL_STYLE) | WS_CLIPCHILDREN as isize,
+        );
+    }
     if kind == 2 {
         let style = GetWindowLongPtrW(h, GWL_STYLE);
         SetWindowLongPtrW(
@@ -274,10 +281,13 @@ unsafe extern "system" fn control_proc(
     if let Some(r) = parent_message(hwnd, msg, w, l) {
         return r;
     }
-    if kind == 5 && msg == WM_ERASEBKGND {
+    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    let readonly_text =
+        kind == 3 && style & ES_MULTILINE as isize != 0 && style & ES_READONLY as isize != 0;
+    if (kind == 5 || readonly_text) && msg == WM_ERASEBKGND {
         return 1;
     }
-    if kind == 5 && matches!(msg, WM_PAINT | WM_PRINTCLIENT) {
+    if (kind == 5 || readonly_text) && matches!(msg, WM_PAINT | WM_PRINTCLIENT) {
         // Render the complete list client atomically. Native scrolling can leave
         // partial rows exposed between background erasure and text painting.
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
@@ -311,7 +321,6 @@ unsafe extern "system" fn control_proc(
         }
         return 0;
     }
-    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     let cb = kind == 1 && matches!(style & 0xf, 2 | 3 | 5 | 6 | 9);
     let push = kind == 1 && !cb && style & 0xf != BS_OWNERDRAW as isize;
     if (msg == WM_PAINT || msg == WM_PRINTCLIENT) && (cb || push || kind == 2 || kind == 4) {
@@ -323,6 +332,16 @@ unsafe extern "system" fn control_proc(
         };
         let mut r: RECT = std::mem::zeroed();
         GetClientRect(hwnd, &mut r);
+        let output = dc;
+        let buffer = CreateCompatibleDC(output);
+        let bitmap = CreateCompatibleBitmap(output, r.right.max(1), r.bottom.max(1));
+        let buffered = !buffer.is_null() && !bitmap.is_null();
+        let old = if buffered {
+            SelectObject(buffer, bitmap as _)
+        } else {
+            null_mut()
+        };
+        let dc = if buffered { buffer } else { output };
         if cb {
             checkbox(hwnd, dc, r);
         } else if push {
@@ -344,6 +363,16 @@ unsafe extern "system" fn control_proc(
                 },
                 DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
             );
+        }
+        if buffered {
+            BitBlt(output, 0, 0, r.right, r.bottom, buffer, 0, 0, SRCCOPY);
+            SelectObject(buffer, old);
+        }
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
+        if !buffer.is_null() {
+            DeleteDC(buffer);
         }
         if msg == WM_PAINT {
             EndPaint(hwnd, &ps);
@@ -434,6 +463,11 @@ unsafe extern "system" fn control_proc(
         }
         return 0;
     }
+    // Checkboxes have no custom hover appearance; native hot tracking can
+    // paint a transient system-colored box over our palette. Keep drag handling.
+    if cb && matches!(msg, WM_MOUSEMOVE | WM_MOUSELEAVE) && w & MK_LBUTTON as usize == 0 {
+        return 0;
+    }
     if msg == WM_MOUSEMOVE && (kind == 1 || kind == 2) {
         let mut track: TRACKMOUSEEVENT = std::mem::zeroed();
         track.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
@@ -451,7 +485,9 @@ unsafe extern "system" fn control_proc(
     ) {
         scroll_bar(hwnd);
     }
+    let hover = matches!(msg, WM_MOUSEMOVE | WM_MOUSELEAVE);
     if kind != 5
+        && !(hover && (kind == 3 || kind == 4 || cb))
         && matches!(
             msg,
             WM_SETTEXT
@@ -477,6 +513,106 @@ unsafe extern "system" fn control_proc(
     }
     result
 }
+/// Isolated smoke check for hover erasure and native text scroll/selection paths.
+pub unsafe fn validate_hover_stability(hwnd: HWND) -> Result<(), String> {
+    let c = class(hwnd);
+    let saved = text(hwnd);
+    let check = if c == "button" {
+        Some(SendMessageW(hwnd, BM_GETCHECK, 0, 0))
+    } else {
+        None
+    };
+    if c == "edit" {
+        SetWindowTextW(
+            hwnd,
+            wide(
+                &(0..80)
+                    .map(|i| format!("Line {i}: themed text remains visible\r\n"))
+                    .collect::<String>(),
+            )
+            .as_ptr(),
+        );
+    }
+    let result = (|| {
+        let mut rect: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect);
+        let (width, height) = (rect.right.max(1), rect.bottom.max(1));
+        let dc = CreateCompatibleDC(null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = null_mut();
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dc.is_null() || bitmap.is_null() {
+            if !dc.is_null() {
+                DeleteDC(dc);
+            }
+            return Err("Hover snapshot unavailable".into());
+        }
+        let old = SelectObject(dc, bitmap as _);
+        let capture = || {
+            SendMessageW(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+            GdiFlush();
+            let data = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+            data.chunks(width as usize)
+                .take(128)
+                .flat_map(|row| row.iter().take(512))
+                .fold(0u64, |hash, pixel| {
+                    hash.wrapping_mul(16777619) ^ *pixel as u64
+                })
+        };
+        let mut error = None;
+        for stage in 0..3 {
+            if c == "edit" {
+                SendMessageW(hwnd, EM_LINESCROLL as u32, 0, 3);
+            }
+            if check.is_some() {
+                SendMessageW(
+                    hwnd,
+                    BM_SETCHECK,
+                    if stage == 1 {
+                        BST_CHECKED as usize
+                    } else {
+                        BST_UNCHECKED as usize
+                    },
+                    0,
+                );
+            }
+            UpdateWindow(hwnd);
+            let baseline = capture();
+            for (x, y) in [(2, 2), (width / 2, height / 2), (width - 2, height - 2)] {
+                SendMessageW(
+                    hwnd,
+                    WM_MOUSEMOVE,
+                    0,
+                    ((y as u32 & 65535) << 16 | (x as u32 & 65535)) as isize,
+                );
+                SendMessageW(hwnd, WM_MOUSELEAVE, 0, 0);
+                if GetUpdateRect(hwnd, null_mut(), 0) != 0 || capture() != baseline {
+                    error = Some(format!(
+                        "{c} control {} repaints or changes on idle hover",
+                        GetDlgCtrlID(hwnd)
+                    ));
+                    break;
+                }
+            }
+        }
+        SelectObject(dc, old);
+        DeleteObject(bitmap as _);
+        DeleteDC(dc);
+        error.map_or(Ok(()), Err)
+    })();
+    if let Some(state) = check {
+        SendMessageW(hwnd, BM_SETCHECK, state as usize, 0);
+    } else {
+        SetWindowTextW(hwnd, wide(&saved).as_ptr());
+    }
+    result
+}
+
 /// Checks the real native-control paint path during isolated UI smoke runs.
 pub unsafe fn validate_palette(hwnd: HWND) -> Result<(), String> {
     let mut rect: RECT = std::mem::zeroed();
