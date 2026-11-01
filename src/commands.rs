@@ -73,9 +73,9 @@ impl Default for Settings {
             stick: [[12., 51., 98.]; 2],
             trigger: [[128, 250]; 2],
             trigger_deadzone: [0; 2],
-            ignore_strength: [false; 4],
-            unified_colors: [0xE54747, 0x36AC65, 0xE54747, 0xE54747],
-            dark_unified_colors: [0xE54747, 0x36AC65, 0xE54747, 0xE54747],
+            ignore_strength: [true; 4],
+            unified_colors: [0xE54747, 0x36AC65, 0x8080FF, 0x0080C0],
+            dark_unified_colors: [0xE54747, 0x36AC65, 0x8080FF, 0x0080C0],
             colors: [
                 [0x9DDCF5, 0xE5B900, 0xE54747],
                 [0xBFE8C5, 0x83D69B, 0x36AC65],
@@ -100,7 +100,7 @@ impl Default for Settings {
             text: [0, 0xffffff],
             auto_colors: true,
             theme: 0,
-            bg_alpha: 55,
+            bg_alpha: 85,
             fg_alpha: 100,
             topmost: true,
             x: 100,
@@ -1001,9 +1001,8 @@ mod tests {
     #[test]
     fn ungraded_inputs_keep_dead_zones_and_direction_without_pressure_events() {
         let mut cfg = Settings::default();
-        assert_eq!(cfg.ignore_strength, [false; 4]);
+        assert_eq!(cfg.ignore_strength, [true; 4]);
         assert_eq!(cfg.trigger_deadzone, [0; 2]);
-        cfg.ignore_strength = [true; 4];
         cfg.right = true;
         cfg.trigger_deadzone = [10, 20];
         let mut p = p();
@@ -1046,12 +1045,31 @@ mod tests {
     }
     #[test]
     fn legacy_max_colors_seed_new_colors_and_explicit_choices_round_trip() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.bg_alpha, 85);
+        assert_eq!(&defaults.unified_colors[2..], &[0x8080FF, 0x0080C0]);
+        assert_eq!(&defaults.dark_unified_colors[2..], &[0x8080FF, 0x0080C0]);
+        assert_eq!(crate::config::Config::parse("").unwrap().commands, defaults);
         let cfg = crate::config::Config::parse(
             "command_color_0_2=#123456\ncommand_darkcolor_0_2=#ABCDEF\n",
         )
         .unwrap();
         assert_eq!(cfg.commands.unified_colors[0], 0x123456);
         assert_eq!(cfg.commands.dark_unified_colors[0], 0xabcdef);
+        assert_eq!(
+            &cfg.commands.unified_colors[2..],
+            &defaults.unified_colors[2..]
+        );
+        assert_eq!(
+            &cfg.commands.dark_unified_colors[2..],
+            &defaults.dark_unified_colors[2..]
+        );
+        let legacy = crate::config::Config::parse(
+            "command_color_2_2=#123456\ncommand_darkcolor_3_2=#ABCDEF\n",
+        )
+        .unwrap();
+        assert_eq!(legacy.commands.unified_colors[2], 0x123456);
+        assert_eq!(legacy.commands.dark_unified_colors[3], 0xABCDEF);
         let cfg =
             crate::config::Config::parse("command_color_0_2=#123456\ncommand_unified_0=#112233\n")
                 .unwrap();
@@ -1324,6 +1342,7 @@ mod tests {
     #[test]
     fn both_sticks_and_all_trigger_levels_are_distinct() {
         let mut cfg = Settings::default();
+        cfg.ignore_strength = [false; 4];
         cfg.right = true;
         for (v, level) in [(1, 1), (128, 2), (250, 3)] {
             let mut p = p();

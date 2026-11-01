@@ -482,6 +482,51 @@ impl View {
             }
         }
         s.cfg = before_modes;
+        let before_reset = s.cfg.clone();
+        s.cfg.source = 0;
+        s.cfg.rows = 5;
+        s.cfg.overlay_rows = 7;
+        s.cfg.overlay_auto_rows = false;
+        s.locked = true;
+        for (key, hint) in [
+            ("source", crate::tr!(command_source_hint)),
+            ("auto_colors", crate::tr!(command_auto_colors_hint)),
+            ("rows", ""),
+        ] {
+            let index = s.keys.iter().position(|k| k == key).unwrap();
+            SendMessageW(s.list, LB_SETCURSEL, index, 0);
+            s.select_setting();
+            let description = GetDlgItem(s.settings, 212);
+            let mut text = [0u16; 256];
+            let length = GetWindowTextW(description, text.as_mut_ptr(), 256);
+            if String::from_utf16_lossy(&text[..length.max(0) as usize]) != hint
+                || ((GetWindowLongPtrW(description, GWL_STYLE) & WS_VISIBLE as isize) != 0)
+                    != !hint.is_empty()
+            {
+                return Err(format!("Incorrect contextual setting description: {key}"));
+            }
+        }
+        let source_index = s.keys.iter().position(|key| key == "source").unwrap();
+        SendMessageW(s.list, LB_SETCURSEL, source_index, 0);
+        let mut expected = s.cfg.clone();
+        expected.source = Settings::default().source;
+        s.restore_defaults(false);
+        if s.cfg != expected || !s.locked || s.selected().as_deref() != Some("source") {
+            return Err("Resetting one setting changed other settings or selection".into());
+        }
+        let row_index = s.keys.iter().position(|key| key == "overlay_rows").unwrap();
+        SendMessageW(s.list, LB_SETCURSEL, row_index, 0);
+        expected.overlay_rows = Settings::default().overlay_rows;
+        expected.overlay_auto_rows = Settings::default().overlay_auto_rows;
+        s.restore_defaults(false);
+        if s.cfg != expected || !s.locked {
+            return Err("Resetting overlay rows did not restore its auto option alone".into());
+        }
+        s.restore_defaults(true);
+        if s.cfg != Settings::default() || s.locked {
+            return Err("Reset all did not restore input history defaults".into());
+        }
+        s.cfg = before_reset;
         let row_index = s.keys.iter().position(|key| key == "overlay_rows").unwrap();
         for auto in [true, false, true] {
             s.cfg.overlay_auto_rows = auto;
@@ -578,7 +623,7 @@ impl View {
             }
         }
         s.cfg = saved;
-        for id in [202, 203, 205, 206, 207] {
+        for id in [202, 203, 205, 206, 207, 213] {
             crate::theme_controls::validate_palette(GetDlgItem(s.settings, id))?;
         }
         let mut rect: RECT = std::mem::zeroed();
@@ -1461,7 +1506,7 @@ impl WindowState {
         control(
             h,
             "BUTTON",
-            crate::tr!(command_defaults),
+            crate::tr!(command_restore_setting),
             BS_PUSHBUTTON,
             207,
             620,
@@ -1476,9 +1521,9 @@ impl WindowState {
             SS_LEFT,
             208,
             12,
-            420,
+            462,
             770,
-            65,
+            25,
         );
         self.preview = control(
             h,
@@ -1487,9 +1532,9 @@ impl WindowState {
             0,
             209,
             400,
-            130,
+            196,
             370,
-            270,
+            204,
         );
         SetWindowLongPtrW(self.preview, GWLP_USERDATA, ptr as isize);
         let swatch = control(
@@ -1515,6 +1560,18 @@ impl WindowState {
             370,
             28,
         );
+        control(h, "STATIC", "", SS_LEFT, 212, 400, 124, 370, 64);
+        control(
+            h,
+            "BUTTON",
+            crate::tr!(command_restore_all),
+            BS_PUSHBUTTON,
+            213,
+            12,
+            420,
+            210,
+            28,
+        );
         // The controls must exist before the theme adapters enumerate children.
         crate::appearance::install(h);
         self.fill_settings();
@@ -1531,9 +1588,11 @@ impl WindowState {
             (205, 400, 86, 100, 28),
             (206, 510, 86, 100, 28),
             (207, 620, 86, 150, 28),
-            (208, 12, 420, 770, 65),
-            (209, 400, 130, 370, 270),
+            (208, 12, 462, 770, 25),
+            (209, 400, 196, 370, 204),
             (210, 628, 45, 28, 28),
+            (212, 400, 124, 370, 64),
+            (213, 12, 420, 210, 28),
             (
                 211,
                 400,
@@ -1659,6 +1718,14 @@ impl WindowState {
         let Some(key) = self.selected() else {
             return;
         };
+        let hint = match key.as_str() {
+            "source" => crate::tr!(command_source_hint),
+            "auto_colors" => crate::tr!(command_auto_colors_hint),
+            _ => "",
+        };
+        let description = GetDlgItem(self.settings, 212);
+        SetWindowTextW(description, wide(hint).as_ptr());
+        ShowWindow(description, if hint.is_empty() { SW_HIDE } else { SW_SHOW });
         let value = self
             .cfg
             .fields()
@@ -1728,7 +1795,14 @@ impl WindowState {
             },
         );
         InvalidateRect(swatch, null(), 0);
-        EnableWindow(GetDlgItem(self.settings, 206), 1);
+        ShowWindow(
+            GetDlgItem(self.settings, 206),
+            if editable && value.starts_with('#') {
+                SW_SHOW
+            } else {
+                SW_HIDE
+            },
+        );
         ShowWindow(
             self.edit,
             if choices.is_empty() { SW_SHOW } else { SW_HIDE },
@@ -1764,6 +1838,52 @@ impl WindowState {
         }
         let rgb = u32::from_str_radix(hex, 16).ok()?;
         Some(((rgb & 255) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 255))
+    }
+    unsafe fn restore_defaults(&mut self, all: bool) {
+        let Some(key) = self.selected() else { return };
+        let defaults = Settings::default();
+        let mut cfg = if all {
+            defaults.clone()
+        } else {
+            self.cfg.clone()
+        };
+        if !all {
+            let value = defaults
+                .fields()
+                .into_iter()
+                .find(|(k, _)| *k == key)
+                .unwrap()
+                .1;
+            if let Err(e) = cfg.set(&key, &value).and_then(|_| {
+                if key == "overlay_rows" {
+                    cfg.overlay_auto_rows = defaults.overlay_auto_rows;
+                }
+                cfg.validate()
+            }) {
+                self.message(&format!("{}: {e}", crate::tr!(command_invalid)));
+                return;
+            }
+        }
+        self.cfg = cfg;
+        if all {
+            self.locked = false;
+        }
+        self.persist();
+        if all || matches!(key.as_str(), "rows" | "content_size") {
+            self.notify_layout();
+        }
+        if !self.overlay.is_null() {
+            if all || ["x", "y", "width", "height"].contains(&key.as_str()) {
+                self.restore_bounds();
+            }
+            self.styles();
+        }
+        self.select_setting();
+        self.message(if all {
+            crate::tr!(command_restored_all)
+        } else {
+            crate::tr!(command_restored_setting)
+        });
     }
     unsafe fn apply_setting(&mut self) {
         let Some(key) = self.selected() else {
@@ -2647,16 +2767,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: UINT, w: WPARAM, l: LPARAM) -> L
                     }
                     return 0;
                 }
-                207 => {
-                    s.cfg = Settings::default();
-                    s.locked = false;
-                    s.persist();
-                    if !s.overlay.is_null() {
-                        s.restore_bounds();
-                        s.styles();
-                    }
-                    s.fill_settings();
-                }
+                207 => s.restore_defaults(false),
+                213 => s.restore_defaults(true),
                 _ => {}
             }
             0

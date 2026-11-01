@@ -220,6 +220,7 @@ impl Config {
         let mut cfg = Self::default();
         let mut section_ok = true;
         let mut unified_seen = [[false; 4]; 2];
+        let mut full_color_seen = [[false; 4]; 2];
         for (i, line) in text.lines().enumerate() {
             let line = line.trim().trim_start_matches('\u{feff}');
             if line.is_empty() || line.starts_with([';', '#']) {
@@ -314,6 +315,14 @@ impl Config {
                         if parts[0] == "darkunified" {
                             unified_seen[1][i] = true;
                         }
+                        if parts.get(2) == Some(&"2") {
+                            if parts[0] == "color" {
+                                full_color_seen[0][i] = true;
+                            }
+                            if parts[0] == "darkcolor" {
+                                full_color_seen[1][i] = true;
+                            }
+                        }
                     }
                 }
                 "monitor_sample_hz" => number!(monitor_sample_hz),
@@ -324,12 +333,12 @@ impl Config {
         }
         // Unified colours were added after the per-tier palettes. A config written
         // before that has no `command_unified_N` keys, so seed each one from the
-        // full-push tier of the matching palette instead of leaving it black.
+        // explicitly saved full-push tier; missing palettes keep current defaults.
         for i in 0..4 {
-            if !unified_seen[0][i] {
+            if !unified_seen[0][i] && full_color_seen[0][i] {
                 cfg.commands.unified_colors[i] = cfg.commands.colors[i][2];
             }
-            if !unified_seen[1][i] {
+            if !unified_seen[1][i] && full_color_seen[1][i] {
                 cfg.commands.dark_unified_colors[i] = cfg.commands.dark_colors[i][2];
             }
         }
