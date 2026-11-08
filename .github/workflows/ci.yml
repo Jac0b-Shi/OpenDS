@@ -42,6 +42,22 @@ jobs:
         run: python3 scripts/tests/test_linux_desktop.py
       - name: Exercise all desktop pages, themes and graphical windows
         run: G_DEBUG=fatal-criticals xvfb-run -a /usr/bin/python3 scripts/tests/linux_ui_smoke.py
+      - name: Install optional 3D runtime
+        run: sudo apt-get install -y python3-numpy python3-pip libgl1-mesa-dri libegl1
+      - name: Prepare 3D bundle from the fresh-checkout build
+        run: ./dev/dualsense3d/prepare.sh
+      - name: Verify 3D model and input animation
+        run: /usr/bin/python3 dev/dualsense3d/tests/test_scene.py
+      - name: Verify 3D rendering, themes and detachable monitor
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          G_DEBUG: fatal-criticals
+        run: |
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/render_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/app_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/theme_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/camouflage_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/test_install.py
   windows:
     runs-on: windows-latest
     timeout-minutes: 25

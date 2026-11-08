@@ -4,6 +4,9 @@
 [Ubuntu 使用指南（英文）](docs/guides/ubuntu.md)。构建后先运行
 `./scripts/setup-ubuntu.sh`，再运行 `./opends`。下文主要介绍 Windows 版本。
 
+可选的 [3D 开发版界面](dev/dualsense3d/README.md) 提供带交互动画的 DualSense
+实时监视器、透明背景、可保存的外壳配色，以及浅色／深色／跟随系统主题；使用独立
+配置目录和“显示应用”入口。
 
 |          |                      |
 | -------- | -------------------- |

@@ -11,6 +11,9 @@ overlay and tray. Build with `./scripts/build-linux.sh`, run
 to **Show Apps**. See the [Ubuntu guide](docs/guides/ubuntu.md) for details and
 Linux-specific driver behavior. The instructions below describe Windows.
 
+An optional [3D development UI](dev/dualsense3d/README.md) adds an animated
+DualSense monitor with transparent background, persistent shell finishes and
+live Light/Dark/System appearance. It uses a separate profile and Show Apps entry.
 
 ## Quick Start
 
