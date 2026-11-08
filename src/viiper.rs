@@ -151,6 +151,7 @@ struct Api {
     mic_stats: Option<FnMicStats>,
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
@@ -159,10 +160,12 @@ extern "system" {
     fn GetModuleFileNameW(module: *mut c_void, filename: *mut u16, size: u32) -> u32;
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 fn exe_dir() -> Option<String> {
     let mut buf = vec![0u16; 1024];
     let n = unsafe { GetModuleFileNameW(ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32) };
@@ -175,7 +178,10 @@ fn exe_dir() -> Option<String> {
 
 unsafe fn resolve(module: *mut c_void, name: &str) -> Option<*mut c_void> {
     let c = std::ffi::CString::new(name).ok()?;
+    #[cfg(windows)]
     let p = GetProcAddress(module, c.as_ptr());
+    #[cfg(target_os = "linux")]
+    let p = libc::dlsym(module, c.as_ptr());
     if p.is_null() {
         None
     } else {
@@ -184,18 +190,25 @@ unsafe fn resolve(module: *mut c_void, name: &str) -> Option<*mut c_void> {
 }
 
 unsafe fn load_api() -> Option<Api> {
-    let mut module = GetModuleHandleW(wide("libVIIPER.dll").as_ptr());
-    if module.is_null() {
-        if let Some(dir) = exe_dir() {
-            module = LoadLibraryW(wide(&format!("{dir}\\libVIIPER.dll")).as_ptr());
+    #[cfg(windows)]
+    let module = {
+        let mut module = GetModuleHandleW(wide("libVIIPER.dll").as_ptr());
+        if module.is_null() {
+            if let Some(dir) = exe_dir() {
+                module = LoadLibraryW(wide(&format!("{dir}\\libVIIPER.dll")).as_ptr());
+            }
         }
-    }
-    if module.is_null() {
-        // Development fallback is anchored to the source tree, never the caller's cwd.
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/viiper/libVIIPER.dll");
-        module = LoadLibraryW(wide(&path.to_string_lossy()).as_ptr());
-    }
+        if module.is_null() {
+            // Development fallback is anchored to the source tree, never the caller's cwd.
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("vendor/viiper/libVIIPER.dll");
+            module = LoadLibraryW(wide(&path.to_string_lossy()).as_ptr());
+        }
+
+        module
+    };
+    #[cfg(target_os = "linux")]
+    let module = crate::shared_library::load("libVIIPER.so", "viiper");
     if module.is_null() {
         return None;
     }
@@ -498,6 +511,48 @@ impl Drop for Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // VIIPER's bus numbers are global within the shared-library process.
+    static SERVER_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "Requires the locally built Linux VIIPER library; no root or controller required"]
+    fn linux_virtual_device_is_exported_and_removed() {
+        let _guard = SERVER_TEST.lock().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = Viiper::start(&format!("127.0.0.1:{port}"))
+            .expect("load Linux VIIPER and start loopback server");
+        let mut device = server
+            .create_dualsense(VID_SONY, PID_DUALSENSE, false)
+            .unwrap();
+        assert!(device.use_physical_usb_profile());
+        assert!(device.send_raw_report(&crate::report::neutral_usb_report()));
+        assert!(device.set_feature_report(&[0x05; 41]));
+        use std::io::{Read, Write};
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        // Verify USB/IP OP_REQ_DEVLIST against the real Go shared library.
+        client
+            .write_all(&[0x01, 0x11, 0x80, 0x05, 0, 0, 0, 0])
+            .unwrap();
+        let mut header = [0; 12];
+        client.read_exact(&mut header).unwrap();
+        assert_eq!(header, [0x01, 0x11, 0, 0x05, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let mut exported = [0; 312];
+        client.read_exact(&mut exported).unwrap();
+        assert_eq!(&exported[300..304], &[0x05, 0x4c, 0x0c, 0xe6]);
+        assert!(String::from_utf8_lossy(&exported[256..288])
+            .starts_with(&format!("{}-1", server.bus_id())));
+        drop(client);
+        assert!(device.remove());
+        drop(device);
+        drop(server);
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
 
     #[test]
     #[ignore = "需配套 libVIIPER.dll；由 opends doctor 检测"]
@@ -509,6 +564,7 @@ mod tests {
     #[test]
     #[ignore = "会启动真实 UDE 服务；仅显式进行硬件验收时运行"]
     fn server_and_bus_can_start() {
+        let _guard = SERVER_TEST.lock().unwrap();
         if !is_available() {
             return;
         }
@@ -516,5 +572,36 @@ mod tests {
         assert!(v.is_some(), "启动服务器失败（UDE 驱动是否就绪？）");
         let v = v.unwrap();
         assert!(v.bus_id() > 0 || v.bus_id() == 0); // busID 可能是 0
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "Attaches a synthetic controller to the Linux kernel; requires vhci_hcd and desktop admin authentication"]
+    fn linux_kernel_attachment() {
+        let _guard = SERVER_TEST.lock().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let server = Viiper::start(&format!("127.0.0.1:{port}")).unwrap();
+        let device = server
+            .create_dualsense(VID_SONY, PID_DUALSENSE, false)
+            .unwrap();
+        assert!(device.use_physical_usb_profile());
+        assert!(device.send_raw_report(&crate::report::neutral_usb_report()));
+        let exe = crate::dependency_paths::Component::Usbip
+            .resolve("")
+            .unwrap();
+        let local_port =
+            crate::attach::first_device(&exe, port, server.bus_id(), || false).unwrap();
+        // Detach before any assertion that could unwind; no kernel device is left behind.
+        let output = std::process::Command::new(&exe)
+            .arg("port")
+            .output()
+            .unwrap();
+        crate::attach::detach(&exe, local_port).unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success());
+        assert!(text.contains(&format!("Port {local_port:02}:")), "{text}");
+        assert!(text.contains("054c:0ce6"), "{text}");
     }
 }

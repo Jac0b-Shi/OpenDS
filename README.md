@@ -4,6 +4,14 @@
 
 Turns a Bluetooth DualSense into a local virtual USB DualSense, so games treat it as a wired controller. Lightbar, adaptive triggers, rumble, speaker audio and haptics all come back to the physical pad.
 
+**Ubuntu/Linux:** a native backend and Windows-style graphical application are
+available in this source tree, including the live monitor, waveform plots, input
+overlay and tray. Build with `./scripts/build-linux.sh`, run
+`./scripts/setup-ubuntu.sh`, then `python3 scripts/install-linux.py` to add OpenDS
+to **Show Apps**. See the [Ubuntu guide](docs/guides/ubuntu.md) for details and
+Linux-specific driver behavior. The instructions below describe Windows.
+
+
 ## Quick Start
 
 1. Extract `OpenDS-…-windows-x64.zip` to a local disk and keep every file. For a fixed install, run `scripts/Install-OpenDS.ps1` in PowerShell.

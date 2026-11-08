@@ -1,5 +1,10 @@
 # OpenDS
 
+**Ubuntu/Linux：**源码现已提供原生 Linux 后端与桌面控制窗口。安装、构建及功能限制请参阅
+[Ubuntu 使用指南（英文）](docs/guides/ubuntu.md)。构建后先运行
+`./scripts/setup-ubuntu.sh`，再运行 `./opends`。下文主要介绍 Windows 版本。
+
+
 |          |                      |
 | -------- | -------------------- |
 | **简体中文** | [English](README.md) |

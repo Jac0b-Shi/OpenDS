@@ -38,3 +38,10 @@ desktop.ini
 
 # ---- 本地配置 ----
 opends.ini
+# Local Linux build toolchains and caches
+.tools/
+/vendor/viiper/libVIIPER.so
+/vendor/viiper/libVIIPER.h
+
+# Machine-local migration snapshots (may contain user preferences)
+/versions/stable-linux-*/
