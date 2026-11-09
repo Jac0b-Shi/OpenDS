@@ -72,6 +72,23 @@ pub struct BridgeState {
     logs: Mutex<VecDeque<String>>,
 }
 impl BridgeState {
+    fn feedback_session(&self) -> Option<Arc<AudioSession>> {
+        if !self.connected.load(Ordering::Acquire) || self.stop.load(Ordering::Acquire) {
+            return None;
+        }
+        let callbacks = CALLBACKS.try_read().ok()?;
+        let target = callbacks.as_ref()?;
+        Arc::ptr_eq(target.session.monitor.get()?, &self.monitor).then(|| target.session.clone())
+    }
+    pub fn feedback_test_options(&self) -> (bool, bool) {
+        self.feedback_session()
+            .map_or((false, false), |session| session.feedback_test_options())
+    }
+    pub fn request_feedback_test(&self, test: audio_thread::FeedbackTest) {
+        if let Some(session) = self.feedback_session() {
+            session.request_feedback_test(test);
+        }
+    }
     fn session_failed(&self, error: String, connected_for: Option<Duration>, resource_busy: bool) {
         let issue = ConnectionIssue {
             error,

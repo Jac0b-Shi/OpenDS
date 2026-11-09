@@ -8,7 +8,7 @@ use crate::{
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread::JoinHandle,
@@ -100,11 +100,17 @@ pub struct AudioStats {
     pub output_frames: AtomicU64,
     pub write_fail: AtomicU64,
     pub encode_fail: AtomicU64,
-    pub dropped_output: AtomicU64,
     pub resets: AtomicU64,
     pub ready: AtomicBool,
     pub failed: AtomicBool,
 }
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub enum FeedbackTest {
+    NativeHaptics = 1,
+    ClassicRumble = 2,
+}
+
 pub struct AudioSession {
     pub monitor: OnceLock<Arc<crate::monitor::Monitor>>,
     pub forward_pcm: AtomicBool,
@@ -114,6 +120,7 @@ pub struct AudioSession {
     output: Mutex<[u8; 47]>,
     revision: AtomicU64,
     light_reset: AtomicBool,
+    feedback_test: AtomicU8,
     pub headset: AtomicBool,
     pub vibration_v2: AtomicBool,
     pub stats: Arc<AudioStats>,
@@ -129,10 +136,30 @@ impl AudioSession {
             output: Mutex::new([0; 47]),
             revision: AtomicU64::new(0),
             light_reset: AtomicBool::new(false),
+            feedback_test: AtomicU8::new(0),
             headset: AtomicBool::new(false),
             vibration_v2: AtomicBool::new(false),
             stats: Arc::new(AudioStats::default()),
         })
+    }
+    pub fn feedback_test_options(&self) -> (bool, bool) {
+        let idle = self.feedback_test.load(Ordering::Acquire) == 0
+            && !self.stats.failed.load(Ordering::Acquire);
+        (idle && self.stats.ready.load(Ordering::Acquire), idle)
+    }
+    pub fn request_feedback_test(&self, test: FeedbackTest) {
+        let (native, classic) = self.feedback_test_options();
+        if match test {
+            FeedbackTest::NativeHaptics => native,
+            FeedbackTest::ClassicRumble => classic,
+        } {
+            let _ = self.feedback_test.compare_exchange(
+                0,
+                test as u8,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
+        }
     }
     pub fn update_output(&self, p: [u8; 47]) {
         self.stats.received_output.fetch_add(1, Ordering::Relaxed);
@@ -143,14 +170,14 @@ impl AudioSession {
         if (p[0] & 1 != 0 || p[38] & 4 != 0) && (p[2] != 0 || p[3] != 0) {
             self.stats.rumble_updates.fetch_add(1, Ordering::Relaxed);
         }
-        if let Ok(mut s) = self.output.try_lock() {
+        // The writer only waits for the state copy, never a Bluetooth write.
+        // A stop report may arrive only once, so it must survive contention.
+        if let Ok(mut s) = self.output.lock() {
             merge_output(&mut s, &p);
             if p[1] & 8 != 0 {
                 self.light_reset.store(true, Ordering::Release);
             }
             self.revision.fetch_add(1, Ordering::Release);
-        } else {
-            self.stats.dropped_output.fetch_add(1, Ordering::Relaxed);
         }
     }
     pub fn reset(&self) {
@@ -162,10 +189,15 @@ impl AudioSession {
 /// LED 等局部更新不能清除之前有效的扳机、音量与路由。
 pub fn merge_output(old: &mut [u8; 47], new: &[u8; 47]) {
     old[0] |= new[0] & !3;
-    if new[0] & 3 != 0 || new[38] & 4 != 0 {
+    if new[0] & 1 != 0 || new[38] & 4 != 0 {
         old[0] = (old[0] & !3) | (new[0] & 3);
         old[2..4].copy_from_slice(&new[2..4]);
         old[38] = (old[38] & !4) | (new[38] & 4);
+    } else if new[0] & 2 != 0 || *new == [0; 47] {
+        // SDL sends an all-zero payload when rumble ends. Keep the previous
+        // selector so the physical controller accepts the zero motor values.
+        old[0] |= new[0] & 2;
+        old[2..4].fill(0);
     }
     old[1] |= new[1] & !8; // reset-lights 不在每个音频 tick 重复。
     old[38] |= new[38];
@@ -280,6 +312,33 @@ impl OutputSink for HidDevice {
         HidDevice::write(self, data)
     }
 }
+
+const FEEDBACK_TEST_DURATION: Duration = Duration::from_secs(1);
+const HAPTICS_TEST_FRAMES: usize = audio::SAMPLE_RATE as usize / audio::HAPTICS_DECIMATION;
+
+fn haptics_test_sweep(first_frame: usize) -> [u8; HAPTICS_BYTES] {
+    let mut block = [0; HAPTICS_BYTES];
+    for (offset, stereo) in block.chunks_exact_mut(2).enumerate() {
+        let frame = first_frame + offset;
+        if frame >= HAPTICS_TEST_FRAMES {
+            break;
+        }
+        let t = frame as f64 / HAPTICS_TEST_FRAMES as f64;
+        // Linear 50–250 Hz sweep with a 20 ms fade at each end.
+        let phase = std::f64::consts::TAU * (50.0 * t + 100.0 * t * t);
+        let fade = (t.min(1.0 - t) / 0.02).min(1.0);
+        stereo.fill((64.0 * fade * phase.sin()).round() as i8 as u8);
+    }
+    block
+}
+
+fn write_hid_state(sink: &impl OutputSink, state: &[u8; 47], seq: u8) -> bool {
+    let mut usb = [0; 48];
+    usb[0] = crate::output::USB_REPORT_ID;
+    usb[1..].copy_from_slice(state);
+    crate::output::usb_to_bluetooth(&usb, seq).is_some_and(|report| sink.write(&report))
+}
+
 pub fn spawn(
     session: Arc<AudioSession>,
     physical: Arc<HidDevice>,
@@ -299,7 +358,6 @@ fn spawn_with_sink<S: OutputSink>(
         .spawn(move || {
             let stats = session.stats.clone();
             let mut encoder = LibOpusEncoder::with_complexity(cfg.opus_complexity);
-            stats.ready.store(encoder.is_some(), Ordering::Release);
             if encoder.is_none()
                 && (cfg.audio_enabled || cfg.haptics_enabled || cfg.microphone_enabled)
             {
@@ -321,7 +379,18 @@ fn spawn_with_sink<S: OutputSink>(
             let mut silent_packet = encoder
                 .as_mut()
                 .and_then(|e| encode_block(e, &silence, audio::route::SPEAKER));
+            stats
+                .ready
+                .store(silent_packet.is_some(), Ordering::Release);
+            let mut test_start = None;
+            let mut test_frame = 0;
+            let mut test_primed_audio = false;
+            let mut resume_audio = false;
             while running.load(Ordering::Acquire) {
+                let test = session.feedback_test.load(Ordering::Acquire);
+                let native_test = test == FeedbackTest::NativeHaptics as u8;
+                let classic_test = test == FeedbackTest::ClassicRumble as u8;
+                let mut test_finished = false;
                 light_reset |= session.light_reset.swap(false, Ordering::AcqRel);
                 let next_gen = session.generation.load(Ordering::Acquire);
                 if next_gen != generation {
@@ -332,6 +401,9 @@ fn spawn_with_sink<S: OutputSink>(
                     if let Some(e) = encoder.as_mut() {
                         e.reset();
                         silent_packet = encode_block(e, &silence, audio::route::SPEAKER);
+                        stats
+                            .ready
+                            .store(silent_packet.is_some(), Ordering::Release);
                     }
                 }
                 let rev = session.revision.load(Ordering::Acquire);
@@ -341,12 +413,12 @@ fn spawn_with_sink<S: OutputSink>(
                         revision = rev;
                     }
                 }
-                let mut pcm = if warmup == 0 {
+                let mut pcm = if warmup == 0 || classic_test {
                     pending_pcm.take().or_else(|| session.pcm.take(generation))
                 } else {
                     None
                 };
-                let mut native = if warmup == 0 {
+                let mut native = if warmup == 0 || classic_test {
                     pending_haptics
                         .take()
                         .or_else(|| session.haptics.take(generation))
@@ -368,17 +440,23 @@ fn spawn_with_sink<S: OutputSink>(
                     state[1] |= 8;
                 }
                 let mut ok = true;
-                if (cfg.audio_enabled || cfg.haptics_enabled || cfg.microphone_enabled)
+                if !classic_test
+                    && (cfg.audio_enabled
+                        || cfg.haptics_enabled
+                        || cfg.microphone_enabled
+                        || native_test)
                     && encoder.is_some()
                     && silent_packet.is_some()
-                    && (primed || has_data || cfg.microphone_enabled)
+                    && (primed || has_data || cfg.microphone_enabled || native_test)
                 {
                     // 音频/原生触觉模式必须清除传统马达选择器，震动改走 PCM 混合。
                     state[0] &= !3;
                     state[38] &= !4;
                     state[1] |= 0x80;
                     state[37] = (state[37] & !7) | 2;
-                    if needs_prime && (has_data || cfg.microphone_enabled) {
+                    if resume_audio
+                        || (needs_prime && (has_data || cfg.microphone_enabled || native_test))
+                    {
                         ok = physical.write(&audio::build_init_prime(&state));
                         if ok && cfg.microphone_enabled {
                             ok = physical.write(&audio::microphone_control(seq, true));
@@ -387,8 +465,10 @@ fn spawn_with_sink<S: OutputSink>(
                             }
                         }
                         if ok {
+                            test_primed_audio |= native_test && !primed;
                             primed = true;
                             needs_prime = false;
+                            resume_audio = false;
                             warmup = 8;
                             pending_pcm = pcm.take();
                             pending_haptics = native.take();
@@ -397,7 +477,22 @@ fn spawn_with_sink<S: OutputSink>(
                     if primed {
                         let warm = warmup > 0;
                         warmup = warmup.saturating_sub(1);
-                        let mut h = if cfg.haptics_enabled && !warm {
+                        let mut h = if native_test {
+                            if warm {
+                                [0; HAPTICS_BYTES]
+                            } else {
+                                let start = test_start.get_or_insert_with(Instant::now);
+                                test_finished = start.elapsed() >= FEEDBACK_TEST_DURATION
+                                    || test_frame >= HAPTICS_TEST_FRAMES;
+                                if test_finished {
+                                    [0; HAPTICS_BYTES]
+                                } else {
+                                    let block = haptics_test_sweep(test_frame);
+                                    test_frame += audio::HAPTICS_FRAMES;
+                                    block
+                                }
+                            }
+                        } else if cfg.haptics_enabled && !warm {
                             if let Some(p) = native.as_ref() {
                                 audio::extract_stereo_haptics(p, 2, cfg.haptics_scale())
                             } else if let Some(p) = pcm.as_ref() {
@@ -408,7 +503,7 @@ fn spawn_with_sink<S: OutputSink>(
                         } else {
                             [0; HAPTICS_BYTES]
                         };
-                        if !warm {
+                        if !warm && !native_test {
                             let selected = game[0] & 1 != 0 || game[38] & 4 != 0;
                             rumble.mix(
                                 &mut h,
@@ -450,26 +545,41 @@ fn spawn_with_sink<S: OutputSink>(
                             }
                         }
                     }
-                } else if rev != 0 {
-                    let mut usb = [0; 48];
-                    usb[0] = 2;
+                } else if classic_test || rev != 0 {
                     let mut adapted = game;
+                    if classic_test {
+                        let start = test_start.get_or_insert_with(Instant::now);
+                        test_finished = start.elapsed() >= FEEDBACK_TEST_DURATION;
+                        adapted[0] |= 1;
+                        adapted[2..4].fill(if test_finished { 0 } else { 96 });
+                        // Resume an interrupted PCM stream through its normal priming path.
+                        resume_audio |= primed;
+                        warmup = 0;
+                    }
                     crate::output::adapt_rumble(
                         &mut adapted,
                         session.vibration_v2.load(Ordering::Relaxed),
                     );
-                    usb[1..].copy_from_slice(&adapted);
                     if light_reset {
-                        usb[2] |= 8;
+                        adapted[1] |= 8;
                     }
-                    if let Some(r) = crate::output::usb_to_bluetooth(&usb, seq) {
-                        ok = physical.write(&r);
-                        if ok {
-                            stats.output_frames.fetch_add(1, Ordering::Relaxed);
-                        }
+                    ok = write_hid_state(physical.as_ref(), &adapted, seq);
+                    if ok {
+                        stats.output_frames.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 if ok {
+                    if test_finished || (native_test && silent_packet.is_none()) {
+                        if test_primed_audio {
+                            primed = false;
+                            needs_prime = true;
+                        }
+                        test_start = None;
+                        test_frame = 0;
+                        test_primed_audio = false;
+                        rumble = audio::RumbleMixer::default();
+                        session.feedback_test.store(0, Ordering::Release);
+                    }
                     light_reset = false;
                     failures = 0;
                     seq = seq.wrapping_add(1);
@@ -493,6 +603,14 @@ fn spawn_with_sink<S: OutputSink>(
             let mut off = [0u8; 47];
             off[0] = 0x0F;
             crate::output::adapt_rumble(&mut off, session.vibration_v2.load(Ordering::Relaxed));
+            if !primed
+                || silent_packet.is_none()
+                || session.feedback_test.load(Ordering::Acquire)
+                    == FeedbackTest::ClassicRumble as u8
+            {
+                let _ = write_hid_state(physical.as_ref(), &off, seq);
+                seq = seq.wrapping_add(1);
+            }
             if primed {
                 if let Some(p) = silent_packet {
                     let _ = physical.write(&audio::build_combined_report(
@@ -503,13 +621,6 @@ fn spawn_with_sink<S: OutputSink>(
                         &[0; HAPTICS_BYTES],
                         audio::route::SPEAKER,
                     ));
-                }
-            } else {
-                let mut usb = [0; 48];
-                usb[0] = 2;
-                usb[1..].copy_from_slice(&off);
-                if let Some(r) = crate::output::usb_to_bluetooth(&usb, seq) {
-                    let _ = physical.write(&r);
                 }
             }
             if cfg.microphone_enabled {
@@ -523,6 +634,105 @@ mod tests {
     use super::*;
     fn bytes(p: &[i16]) -> Vec<u8> {
         p.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    #[derive(Default)]
+    struct PulseSink(Mutex<Vec<Vec<u8>>>);
+    impl OutputSink for PulseSink {
+        fn write(&self, report: &[u8]) -> bool {
+            self.0.lock().unwrap().push(report.to_vec());
+            true
+        }
+    }
+
+    fn wait_for_output(condition: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !condition() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    #[test]
+    fn feedback_tests_use_distinct_bluetooth_paths_and_stop() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        for (test, competing, prime_audio) in [
+            (
+                FeedbackTest::NativeHaptics,
+                FeedbackTest::ClassicRumble,
+                false,
+            ),
+            (
+                FeedbackTest::ClassicRumble,
+                FeedbackTest::NativeHaptics,
+                true,
+            ),
+        ] {
+            let session = AudioSession::new(1);
+            session.vibration_v2.store(true, Ordering::Relaxed);
+            let running = Arc::new(AtomicBool::new(true));
+            let sink = Arc::new(PulseSink::default());
+            let cfg = Config {
+                audio_enabled: false,
+                haptics_enabled: false,
+                microphone_enabled: prime_audio,
+                ..Config::default()
+            };
+            let worker =
+                spawn_with_sink(session.clone(), sink.clone(), running.clone(), cfg).unwrap();
+            let ready = wait_for_output(|| {
+                session.feedback_test_options().0
+                    && (!prime_audio || session.stats.blocks.load(Ordering::Relaxed) >= 9)
+            });
+            session.request_feedback_test(test);
+            session.request_feedback_test(competing);
+            let accepted = session.feedback_test.load(Ordering::Acquire) == test as u8;
+            let finished = wait_for_output(|| session.feedback_test_options().0);
+            let resumed = !prime_audio
+                || wait_for_output(|| {
+                    let reports = sink.0.lock().unwrap();
+                    reports
+                        .last()
+                        .is_some_and(|r| r[0] == audio::REPORT_ID_COMBINED)
+                });
+            running.store(false, Ordering::Release);
+            worker.join().unwrap();
+            assert!(ready && accepted && finished && resumed);
+
+            let reports = sink.0.lock().unwrap();
+            if prime_audio {
+                let start = reports.iter().position(|r| r[0] == 0x31).unwrap();
+                let pulse = &reports[start..];
+                assert!(start > 0 && reports[start - 1][0] == audio::REPORT_ID_COMBINED);
+                assert_eq!(&pulse[0][5..7], &[96, 96]);
+                let stop = pulse
+                    .iter()
+                    .position(|r| r[0] == 0x31 && r[5..7] == [0, 0])
+                    .unwrap();
+                assert!(pulse[..=stop]
+                    .iter()
+                    .all(|r| r[0] == 0x31 && r[41] & 4 != 0));
+                assert!(pulse[stop + 1..]
+                    .iter()
+                    .any(|r| r[0] == audio::REPORT_ID_COMBINED));
+            } else {
+                let last = reports
+                    .iter()
+                    .rposition(|r| {
+                        r[0] == audio::REPORT_ID_COMBINED && r[78..142].iter().any(|&v| v != 0)
+                    })
+                    .unwrap();
+                let stop = &reports[last + 1];
+                assert_eq!(stop[0], audio::REPORT_ID_COMBINED);
+                assert!(stop[78..142].iter().all(|&v| v == 0));
+                assert!(reports[..=last].iter().all(|r| r[0] != 0x31));
+            }
+        }
     }
     #[test]
     fn oversized_pcm_keeps_whole_latest_frames_with_bounded_memory() {
@@ -579,6 +789,57 @@ mod tests {
         off[0] = 2;
         s.update_output(off);
         assert_eq!(s.output.lock().unwrap()[2], 0);
+    }
+    #[test]
+    fn sdl_zero_payload_stops_both_rumble_protocols_and_preserves_other_feedback() {
+        for v2 in [false, true] {
+            let s = AudioSession::new(1);
+            let mut start = [0; 47];
+            start[0] = 0x0F;
+            start[1] = 4;
+            start[2..4].copy_from_slice(&[32, 96]);
+            start[10] = 0x21;
+            start[44] = 180;
+            crate::output::adapt_rumble(&mut start, v2);
+            s.update_output(start);
+            s.update_output([0; 47]);
+
+            let mut stopped = *s.output.lock().unwrap();
+            crate::output::adapt_rumble(&mut stopped, v2);
+            assert_eq!(&stopped[2..4], &[0, 0]);
+            assert_eq!(stopped[0] & 3, if v2 { 2 } else { 3 });
+            assert_eq!(stopped[38] & 4, if v2 { 4 } else { 0 });
+            assert_eq!((stopped[10], stopped[44]), (0x21, 180));
+        }
+    }
+    #[test]
+    fn a_single_stop_report_survives_output_state_contention() {
+        let session = AudioSession::new(1);
+        let mut start = [0; 47];
+        start[0] = 3;
+        start[2] = 96;
+        session.update_output(start);
+
+        let snapshot = session.output.lock().unwrap();
+        let (started, callback_started) = std::sync::mpsc::channel();
+        let (done, callback_done) = std::sync::mpsc::channel();
+        let producer = session.clone();
+        let worker = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let mut stop = [0; 47];
+            stop[0] = 3;
+            producer.update_output(stop);
+            done.send(()).unwrap();
+        });
+        callback_started.recv().unwrap();
+        let completed_while_locked = callback_done
+            .recv_timeout(Duration::from_millis(50))
+            .is_ok();
+        drop(snapshot);
+        worker.join().unwrap();
+
+        assert!(!completed_while_locked);
+        assert_eq!(session.output.lock().unwrap()[2], 0);
     }
     #[test]
     fn fallback_honors_headset_and_user_override() {

@@ -140,7 +140,7 @@ The controller speaker has its own volume, set by the game through the output re
 
 **Audio stutters**
 
-Raise `buffer`, for example to 96 or 128.
+Raise `buffer`, for example to 96 or 128. The **Classic rumble test** and **Native haptics test** buttons in **Connection and feedback** each play for one second, so you can feel the latency and whether it breaks up — too few blocks stutters, too many lags.
 
 **Steam games misbehave**
 

@@ -66,6 +66,8 @@ struct Controls {
     haptics: nwg::CheckBox,
     microphone: nwg::CheckBox,
     audio_test: nwg::Button,
+    native_haptics_test: nwg::Button,
+    classic_rumble_test: nwg::Button,
     route: nwg::ComboBox<String>,
     device: nwg::ComboBox<String>,
     buffer: nwg::TextInput,
@@ -285,6 +287,8 @@ impl App {
             button!(save, crate::tr!(gui_save_settings));
             button!(refresh, crate::tr!(gui_refresh_devices));
             button!(audio_test, crate::tr!(gui_microphone_test));
+            button!(native_haptics_test, crate::tr!(gui_native_haptics_test));
+            button!(classic_rumble_test, crate::tr!(gui_classic_rumble_test));
             button!(restore, crate::tr!(gui_restore_controller_visibility));
             button!(minimize_to_tray, crate::tr!(gui_minimize_to_tray));
             button!(quit, crate::tr!(gui_exit_opends));
@@ -623,6 +627,8 @@ impl App {
             &self.haptics.handle,
             &self.microphone.handle,
             &self.audio_test.handle,
+            &self.native_haptics_test.handle,
+            &self.classic_rumble_test.handle,
             &self.route.handle,
             &self.device.handle,
             &self.buffer.handle,
@@ -833,8 +839,22 @@ impl App {
                     cw / 3 - 24,
                     220,
                 );
-                put(&self.reconnect.handle, x + 24, 511, cw - 48, 28);
-                put(&self.hide.handle, x + 24, 552, cw - 48, 28);
+                put(&self.reconnect.handle, x + 24, 504, cw - 48, 27);
+                put(&self.hide.handle, x + 24, 532, cw - 48, 27);
+                put(
+                    &self.native_haptics_test.handle,
+                    x + 24,
+                    564,
+                    cw / 2 - 30,
+                    30,
+                );
+                put(
+                    &self.classic_rumble_test.handle,
+                    x + cw / 2 + 6,
+                    564,
+                    cw / 2 - 30,
+                    30,
+                );
                 put(&self.refresh.handle, x, h - 62, 136, 38);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
             }
@@ -1925,6 +1945,9 @@ impl App {
         self.start_menu
             .set_enabled(!preview && !running && !installing);
         self.stop_menu.set_enabled(running && !stopping);
+        let (native_test, classic_test) = s.feedback_test_options();
+        self.native_haptics_test.set_enabled(native_test);
+        self.classic_rumble_test.set_enabled(classic_test);
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();
         }
@@ -2433,6 +2456,14 @@ impl App {
                 }
                 Ok(())
             })()
+        } else if handle == self.native_haptics_test || handle == self.classic_rumble_test {
+            let test = if handle == self.native_haptics_test {
+                crate::audio_thread::FeedbackTest::NativeHaptics
+            } else {
+                crate::audio_thread::FeedbackTest::ClassicRumble
+            };
+            self.controller.borrow().state.request_feedback_test(test);
+            Ok(())
         } else if handle == self.restore {
             crate::hidhide::recover_if_needed().map(|_| self.refresh())
         } else if handle == self.add {
