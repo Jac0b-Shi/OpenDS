@@ -341,6 +341,8 @@ gui-physical-controller = 物理手柄
 gui-audio-output = 声音输出
 gui-speaker-volume-0-255 = 扬声器音量  ·  0–255
 gui-haptics-gain-10-20 = 触觉增益  ·  10–20
+gui-haptics-strength = 原生触觉强度
+gui-haptics-original-strength = 100%（原强度）
 # Parameters: $gain
 gui-microphone-db-0-50 = 麦克风 +{ $gain } dB · 0–50
 gui-local-service-port = 本机服务端口

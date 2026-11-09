@@ -341,6 +341,8 @@ gui-physical-controller = Physical controller
 gui-audio-output = Audio output
 gui-speaker-volume-0-255 = Speaker volume · 0–255
 gui-haptics-gain-10-20 = Haptics gain · 10–20
+gui-haptics-strength = Native haptics strength
+gui-haptics-original-strength = 100% (original)
 # Parameters: $gain
 gui-microphone-db-0-50 = Microphone +{ $gain } dB · 0–50
 gui-local-service-port = Local service port

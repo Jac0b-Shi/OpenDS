@@ -92,7 +92,7 @@ haptics_gain=10
 | Key | Meaning |
 | --- | --- |
 | `port` | virtual device port |
-| `buffer` | audio buffer blocks, 16–128. About 10.7 ms each: 64 blocks ≈ 683 ms, 128 ≈ 1.37 s when full. Larger survives stalls, at the cost of sound lagging the picture |
+| `buffer` | speaker/haptics buffer blocks, 1–128, about 10.7 ms each. More is not better: fewer blocks means less lag but breaks up on a jittery link, more survives stalls but pushes sound and rumble behind the picture. Pick by trying it — on some setups a single block is the most stable |
 | `audio` | speaker audio toggle |
 | `haptics_gain` | haptic intensity, 10–20 |
 | `microphone_gain_db` | microphone gain, 0–50 dB, peak-limited |
@@ -140,7 +140,7 @@ The controller speaker has its own volume, set by the game through the output re
 
 **Audio stutters**
 
-Raise `buffer`, for example to 96 or 128. The **Classic rumble test** and **Native haptics test** buttons in **Connection and feedback** each play for one second, so you can feel the latency and whether it breaks up — too few blocks stutters, too many lags.
+Check the `buffer` block count first. **More is not better** — extra blocks push sound and rumble further behind the picture. Work up from small values (1, 16, 32, 64), playing the **Classic rumble test** and **Native haptics test** in **Connection and feedback** after each change, and keep whichever feels most responsive. When the link is steady, fewer blocks are often the steadier choice — one block is enough on some setups.
 
 **Steam games misbehave**
 

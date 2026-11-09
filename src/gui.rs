@@ -73,7 +73,7 @@ struct Controls {
     buffer: nwg::TextInput,
     port: nwg::TextInput,
     speaker: nwg::TextInput,
-    haptic_gain: nwg::TextInput,
+    haptic_gain: nwg::ComboBox<String>,
     mic_gain: nwg::TrackBar,
     mic_buffer: nwg::ComboBox<String>,
     close_action: nwg::ComboBox<String>,
@@ -419,7 +419,26 @@ impl App {
             input!(port, &cfg.port.to_string());
             input!(buffer, &cfg.buffer.to_string());
             input!(speaker, &cfg.speaker_volume.to_string());
-            input!(haptic_gain, &cfg.haptics_gain.to_string());
+            nwg::ComboBox::builder()
+                .flags(unsafe {
+                    nwg::ComboBoxFlags::from_bits_unchecked(
+                        WS_VISIBLE | WS_TABSTOP | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                    )
+                })
+                .parent(window)
+                .collection(
+                    (10..=20)
+                        .map(|gain| {
+                            if gain == 10 {
+                                crate::tr!(gui_haptics_original_strength).into()
+                            } else {
+                                format!("{}%", gain * 10)
+                            }
+                        })
+                        .collect(),
+                )
+                .selected_index(Some(usize::from(cfg.haptics_gain - 10)))
+                .build(&mut ui.haptic_gain)?;
             let mut mic_buffers = vec![
                 16u16,
                 24,
@@ -827,7 +846,7 @@ impl App {
                     x + cw / 3 + 8,
                     396,
                     cw / 3 - 32,
-                    34,
+                    240,
                 );
                 put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 34);
                 put(&self.port.handle, x + 24, 464, cw / 3 - 40, 34);
@@ -1128,7 +1147,7 @@ impl App {
                         x + cw / 3 + 8,
                         364,
                         cw / 3 - 32,
-                        crate::tr!(gui_haptics_gain_10_20),
+                        crate::tr!(gui_haptics_strength),
                     ),
                     (
                         x + 2 * cw / 3,
@@ -1531,13 +1550,14 @@ impl App {
             .text()
             .parse()
             .map_err(|_| crate::tr!(gui_speaker_volume_must_be_0_255))?;
-        c.haptics_gain = self
-            .haptic_gain
-            .text()
-            .parse()
-            .map_err(|_| crate::tr!(gui_haptics_gain_must_be_10_20))?;
-        if c.port == 0 || !(1..=128).contains(&c.buffer) || !(10..=20).contains(&c.haptics_gain) {
-            return Err(crate::tr!(gui_port_buffer_or_haptics_gain_is_out).into());
+        if let Some(index @ 0..=10) = self.haptic_gain.selection() {
+            c.haptics_gain = 10 + index as u8;
+        }
+        if c.port == 0 {
+            return Err(crate::tr!(gui_port_must_be_1_65535).into());
+        }
+        if !(1..=128).contains(&c.buffer) {
+            return Err(crate::tr!(gui_buffer_must_be_1_128_blocks).into());
         }
         c.auto_start = checked(&self.auto_start);
         c.reconnect = checked(&self.reconnect);

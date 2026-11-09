@@ -149,12 +149,8 @@ impl App {
             self.layout();
             for kind in [Kind::Light, Kind::Dark, Kind::Contrast] {
                 appearance::smoke_palette(kind);
-                for control in [
-                    &self.speaker.handle,
-                    &self.haptic_gain.handle,
-                    &self.port.handle,
-                    &self.buffer.handle,
-                ] {
+                crate::theme_controls::validate_palette(theme::hwnd(&self.haptic_gain.handle))?;
+                for control in [&self.speaker.handle, &self.port.handle, &self.buffer.handle] {
                     let edit = theme::hwnd(control);
                     let mut rect: RECT = std::mem::zeroed();
                     GetWindowRect(edit, &mut rect);
