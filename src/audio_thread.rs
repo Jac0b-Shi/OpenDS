@@ -4,6 +4,7 @@ use crate::{
     config::Config,
     hid::HidDevice,
     opus::LibOpusEncoder,
+    output::valid0::ALLOW_HEADPHONE_VOLUME,
 };
 use std::{
     collections::VecDeque,
@@ -236,7 +237,7 @@ pub fn merge_output(old: &mut [u8; 47], new: &[u8; 47]) {
 }
 pub fn audio_state(game: &[u8; 47], cfg: &Config, headset: bool) -> ([u8; 47], u8) {
     let mut s = *game;
-    if game[0] & (1 << 4) == 0 {
+    if cfg.headphone_volume_override || game[0] & ALLOW_HEADPHONE_VOLUME == 0 {
         s[4] = cfg.headphone_volume;
     }
     if game[0] & (1 << 5) == 0 {
@@ -547,6 +548,10 @@ fn spawn_with_sink<S: OutputSink>(
                     }
                 } else if classic_test || rev != 0 {
                     let mut adapted = game;
+                    if cfg.headphone_volume_override {
+                        adapted[0] |= ALLOW_HEADPHONE_VOLUME;
+                        adapted[4] = state[4];
+                    }
                     if classic_test {
                         let start = test_start.get_or_insert_with(Instant::now);
                         test_finished = start.elapsed() >= FEEDBACK_TEST_DURATION;
@@ -848,6 +853,29 @@ mod tests {
         assert_eq!(audio_state(&[0; 47], &c, true).1, audio::route::HEADSET);
         c.audio_route = 1;
         assert_eq!(audio_state(&[0; 47], &c, true).1, audio::route::SPEAKER);
+    }
+    #[test]
+    fn manual_headphone_volume_overrides_only_the_game_headphone_field() {
+        let mut cfg = Config {
+            headphone_volume: 127,
+            ..Config::default()
+        };
+        let mut game = [0; 47];
+        assert_eq!(audio_state(&game, &cfg, true).0[4], 127);
+
+        game[0] = ALLOW_HEADPHONE_VOLUME | 0x60;
+        game[4..7].copy_from_slice(&[20, 40, 60]);
+        let (follow_game, route) = audio_state(&game, &cfg, true);
+        assert_eq!(&follow_game[4..7], &[20, 40, 60]);
+
+        cfg.headphone_volume_override = true;
+        let (overridden, overridden_route) = audio_state(&game, &cfg, true);
+        assert_eq!(overridden_route, route);
+        assert_eq!(
+            overridden[0] & ALLOW_HEADPHONE_VOLUME,
+            ALLOW_HEADPHONE_VOLUME
+        );
+        assert_eq!(&overridden[4..7], &[127, 40, 60]);
     }
     #[test]
     fn silent_keepalive_is_fixed_size_opus() {
