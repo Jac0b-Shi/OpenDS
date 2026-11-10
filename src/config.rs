@@ -105,7 +105,9 @@ pub struct Config {
     /// 0 自动（优先游戏路由，其次耳机插入状态），1 扬声器，2 耳机。
     pub audio_route: u8,
     pub speaker_volume: u8,
+    /// 开启手动覆盖时使用的耳机音量。
     pub headphone_volume: u8,
+    pub headphone_volume_override: bool,
     /// 空串表示自动选择；否则只连接指定物理 HID 路径。
     pub device_path: String,
     /// Empty selects automatic discovery; otherwise use this installation directory.
@@ -144,7 +146,8 @@ impl Default for Config {
             microphone_buffer_ms: 128,
             audio_route: 0,
             speaker_volume: 255,
-            headphone_volume: 63,
+            headphone_volume: Self::DEFAULT_HEADPHONE_VOLUME,
+            headphone_volume_override: false,
             device_path: String::new(),
             usbip_directory: String::new(),
             hidhide_directory: String::new(),
@@ -156,6 +159,9 @@ impl Default for Config {
 }
 
 impl Config {
+    pub const DEFAULT_HEADPHONE_VOLUME: u8 = 63;
+    pub const MAX_HEADPHONE_VOLUME: u8 = 127;
+
     /// 按原始实现的规则钳制所有字段。
     pub fn clamp(&mut self) {
         if self.port == 0 {
@@ -170,6 +176,9 @@ impl Config {
             self.usb_face = 0;
         }
         self.audio_route = self.audio_route.min(2);
+        if self.headphone_volume_override {
+            self.headphone_volume = self.headphone_volume.min(Self::MAX_HEADPHONE_VOLUME);
+        }
         self.microphone_gain_db = self.microphone_gain_db.min(50);
         self.microphone_buffer_ms = self.microphone_buffer_ms.clamp(16, 512);
         if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
@@ -298,6 +307,7 @@ impl Config {
                 "audio_route" => number!(audio_route),
                 "speaker_volume" => number!(speaker_volume),
                 "headphone_volume" => number!(headphone_volume),
+                "headphone_volume_override" => boolean!(headphone_volume_override),
                 "device_path" => cfg.device_path = value.to_owned(),
                 "usbip_directory" => cfg.usbip_directory = value.to_owned(),
                 "hidhide_directory" => cfg.hidhide_directory = value.to_owned(),
@@ -379,6 +389,7 @@ impl Config {
             audio_route,
             speaker_volume,
             headphone_volume,
+            headphone_volume_override,
             device_path,
             usbip_directory,
             hidhide_directory,
@@ -545,6 +556,22 @@ mod tests {
         assert_eq!(c.port, 3241);
         assert_eq!(c.buffer, 2);
         assert!(c.auto_start);
+    }
+
+    #[test]
+    fn headphone_volume_override_is_opt_in_and_round_trips() {
+        let legacy = Config::parse("headphone_volume=200").unwrap();
+        assert!(!legacy.headphone_volume_override);
+        assert_eq!(legacy.headphone_volume, 200);
+
+        let cfg = Config::parse("headphone_volume_override=true\nheadphone_volume=200").unwrap();
+        let path =
+            std::env::temp_dir().join(format!("opends-headphones-{}.ini", std::process::id()));
+        cfg.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(loaded.headphone_volume_override);
+        assert_eq!(loaded.headphone_volume, Config::MAX_HEADPHONE_VOLUME);
     }
 
     #[test]

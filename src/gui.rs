@@ -73,6 +73,8 @@ struct Controls {
     buffer: nwg::TextInput,
     port: nwg::TextInput,
     speaker: nwg::TextInput,
+    headphone: nwg::TextInput,
+    headphone_override: nwg::CheckBox,
     haptic_gain: nwg::ComboBox<String>,
     mic_gain: nwg::TrackBar,
     mic_buffer: nwg::ComboBox<String>,
@@ -419,6 +421,18 @@ impl App {
             input!(port, &cfg.port.to_string());
             input!(buffer, &cfg.buffer.to_string());
             input!(speaker, &cfg.speaker_volume.to_string());
+            cb!(
+                headphone_override,
+                crate::tr!(gui_override_headphone_volume),
+                cfg.headphone_volume_override
+            );
+            input!(
+                headphone,
+                &cfg.headphone_volume
+                    .min(Config::MAX_HEADPHONE_VOLUME)
+                    .to_string()
+            );
+            ui.headphone.set_enabled(cfg.headphone_volume_override);
             nwg::ComboBox::builder()
                 .flags(unsafe {
                     nwg::ComboBoxFlags::from_bits_unchecked(
@@ -653,6 +667,8 @@ impl App {
             &self.buffer.handle,
             &self.port.handle,
             &self.speaker.handle,
+            &self.headphone.handle,
+            &self.headphone_override.handle,
             &self.haptic_gain.handle,
             &self.mic_gain.handle,
             &self.mic_buffer.handle,
@@ -839,16 +855,18 @@ impl App {
                 put(&self.haptics.handle, x + cw / 2, 221, cw / 2 - 24, 28);
                 put(&self.microphone.handle, x + 24, 258, cw / 2 - 32, 28);
                 put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
-                put(&self.route.handle, x + 24, 324, cw - 48, 180);
-                put(&self.speaker.handle, x + 24, 396, cw / 3 - 40, 34);
+                put(&self.headphone_override.handle, x + cw - 370, 288, 282, 30);
+                put(&self.headphone.handle, x + cw - 80, 288, 56, 30);
+                put(&self.route.handle, x + 24, 353, cw - 48, 180);
+                put(&self.speaker.handle, x + 24, 400, cw / 3 - 40, 34);
                 put(
                     &self.haptic_gain.handle,
                     x + cw / 3 + 8,
-                    396,
+                    400,
                     cw / 3 - 32,
                     240,
                 );
-                put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 34);
+                put(&self.mic_gain.handle, x + 2 * cw / 3, 400, cw / 3 - 24, 34);
                 put(&self.port.handle, x + 24, 464, cw / 3 - 40, 34);
                 put(&self.buffer.handle, x + cw / 3 + 8, 464, cw / 3 - 32, 34);
                 put(
@@ -1134,24 +1152,35 @@ impl App {
             1 => {}
             2 => {
                 card(x, 112, cw, 490);
+                theme::text(
+                    dc,
+                    &rect(x + cw - 350, 320, 326, 32),
+                    &crate::tr!(
+                        gui_headphone_volume_hint,
+                        volume = crate::i18n_arg!(Config::DEFAULT_HEADPHONE_VOLUME)
+                    ),
+                    &f.small,
+                    theme::palette().muted,
+                    DT_LEFT | DT_WORDBREAK,
+                );
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, crate::tr!(gui_physical_controller)),
-                    (x + 24, 296, cw - 48, crate::tr!(gui_audio_output)),
+                    (x + 24, 296, cw - 402, crate::tr!(gui_audio_output)),
                     (
                         x + 24,
-                        364,
+                        376,
                         cw / 3 - 40,
                         crate::tr!(gui_speaker_volume_0_255),
                     ),
                     (
                         x + cw / 3 + 8,
-                        364,
+                        376,
                         cw / 3 - 32,
                         crate::tr!(gui_haptics_strength),
                     ),
                     (
                         x + 2 * cw / 3,
-                        364,
+                        376,
                         cw / 3 - 24,
                         &crate::tr!(
                             gui_microphone_db_0_50,
@@ -1550,6 +1579,16 @@ impl App {
             .text()
             .parse()
             .map_err(|_| crate::tr!(gui_speaker_volume_must_be_0_255))?;
+        c.headphone_volume_override = checked(&self.headphone_override);
+        if c.headphone_volume_override {
+            c.headphone_volume = self
+                .headphone
+                .text()
+                .parse::<u8>()
+                .ok()
+                .filter(|&volume| volume <= Config::MAX_HEADPHONE_VOLUME)
+                .ok_or(crate::tr!(gui_headphone_volume_must_be_0_127))?;
+        }
         if let Some(index @ 0..=10) = self.haptic_gain.selection() {
             c.haptics_gain = 10 + index as u8;
         }
@@ -2384,6 +2423,11 @@ impl App {
             return;
         }
         if event != E::OnButtonClick {
+            return;
+        }
+        if handle == self.headphone_override {
+            self.headphone
+                .set_enabled(checked(&self.headphone_override));
             return;
         }
         if let Some(i) = self.nav.iter().position(|b| handle == *b) {

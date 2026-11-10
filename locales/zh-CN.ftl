@@ -339,6 +339,11 @@ gui-ready-start-bridging-to-see-connection-and = 准备就绪。启动桥接后�
 gui-on-close = 关闭时行为
 gui-physical-controller = 物理手柄
 gui-audio-output = 声音输出
+gui-override-headphone-volume = 手动覆盖 3.5 mm 耳机音量（0–127）
+# Parameters: $volume
+gui-headphone-volume-hint =
+    关闭覆盖时跟随游戏，游戏未设置则用 { $volume }。
+    保存后重启桥接生效。
 gui-speaker-volume-0-255 = 扬声器音量  ·  0–255
 gui-haptics-gain-10-20 = 触觉增益  ·  10–20
 gui-haptics-strength = 原生触觉强度
@@ -355,6 +360,7 @@ gui-application-log = 运行日志
 gui-port-must-be-1-65535 = 端口必须为 1–65535
 gui-buffer-must-be-1-128-blocks = 缓冲块必须为 1–128
 gui-speaker-volume-must-be-0-255 = 扬声器音量必须为 0–255
+gui-headphone-volume-must-be-0-127 = 3.5 mm 耳机音量必须为 0–127
 gui-haptics-gain-must-be-10-20 = 触觉增益必须为 10–20
 gui-port-buffer-or-haptics-gain-is-out = 端口、缓冲块或触觉增益超出范围
 gui-driver-installation-is-in-progress-wait-for = 正在安装驱动，请等待安装结束后再启动桥接。
