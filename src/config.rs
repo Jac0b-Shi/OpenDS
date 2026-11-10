@@ -105,6 +105,7 @@ pub struct Config {
     /// 0 自动（优先游戏路由，其次耳机插入状态），1 扬声器，2 耳机。
     pub audio_route: u8,
     pub speaker_volume: u8,
+    /// 开启手动覆盖时使用的耳机音量。
     pub headphone_volume: u8,
     pub headphone_volume_override: bool,
     /// 空串表示自动选择；否则只连接指定物理 HID 路径。
@@ -145,7 +146,7 @@ impl Default for Config {
             microphone_buffer_ms: 128,
             audio_route: 0,
             speaker_volume: 255,
-            headphone_volume: 63,
+            headphone_volume: Self::DEFAULT_HEADPHONE_VOLUME,
             headphone_volume_override: false,
             device_path: String::new(),
             usbip_directory: String::new(),
@@ -158,6 +159,7 @@ impl Default for Config {
 }
 
 impl Config {
+    pub const DEFAULT_HEADPHONE_VOLUME: u8 = 63;
     pub const MAX_HEADPHONE_VOLUME: u8 = 127;
 
     /// 按原始实现的规则钳制所有字段。

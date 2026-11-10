@@ -340,6 +340,10 @@ gui-on-close = 关闭时行为
 gui-physical-controller = 物理手柄
 gui-audio-output = 声音输出
 gui-override-headphone-volume = 手动覆盖 3.5 mm 耳机音量（0–127）
+# Parameters: $volume
+gui-headphone-volume-hint =
+    关闭覆盖时跟随游戏，游戏未设置则用 { $volume }。
+    保存后重启桥接生效。
 gui-speaker-volume-0-255 = 扬声器音量  ·  0–255
 gui-haptics-gain-10-20 = 触觉增益  ·  10–20
 gui-haptics-strength = 原生触觉强度

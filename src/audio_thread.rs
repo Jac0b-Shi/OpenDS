@@ -237,8 +237,10 @@ pub fn merge_output(old: &mut [u8; 47], new: &[u8; 47]) {
 }
 pub fn audio_state(game: &[u8; 47], cfg: &Config, headset: bool) -> ([u8; 47], u8) {
     let mut s = *game;
-    if cfg.headphone_volume_override || game[0] & ALLOW_HEADPHONE_VOLUME == 0 {
+    if cfg.headphone_volume_override {
         s[4] = cfg.headphone_volume;
+    } else if game[0] & ALLOW_HEADPHONE_VOLUME == 0 {
+        s[4] = Config::DEFAULT_HEADPHONE_VOLUME;
     }
     if game[0] & (1 << 5) == 0 {
         s[5] = cfg.speaker_volume;
@@ -861,12 +863,18 @@ mod tests {
             ..Config::default()
         };
         let mut game = [0; 47];
-        assert_eq!(audio_state(&game, &cfg, true).0[4], 127);
+        assert_eq!(
+            audio_state(&game, &cfg, true).0[4],
+            Config::DEFAULT_HEADPHONE_VOLUME
+        );
 
         game[0] = ALLOW_HEADPHONE_VOLUME | 0x60;
-        game[4..7].copy_from_slice(&[20, 40, 60]);
-        let (follow_game, route) = audio_state(&game, &cfg, true);
-        assert_eq!(&follow_game[4..7], &[20, 40, 60]);
+        game[5..7].copy_from_slice(&[40, 60]);
+        let route = audio_state(&game, &cfg, true).1;
+        for volume in [0, 20] {
+            game[4] = volume;
+            assert_eq!(&audio_state(&game, &cfg, true).0[4..7], &[volume, 40, 60]);
+        }
 
         cfg.headphone_volume_override = true;
         let (overridden, overridden_route) = audio_state(&game, &cfg, true);

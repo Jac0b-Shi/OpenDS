@@ -340,6 +340,10 @@ gui-on-close = On close
 gui-physical-controller = Physical controller
 gui-audio-output = Audio output
 gui-override-headphone-volume = Override 3.5 mm volume (0–127)
+# Parameters: $volume
+gui-headphone-volume-hint =
+    When off, use game volume or { $volume } if unset.
+    Save and restart bridging.
 gui-speaker-volume-0-255 = Speaker volume · 0–255
 gui-haptics-gain-10-20 = Haptics gain · 10–20
 gui-haptics-strength = Native haptics strength

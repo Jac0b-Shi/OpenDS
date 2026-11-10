@@ -857,16 +857,16 @@ impl App {
                 put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
                 put(&self.headphone_override.handle, x + cw - 370, 288, 282, 30);
                 put(&self.headphone.handle, x + cw - 80, 288, 56, 30);
-                put(&self.route.handle, x + 24, 324, cw - 48, 180);
-                put(&self.speaker.handle, x + 24, 396, cw / 3 - 40, 34);
+                put(&self.route.handle, x + 24, 353, cw - 48, 180);
+                put(&self.speaker.handle, x + 24, 400, cw / 3 - 40, 34);
                 put(
                     &self.haptic_gain.handle,
                     x + cw / 3 + 8,
-                    396,
+                    400,
                     cw / 3 - 32,
                     240,
                 );
-                put(&self.mic_gain.handle, x + 2 * cw / 3, 396, cw / 3 - 24, 34);
+                put(&self.mic_gain.handle, x + 2 * cw / 3, 400, cw / 3 - 24, 34);
                 put(&self.port.handle, x + 24, 464, cw / 3 - 40, 34);
                 put(&self.buffer.handle, x + cw / 3 + 8, 464, cw / 3 - 32, 34);
                 put(
@@ -1152,24 +1152,35 @@ impl App {
             1 => {}
             2 => {
                 card(x, 112, cw, 490);
+                theme::text(
+                    dc,
+                    &rect(x + cw - 350, 320, 326, 32),
+                    &crate::tr!(
+                        gui_headphone_volume_hint,
+                        volume = crate::i18n_arg!(Config::DEFAULT_HEADPHONE_VOLUME)
+                    ),
+                    &f.small,
+                    theme::palette().muted,
+                    DT_LEFT | DT_WORDBREAK,
+                );
                 for (left, y, width, s) in [
                     (x + 24, 130, cw - 48, crate::tr!(gui_physical_controller)),
                     (x + 24, 296, cw - 402, crate::tr!(gui_audio_output)),
                     (
                         x + 24,
-                        364,
+                        376,
                         cw / 3 - 40,
                         crate::tr!(gui_speaker_volume_0_255),
                     ),
                     (
                         x + cw / 3 + 8,
-                        364,
+                        376,
                         cw / 3 - 32,
                         crate::tr!(gui_haptics_strength),
                     ),
                     (
                         x + 2 * cw / 3,
-                        364,
+                        376,
                         cw / 3 - 24,
                         &crate::tr!(
                             gui_microphone_db_0_50,
