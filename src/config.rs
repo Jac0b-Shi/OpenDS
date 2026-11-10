@@ -198,6 +198,9 @@ impl Config {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        return crate::linux::config_dir().join("opends.ini");
+        #[cfg(windows)]
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."))

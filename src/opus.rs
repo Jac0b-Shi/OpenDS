@@ -20,6 +20,7 @@ const OPUS_SET_EXPERT_FRAME_DURATION_REQUEST: c_int = 4040;
 const OPUS_FRAMESIZE_10_MS: c_int = 5003;
 const OPUS_BITRATE: c_int = 160_000;
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
@@ -50,7 +51,10 @@ pub struct Api {
 }
 
 unsafe fn resolve(module: *mut c_void, name: &[u8]) -> Option<*mut c_void> {
+    #[cfg(windows)]
     let p = GetProcAddress(module, name.as_ptr() as *const c_char);
+    #[cfg(target_os = "linux")]
+    let p = libc::dlsym(module, name.as_ptr() as *const c_char);
     if p.is_null() {
         None
     } else {
@@ -60,22 +64,28 @@ unsafe fn resolve(module: *mut c_void, name: &[u8]) -> Option<*mut c_void> {
 
 unsafe fn load_api() -> Option<Api> {
     // 1) 已加载
-    let mut module = GetModuleHandleW(wide("libopus-0.dll").as_ptr());
+    #[cfg(windows)]
+    let module = {
+        let mut module = GetModuleHandleW(wide("libopus-0.dll").as_ptr());
 
-    // 2) exe 同目录
-    if module.is_null() {
-        if let Some(dir) = exe_dir() {
-            module = LoadLibraryW(wide(&format!("{dir}\\libopus-0.dll")).as_ptr());
+        // 2) exe 同目录
+        if module.is_null() {
+            if let Some(dir) = exe_dir() {
+                module = LoadLibraryW(wide(&format!("{dir}\\libopus-0.dll")).as_ptr());
+            }
         }
-    }
 
-    // 3) 开发期：使用绝对源码路径，不从调用者的工作目录加载 DLL。
-    if module.is_null() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/opus/libopus-0.dll");
-        module = LoadLibraryW(wide(&path.to_string_lossy()).as_ptr());
-    }
+        // 3) 开发期：使用绝对源码路径，不从调用者的工作目录加载 DLL。
+        if module.is_null() {
+            let path =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/opus/libopus-0.dll");
+            module = LoadLibraryW(wide(&path.to_string_lossy()).as_ptr());
+        }
 
+        module
+    };
+    #[cfg(target_os = "linux")]
+    let module = crate::shared_library::load("libopus.so.0", "opus");
     if module.is_null() {
         return None;
     }
@@ -99,6 +109,7 @@ unsafe fn load_api() -> Option<Api> {
 }
 
 /// 当前可执行文件所在目录。
+#[cfg(windows)]
 fn exe_dir() -> Option<String> {
     let mut buf = vec![0u16; 1024];
     let n = unsafe { GetModuleFileNameW(ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32) };
@@ -110,6 +121,7 @@ fn exe_dir() -> Option<String> {
     Some(s[..idx].to_string())
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

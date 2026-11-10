@@ -3,27 +3,41 @@
     all(windows, not(debug_assertions), not(test)),
     windows_subsystem = "windows"
 )]
+#[cfg(windows)]
 mod appearance;
+#[cfg_attr(target_os = "linux", path = "linux/attach.rs")]
 mod attach;
 mod audio;
+#[cfg(windows)]
 mod audio_test;
 mod audio_test_source;
+#[cfg(windows)]
 mod audio_test_view;
 mod audio_thread;
 mod battery;
+#[cfg(windows)]
 mod battery_ui;
 mod bridge;
 mod command_recording;
 mod commands;
 mod config;
+#[cfg_attr(target_os = "linux", path = "linux/dependencies.rs")]
 mod dependencies;
+#[cfg_attr(target_os = "linux", path = "linux/dependency_paths.rs")]
 mod dependency_paths;
+#[cfg(windows)]
 mod gdi_buffer;
+#[cfg(windows)]
 mod gui;
+#[cfg(windows)]
 mod gui_close;
+#[cfg(windows)]
 mod gui_language;
+#[cfg(windows)]
 mod gui_theme;
+#[cfg_attr(target_os = "linux", path = "linux/hid.rs")]
 mod hid;
+#[cfg_attr(target_os = "linux", path = "linux/hidhide.rs")]
 mod hidhide;
 mod i18n;
 mod language_pack;
@@ -31,6 +45,7 @@ mod logging;
 mod microphone;
 mod monitor;
 mod monitor_recording;
+#[cfg(windows)]
 mod monitor_view;
 #[cfg(not(feature = "bundled-opus"))]
 mod opus;
@@ -38,25 +53,35 @@ mod opus;
 #[path = "opus_bundled.rs"]
 mod opus;
 mod output;
+#[cfg_attr(target_os = "linux", path = "linux/persistence.rs")]
 mod persistence;
 mod report;
+#[cfg(windows)]
 mod restart;
+#[cfg(windows)]
 mod shortcuts;
 mod shutdown;
+#[cfg(windows)]
 mod startup;
+#[cfg(windows)]
 mod theme_controls;
+#[cfg(windows)]
 mod theme_dialog;
 mod viiper;
 
+#[cfg(windows)]
 use std::{
     sync::{atomic::Ordering, Arc, RwLock},
     time::Duration,
 };
+#[cfg(windows)]
 static CONSOLE_STATE: RwLock<Option<Arc<bridge::BridgeState>>> = RwLock::new(None);
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
 }
+#[cfg(windows)]
 extern "system" fn console_stop(kind: u32) -> i32 {
     if !matches!(kind, 0 | 1 | 2 | 5 | 6) {
         return 0;
@@ -86,6 +111,7 @@ extern "system" fn console_stop(kind: u32) -> i32 {
     }
     1
 }
+#[cfg(windows)]
 fn cli() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("gui");
@@ -252,6 +278,7 @@ fn cli() -> Result<(), String> {
         .and_then(|e| e.clone());
     error.map_or(Ok(()), Err)
 }
+#[cfg(windows)]
 fn main() {
     let language = if std::env::args().nth(1).as_deref() == Some("ui-smoke-test") {
         std::env::var("OPENDS_UI_SMOKE_LANGUAGE").unwrap_or_else(|_| "auto".into())
@@ -302,3 +329,15 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "linux/runtime.rs"]
+mod linux;
+#[cfg(target_os = "linux")]
+mod shared_library;
+#[cfg(target_os = "linux")]
+fn main() {
+    linux::main();
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!("OpenDS supports Windows and Linux");
