@@ -387,7 +387,7 @@ impl Config {
                 _ => {}
             }
         }
-        // Before 0.4.3 headphone_override_volume was the fallback when a game supplied no volume.
+        // Before 0.4.3 headphone_volume was the fallback when a game supplied no volume.
         if version == 1 {
             if let Some(volume) = legacy_volume {
                 if !fallback_seen && !override_seen {
