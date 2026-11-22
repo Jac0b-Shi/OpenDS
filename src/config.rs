@@ -105,7 +105,11 @@ pub struct Config {
     /// 0 自动（优先游戏路由，其次耳机插入状态），1 扬声器，2 耳机。
     pub audio_route: u8,
     pub speaker_volume: u8,
-    pub headphone_volume: u8,
+    /// 开启手动覆盖时使用的耳机音量。
+    pub headphone_override_volume: u8,
+    pub headphone_volume_override: bool,
+    /// 游戏未指定耳机音量时使用的回退值。
+    pub headphone_fallback_volume: u8,
     /// 空串表示自动选择；否则只连接指定物理 HID 路径。
     pub device_path: String,
     /// Empty selects automatic discovery; otherwise use this installation directory.
@@ -144,7 +148,9 @@ impl Default for Config {
             microphone_buffer_ms: 128,
             audio_route: 0,
             speaker_volume: 255,
-            headphone_volume: 63,
+            headphone_override_volume: Self::DEFAULT_HEADPHONE_VOLUME,
+            headphone_volume_override: false,
+            headphone_fallback_volume: Self::DEFAULT_HEADPHONE_VOLUME,
             device_path: String::new(),
             usbip_directory: String::new(),
             hidhide_directory: String::new(),
@@ -156,6 +162,10 @@ impl Default for Config {
 }
 
 impl Config {
+    const FORMAT_VERSION: u32 = 2;
+    pub const DEFAULT_HEADPHONE_VOLUME: u8 = 63;
+    pub const MAX_HEADPHONE_VOLUME: u8 = 127;
+
     /// 按原始实现的规则钳制所有字段。
     pub fn clamp(&mut self) {
         if self.port == 0 {
@@ -170,6 +180,11 @@ impl Config {
             self.usb_face = 0;
         }
         self.audio_route = self.audio_route.min(2);
+        if self.headphone_volume_override {
+            self.headphone_override_volume = self
+                .headphone_override_volume
+                .min(Self::MAX_HEADPHONE_VOLUME);
+        }
         self.microphone_gain_db = self.microphone_gain_db.min(50);
         self.microphone_buffer_ms = self.microphone_buffer_ms.clamp(16, 512);
         if ![20, 50, 100, 200].contains(&self.monitor_sample_hz) {
@@ -219,6 +234,11 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let mut section_ok = true;
+        let mut version = 1u32;
+        let mut legacy_volume = None;
+        let mut manual_seen = false;
+        let mut override_seen = false;
+        let mut fallback_seen = false;
         let mut unified_seen = [[false; 4]; 2];
         let mut full_color_seen = [[false; 4]; 2];
         for (i, line) in text.lines().enumerate() {
@@ -297,7 +317,33 @@ impl Config {
                 "microphone_buffer_ms" => number!(microphone_buffer_ms),
                 "audio_route" => number!(audio_route),
                 "speaker_volume" => number!(speaker_volume),
-                "headphone_volume" => number!(headphone_volume),
+                "config_version" => {
+                    version = value
+                        .parse()
+                        .map_err(|_| crate::tr!(config_version_invalid))?;
+                    if !(1..=Self::FORMAT_VERSION).contains(&version) {
+                        return Err(crate::tr!(config_version_invalid).into());
+                    }
+                }
+                "headphone_volume" => {
+                    legacy_volume = Some(
+                        value
+                            .parse::<u8>()
+                            .map_err(|_| crate::tr!(gui_headphone_volume_must_be_0_127))?,
+                    );
+                }
+                "headphone_override_volume" => {
+                    number!(headphone_override_volume);
+                    manual_seen = true;
+                }
+                "headphone_volume_override" => {
+                    boolean!(headphone_volume_override);
+                    override_seen = true;
+                }
+                "headphone_fallback_volume" => {
+                    number!(headphone_fallback_volume);
+                    fallback_seen = true;
+                }
                 "device_path" => cfg.device_path = value.to_owned(),
                 "usbip_directory" => cfg.usbip_directory = value.to_owned(),
                 "hidhide_directory" => cfg.hidhide_directory = value.to_owned(),
@@ -331,6 +377,17 @@ impl Config {
                 _ => {}
             }
         }
+        // Before 0.4.3 headphone_override_volume was the fallback when a game supplied no volume.
+        if version == 1 {
+            if let Some(volume) = legacy_volume {
+                if !fallback_seen && !override_seen {
+                    cfg.headphone_fallback_volume = volume;
+                }
+                if !manual_seen {
+                    cfg.headphone_override_volume = volume.min(Self::MAX_HEADPHONE_VOLUME);
+                }
+            }
+        }
         // Unified colours were added after the per-tier palettes. A config written
         // before that has no `command_unified_N` keys, so seed each one from the
         // explicitly saved full-push tier; missing palettes keep current defaults.
@@ -348,7 +405,7 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let mut s = String::from("[opends]\n");
+        let mut s = format!("[opends]\nconfig_version={}\n", Self::FORMAT_VERSION);
         for (key, value) in self.commands.fields() {
             s.push_str(&format!("command_{key}={value}\n"));
         }
@@ -378,7 +435,9 @@ impl Config {
             microphone_buffer_ms,
             audio_route,
             speaker_volume,
-            headphone_volume,
+            headphone_override_volume,
+            headphone_volume_override,
+            headphone_fallback_volume,
             device_path,
             usbip_directory,
             hidhide_directory,
@@ -545,6 +604,53 @@ mod tests {
         assert_eq!(c.port, 3241);
         assert_eq!(c.buffer, 2);
         assert!(c.auto_start);
+    }
+
+    #[test]
+    fn legacy_headphone_fallback_survives_manual_override_and_save() {
+        let mut cfg = Config::parse("headphone_volume=24").unwrap();
+        let mut game = [0; 47];
+        assert_eq!(crate::audio_thread::audio_state(&game, &cfg, true).0[4], 24);
+        game[0] = crate::output::valid0::ALLOW_HEADPHONE_VOLUME;
+        game[4] = 0;
+        assert_eq!(crate::audio_thread::audio_state(&game, &cfg, true).0[4], 0);
+        cfg.headphone_volume_override = true;
+        cfg.headphone_override_volume = 96;
+        let path = std::env::temp_dir().join(format!(
+            "opends-volume-migration-{}.ini",
+            std::process::id()
+        ));
+        cfg.save(&path).unwrap();
+        let mut saved = Config::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            crate::audio_thread::audio_state(&game, &saved, true).0[4],
+            96
+        );
+        saved.headphone_volume_override = false;
+        assert_eq!(
+            crate::audio_thread::audio_state(&[0; 47], &saved, true).0[4],
+            24
+        );
+    }
+
+    #[test]
+    fn headphone_volume_override_is_opt_in_and_round_trips() {
+        let legacy = Config::parse("headphone_volume=200").unwrap();
+        assert!(!legacy.headphone_volume_override);
+        assert_eq!(legacy.headphone_fallback_volume, 200);
+
+        let cfg = Config::parse("headphone_volume_override=true\nheadphone_volume=200").unwrap();
+        let path =
+            std::env::temp_dir().join(format!("opends-headphones-{}.ini", std::process::id()));
+        cfg.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(loaded.headphone_volume_override);
+        assert_eq!(
+            loaded.headphone_override_volume,
+            Config::MAX_HEADPHONE_VOLUME
+        );
     }
 
     #[test]
