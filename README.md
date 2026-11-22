@@ -83,8 +83,8 @@ Settings default to `%LOCALAPPDATA%\OpenDS\opends.ini`. An `opends.ini` next to 
 
 ```ini
 [ds5]
-port=3240
-buffer=64
+port=3241
+buffer=4
 audio=1
 haptics_gain=10
 ```
@@ -92,7 +92,7 @@ haptics_gain=10
 | Key | Meaning |
 | --- | --- |
 | `port` | virtual device port |
-| `buffer` | speaker/haptics buffer blocks, 1–128, about 10.7 ms each. More is not better: fewer blocks means less lag but breaks up on a jittery link, more survives stalls but pushes sound and rumble behind the picture. Pick by trying it — on some setups a single block is the most stable |
+| `buffer` | speaker/haptics buffer blocks, 1–128, default 4, about 10.7 ms each. More is not better: fewer blocks means less lag but breaks up on a jittery link, more survives stalls but pushes sound and rumble behind the picture. Pick by trying it — on some setups a single block is the most stable |
 | `audio` | speaker audio toggle |
 | `haptics_gain` | haptic intensity, 10–20 |
 | `microphone_gain_db` | microphone gain, 0–50 dB, peak-limited |
