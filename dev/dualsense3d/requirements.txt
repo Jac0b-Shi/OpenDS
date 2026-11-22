@@ -1,0 +1,2 @@
+PyOpenGL==3.1.10 --hash=sha256:794a943daced39300879e4e47bd94525280685f42dbb5a998d336cfff151d74f
+# GTK, Cairo and NumPy use Ubuntu system packages.

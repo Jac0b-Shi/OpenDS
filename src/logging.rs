@@ -61,10 +61,14 @@ impl Log {
 pub fn record(line: &str) {
     static LOG: OnceLock<Mutex<Option<Log>>> = OnceLock::new();
     let writer = LOG.get_or_init(|| {
-        Mutex::new(
-            std::env::var_os("LOCALAPPDATA")
-                .and_then(|root| Log::new(PathBuf::from(root).join("OpenDS/logs/opends.log")).ok()),
-        )
+        Mutex::new({
+            #[cfg(windows)]
+            let path = std::env::var_os("LOCALAPPDATA")
+                .map(|root| PathBuf::from(root).join("OpenDS/logs/opends.log"));
+            #[cfg(target_os = "linux")]
+            let path = Some(crate::linux::state_dir().join("logs/opends.log"));
+            path.and_then(|path| Log::new(path).ok())
+        })
     });
     if let Ok(mut log) = writer.lock() {
         if let Some(log) = log.as_mut() {

@@ -4,7 +4,6 @@ use crossbeam_queue::ArrayQueue;
 use std::{
     fs::OpenOptions,
     io::{BufWriter, Write},
-    os::windows::ffi::OsStrExt,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering::*},
@@ -17,6 +16,9 @@ use std::{
 const CAPACITY: usize = 2048;
 pub const DISK_RESERVE: u64 = 512 * 1024 * 1024;
 const WRITE_BUFFER: usize = 64 * 1024;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn GetDiskFreeSpaceExW(
@@ -26,6 +28,7 @@ extern "system" {
         free: *mut u64,
     ) -> i32;
 }
+#[cfg(windows)]
 pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -670,6 +673,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
+    #[cfg(windows)]
     fn write_access_failure_never_reports_ready_or_truncates_previous_recording() {
         use std::os::windows::fs::OpenOptionsExt;
         let path = temp_file("write-access");
@@ -697,4 +701,20 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"preserve existing CSV");
         std::fs::remove_file(path).unwrap();
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let name = std::ffi::CString::new(parent.as_os_str().as_bytes())?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(name.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stats = unsafe { stats.assume_init() };
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
 }

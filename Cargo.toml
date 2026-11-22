@@ -2,7 +2,7 @@
 name = "opends"
 version = "0.4.2"
 edition = "2021"
-description = "DualSense input virtualization and forwarding for Windows"
+description = "DualSense input virtualization and forwarding for Windows and Linux"
 license = "GPL-3.0-or-later"
 
 [[bin]]
@@ -12,14 +12,20 @@ path = "src/main.rs"
 [dependencies]
 # 可选：静态链接 libopus（需显式启用 --features bundled-opus）
 opusic-sys = { version = "0.3.6", optional = true }
-native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "notice", "listbox", "textbox", "combobox", "trackbar", "cursor", "embed-resource", "tooltip", "file-dialog"] }
-winapi = { version = "0.3.9", features = ["winuser", "wingdi", "uxtheme", "dwmapi", "d2d1", "dwrite", "libloaderapi", "mmsystem", "mmreg", "mmeapi", "commdlg", "commctrl", "shobjidl_core", "shlobj", "knownfolders", "objbase", "combaseapi", "objidl", "wtypesbase"] }
 crossbeam-queue = "0.3.12"
 plotters = { version = "0.3", default-features = false, features = ["line_series"] }
 plotters-backend = "0.3"
 fluent-bundle = "0.16"
 fluent-syntax = "0.12"
 unic-langid = { version = "0.9", features = ["likelysubtags"] }
+
+[target.'cfg(windows)'.dependencies]
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "notice", "listbox", "textbox", "combobox", "trackbar", "cursor", "embed-resource", "tooltip", "file-dialog"] }
+winapi = { version = "0.3.9", features = ["winuser", "wingdi", "uxtheme", "dwmapi", "d2d1", "dwrite", "libloaderapi", "mmsystem", "mmreg", "mmeapi", "commdlg", "commctrl", "shobjidl_core", "shlobj", "knownfolders", "objbase", "combaseapi", "objidl", "wtypesbase"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+serde_json = "1.0"
 
 [features]
 default = []

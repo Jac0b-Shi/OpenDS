@@ -16,6 +16,48 @@ permissions:
   contents: read
 
 jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 (node24)
+        with:
+          go-version-file: vendor/viiper-source/go.mod
+          cache-dependency-path: vendor/viiper-source/go.sum
+      - name: Install Linux desktop runtime
+        run: sudo apt-get update && sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 pulseaudio-utils desktop-file-utils xvfb libopus0
+      - name: Build native Linux application and VIIPER library
+        run: ./scripts/build-linux.sh
+      - name: Test shared code and Linux backends
+        run: cargo test --locked
+      - name: Verify native library and USB/IP device export without kernel attachment
+        run: cargo test --locked viiper::tests -- --ignored --skip linux_kernel_attachment
+      - name: Verify Linux CLI, configuration and desktop startup
+        run: python3 scripts/tests/test_linux.py
+      - name: Verify desktop service, recording and user installation
+        run: python3 scripts/tests/test_linux_desktop.py
+      - name: Exercise all desktop pages, themes and graphical windows
+        run: G_DEBUG=fatal-criticals xvfb-run -a /usr/bin/python3 scripts/tests/linux_ui_smoke.py
+      - name: Install optional 3D runtime
+        run: sudo apt-get install -y python3-numpy python3-pip libgl1-mesa-dri libegl1
+      - name: Prepare 3D bundle from the fresh-checkout build
+        run: ./dev/dualsense3d/prepare.sh
+      - name: Verify 3D model and input animation
+        run: /usr/bin/python3 dev/dualsense3d/tests/test_scene.py
+      - name: Verify 3D rendering, themes and detachable monitor
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          G_DEBUG: fatal-criticals
+        run: |
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/render_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/app_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/theme_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/camouflage_smoke.py
+          xvfb-run -a /usr/bin/python3 dev/dualsense3d/tests/test_install.py
   windows:
     runs-on: windows-latest
     timeout-minutes: 25

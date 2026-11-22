@@ -117,6 +117,9 @@ pub fn read_pack(path: &Path) -> Result<(Catalog, String), LoadError> {
     Ok((c, text))
 }
 pub fn directory() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    return crate::linux::config_dir().join("locales");
+    #[cfg(windows)]
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -209,6 +212,7 @@ pub fn resolve(requested: &str, system: Option<&str>, available: &[Language]) ->
     }
     .into()
 }
+#[cfg(windows)]
 pub fn system_language() -> Option<String> {
     #[link(name = "kernel32")]
     extern "system" {
@@ -571,4 +575,13 @@ macro_rules! i18n_arg {
         use $crate::i18n::ArgValue as _;
         (&$crate::i18n::DisplayArg(&$value)).fluent_value()
     }};
+}
+
+#[cfg(target_os = "linux")]
+pub fn system_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|v| !v.is_empty())
+        .map(|v| v.split('.').next().unwrap_or("en-US").replace('_', "-"))
 }
