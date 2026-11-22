@@ -324,7 +324,8 @@ unsafe fn draw_button_contents(
                 } else {
                     palette().accent
                 },
-                palette().selected,
+                // 选中导航项的边框改用与文字相同的强调色，避免与背景 selected 同色而丢失轮廓。
+                palette().accent,
             )
         } else {
             (

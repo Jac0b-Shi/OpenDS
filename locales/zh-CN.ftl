@@ -735,3 +735,13 @@ bridge-bluetooth-enable-failed = 无法开启蓝牙，请检查无线电权限�
 gui-multimedia-priority = 提高音频与震动线程优先级
 
 config-version-invalid = 不支持此配置文件版本。
+
+gui-paired-device-buffer = 合包设备缓冲（即时生效）
+settings-device-connection = 设备与连接
+settings-audio-microphone = 音频与麦克风
+settings-haptic-buffer = 触觉反馈与缓冲
+settings-feedback-tests = 反馈测试
+settings-language-appearance = 语言与外观
+settings-startup-tray = 启动与托盘行为
+settings-notifications = 通知与提醒
+settings-microphone-gain = 麦克风增益

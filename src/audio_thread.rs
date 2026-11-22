@@ -19,6 +19,34 @@ use std::{
 struct Queue {
     generation: u64,
     samples: VecDeque<i16>,
+    #[cfg(feature = "hid-drop-experiment")]
+    arrivals: VecDeque<(Instant, usize)>,
+}
+impl Queue {
+    fn discard(&mut self, count: usize) {
+        self.samples.drain(..count);
+        #[cfg(feature = "hid-drop-experiment")]
+        {
+            let mut remaining = count;
+            while remaining > 0 {
+                let (_, length) = self
+                    .arrivals
+                    .front_mut()
+                    .expect("queued samples have an arrival timestamp");
+                if remaining < *length {
+                    *length -= remaining;
+                    break;
+                }
+                remaining -= *length;
+                self.arrivals.pop_front();
+            }
+        }
+    }
+    fn clear(&mut self) {
+        self.samples.clear();
+        #[cfg(feature = "hid-drop-experiment")]
+        self.arrivals.clear();
+    }
 }
 pub struct PcmBuffer {
     inner: Mutex<Queue>,
@@ -29,11 +57,17 @@ pub struct PcmBuffer {
 }
 impl PcmBuffer {
     fn new(blocks: usize, channels: usize) -> Self {
+        // A 480-frame callback must fit alongside an unfinished 512-frame block
+        // for a continuous stream to reach the paired path with a one-block setting.
+        #[cfg(feature = "paired-feedback-experiment")]
+        let blocks = blocks.max(2);
         let limit = blocks.clamp(1, 128) * audio::FRAMES_PER_BLOCK * channels;
         Self {
             inner: Mutex::new(Queue {
                 generation: 0,
                 samples: VecDeque::with_capacity(limit),
+                #[cfg(feature = "hid-drop-experiment")]
+                arrivals: VecDeque::new(),
             }),
             channels,
             limit,
@@ -53,23 +87,44 @@ impl PcmBuffer {
             return;
         }
         if generation != q.generation {
-            q.samples.clear();
+            q.clear();
             q.generation = generation;
         }
         let count = bytes.len() / 2;
         let skip = count.saturating_sub(self.limit);
         let excess = (q.samples.len() + count - skip).saturating_sub(self.limit);
         if excess > 0 {
-            q.samples.drain(..excess);
+            q.discard(excess);
         }
         if excess > 0 || skip > 0 {
             self.overflow_drops.fetch_add(1, Ordering::Relaxed);
         }
+        #[cfg(feature = "hid-drop-experiment")]
+        q.arrivals.push_back((Instant::now(), count - skip));
         q.samples.extend(
             bytes[skip * 2..]
                 .chunks_exact(2)
                 .map(|b| i16::from_le_bytes([b[0], b[1]])),
         );
+    }
+    #[cfg(feature = "hid-drop-experiment")]
+    fn drop_expired(&self, generation: u64, now: Instant, missed_blocks: usize) -> usize {
+        let Ok(mut queue) = self.inner.lock() else {
+            return 0;
+        };
+        if queue.generation != generation {
+            return 0;
+        }
+        let budget = missed_blocks.saturating_mul(audio::FRAMES_PER_BLOCK * self.channels);
+        let mut drop = 0;
+        for (arrival, samples) in &queue.arrivals {
+            if now.saturating_duration_since(*arrival) < OUTPUT_PERIOD || drop == budget {
+                break;
+            }
+            drop += (*samples).min(budget - drop);
+        }
+        queue.discard(drop);
+        drop / self.channels
     }
     #[cfg(test)]
     pub(crate) fn take(&self, generation: u64) -> Option<Vec<i16>> {
@@ -82,7 +137,7 @@ impl PcmBuffer {
         };
         if generation != q.generation {
             if generation > q.generation {
-                q.samples.clear();
+                q.clear();
                 q.generation = generation;
             }
             return false;
@@ -95,7 +150,7 @@ impl PcmBuffer {
         let split = first.len().min(n);
         block[..split].copy_from_slice(&first[..split]);
         block[split..].copy_from_slice(&second[..n - split]);
-        q.samples.drain(..n);
+        q.discard(n);
         true
     }
 }
@@ -119,6 +174,22 @@ pub struct AudioStats {
     pub write_max_us: AtomicU64,
     pub slow_control_writes: AtomicU64,
     pub slow_audio_writes: AtomicU64,
+    #[cfg(feature = "hid-drop-experiment")]
+    pub expired_reports: AtomicU64,
+    #[cfg(feature = "hid-drop-experiment")]
+    pub skipped_pcm_frames: AtomicU64,
+    #[cfg(feature = "hid-drop-experiment")]
+    pub skipped_haptic_frames: AtomicU64,
+    #[cfg(feature = "idle-feedback-experiment")]
+    pub idle_reports_elided: AtomicU64,
+    #[cfg(feature = "idle-feedback-experiment")]
+    pub idle_data_resumes: AtomicU64,
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub paired_reports: AtomicU64,
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub completed_sweeps: AtomicU64,
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub last_sweep_pairs: AtomicU64,
     pub mmcss_active: AtomicBool,
     pub resets: AtomicU64,
     pub ready: AtomicBool,
@@ -131,7 +202,62 @@ pub enum FeedbackTest {
     ClassicRumble = 2,
 }
 
+#[cfg(feature = "feedback-timing-trace")]
+#[derive(Debug, Default)]
+pub struct SweepTrace {
+    pub number: u64,
+    pub attempts: u32,
+    pub paired: u32,
+    pub failed: u32,
+    pub write_over_budget: u32,
+    pub gap_over_budget: u32,
+    pub max_write_us: u64,
+    pub max_write_report: u32,
+    pub max_write_id: u8,
+    pub max_gap_us: u64,
+    pub max_gap_late_us: u64,
+    pub max_gap_expected_us: u64,
+    pub max_gap_after_report: u32,
+    intentionally_skipped: u32,
+    previous_write: Option<Instant>,
+}
+
+#[cfg(feature = "feedback-timing-trace")]
+impl SweepTrace {
+    fn observe(&mut self, report: u8, started: Instant, elapsed: Duration, ok: bool) {
+        let budget = OUTPUT_PERIOD * if report == 0x39 { 2 } else { 1 };
+        if let Some(previous) = self.previous_write.replace(started) {
+            let gap = started.duration_since(previous);
+            let expected = OUTPUT_PERIOD * (1 + self.intentionally_skipped);
+            let late = gap.saturating_sub(expected);
+            self.max_gap_us = self.max_gap_us.max(gap.as_micros() as u64);
+            // Ignore normal scheduler jitter when counting audible-size gaps.
+            self.gap_over_budget += u32::from(late > Duration::from_millis(1));
+            if late.as_micros() as u64 > self.max_gap_late_us {
+                self.max_gap_late_us = late.as_micros() as u64;
+                self.max_gap_expected_us = expected.as_micros() as u64;
+                self.max_gap_after_report = self.attempts;
+            }
+        }
+        self.intentionally_skipped = 0;
+        self.attempts += 1;
+        self.paired += u32::from(report == 0x39 && ok);
+        self.failed += u32::from(!ok);
+        self.write_over_budget += u32::from(elapsed > budget);
+        let write = elapsed.as_micros() as u64;
+        if write > self.max_write_us {
+            self.max_write_us = write;
+            self.max_write_report = self.attempts;
+            self.max_write_id = report;
+        }
+    }
+}
+
 pub struct AudioSession {
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub paired_device_buffer: OnceLock<Arc<AtomicU8>>,
+    #[cfg(feature = "feedback-timing-trace")]
+    pub sweep_trace: Mutex<Option<SweepTrace>>,
     #[cfg(test)]
     bench_warmup: AtomicU8,
     #[cfg(test)]
@@ -157,6 +283,10 @@ impl AudioSession {
             #[cfg(test)]
             bench_wakes: OnceLock::new(),
             monitor: OnceLock::new(),
+            #[cfg(feature = "paired-feedback-experiment")]
+            paired_device_buffer: OnceLock::new(),
+            #[cfg(feature = "feedback-timing-trace")]
+            sweep_trace: Mutex::new(None),
             forward_pcm: AtomicBool::new(true),
             pcm: PcmBuffer::new(blocks, 4),
             haptics: PcmBuffer::new(blocks, 2),
@@ -343,14 +473,67 @@ fn encode_observed(
 /// 音频打开后保持固定节拍：欠载发静音，同时继续发送灯光和扳机状态。
 trait OutputSink: Send + Sync + 'static {
     fn write(&self, data: &[u8]) -> bool;
+    #[cfg(feature = "hid-drop-experiment")]
+    fn write_realtime(&self, data: &[u8]) -> std::io::Result<()> {
+        if self.write(data) {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("output write failed"))
+        }
+    }
 }
 impl OutputSink for HidDevice {
     fn write(&self, data: &[u8]) -> bool {
         HidDevice::write(self, data)
     }
+    #[cfg(feature = "hid-drop-experiment")]
+    fn write_realtime(&self, data: &[u8]) -> std::io::Result<()> {
+        self.write_result(data, 15)
+    }
 }
 
 const OUTPUT_PERIOD: Duration = Duration::from_nanos(10_666_667); // 512 frames at 48 kHz
+#[cfg(feature = "idle-feedback-experiment")]
+const IDLE_REPORT_TICKS: u8 = 4;
+
+#[cfg(feature = "idle-feedback-experiment")]
+#[derive(Default)]
+struct IdleFeedback {
+    last_state: Option<[u8; 47]>,
+    quiet_ticks: u8,
+    ticks_since_write: u8,
+    throttled: bool,
+}
+
+#[cfg(feature = "idle-feedback-experiment")]
+impl IdleFeedback {
+    fn should_send(&mut self, state: &[u8; 47], quiet: bool) -> bool {
+        self.ticks_since_write = self.ticks_since_write.saturating_add(1);
+        if !quiet || self.last_state.as_ref() != Some(state) {
+            self.quiet_ticks = 0;
+            return true;
+        }
+        self.quiet_ticks = self.quiet_ticks.saturating_add(1);
+        let send =
+            self.quiet_ticks < IDLE_REPORT_TICKS || self.ticks_since_write >= IDLE_REPORT_TICKS;
+        self.throttled |= !send;
+        send
+    }
+
+    fn sent(&mut self, state: [u8; 47], has_data: bool) -> bool {
+        self.last_state = Some(state);
+        self.ticks_since_write = 0;
+        has_data && std::mem::take(&mut self.throttled)
+    }
+}
+
+#[cfg(feature = "paired-feedback-experiment")]
+struct PairedFrame {
+    opus: [u8; OPUS_BYTES],
+    haptics: [u8; HAPTICS_BYTES],
+    front: [i16; audio::OPUS_FRAMES * 2],
+}
+
 const FEEDBACK_TEST_DURATION: Duration = Duration::from_secs(1);
 const HAPTICS_TEST_FRAMES: usize = audio::SAMPLE_RATE as usize / audio::HAPTICS_DECIMATION;
 
@@ -414,21 +597,46 @@ impl<S: OutputSink> OutputSink for TimedSink<S> {
     fn write(&self, report: &[u8]) -> bool {
         let start = Instant::now();
         let ok = self.sink.write(report);
-        let elapsed = start.elapsed();
+        self.record_write(report, start.elapsed());
+        ok
+    }
+}
+impl<S: OutputSink> TimedSink<S> {
+    #[cfg(feature = "hid-drop-experiment")]
+    fn write_realtime(&self, report: &[u8]) -> std::io::Result<()> {
+        let start = Instant::now();
+        let result = self.sink.write_realtime(report);
+        self.record_write(report, start.elapsed());
+        result
+    }
+    fn record_write(&self, report: &[u8], elapsed: Duration) {
         self.stats
             .write_max_us
             .fetch_max(elapsed.as_micros() as u64, Ordering::Relaxed);
         if elapsed >= OUTPUT_PERIOD {
-            let counter = if report.first() == Some(&audio::REPORT_ID_COMBINED) {
+            let audio_report = report.first() == Some(&audio::REPORT_ID_COMBINED)
+                || (cfg!(feature = "paired-feedback-experiment") && report.first() == Some(&0x39));
+            let counter = if audio_report {
                 &self.stats.slow_audio_writes
             } else {
                 &self.stats.slow_control_writes
             };
             counter.fetch_add(1, Ordering::Relaxed);
         }
-        ok
     }
 }
+/// 输出节拍：在固定周期上递增基准并睡眠到点；若已超期（唤醒迟到），
+/// 直接把基准拉回到现在，避免后续每一拍都去追赶积压。
+fn advance_output_tick(tick: &mut Instant, period: Duration) {
+    *tick += period;
+    let now = Instant::now();
+    if *tick > now {
+        std::thread::sleep(*tick - now);
+    } else {
+        *tick = now;
+    }
+}
+
 fn spawn_with_sink<S: OutputSink>(
     session: Arc<AudioSession>,
     physical: Arc<S>,
@@ -479,8 +687,27 @@ fn spawn_with_sink<S: OutputSink>(
                 .store(silent_packet.is_some(), Ordering::Release);
             let mut test_start = None;
             let mut test_frame = 0;
+            #[cfg(feature = "feedback-timing-trace")]
+            let mut sweep_trace = SweepTrace {
+                number: 1,
+                ..SweepTrace::default()
+            };
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut sweep_pair_due = false;
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut sweep_pairs = 0;
             let mut test_primed_audio = false;
             let mut resume_audio = false;
+            #[cfg(feature = "idle-feedback-experiment")]
+            let mut idle_feedback = IdleFeedback::default();
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut waiting_pair: Option<PairedFrame> = None;
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut previous_media = false;
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut previous_state = [0; 47];
+            #[cfg(feature = "paired-feedback-experiment")]
+            let mut previous_route = audio::route::SPEAKER;
             while running.load(Ordering::Acquire) {
                 let woke_late = tick.elapsed().as_micros() as u64;
                 stats.wake_max_us.fetch_max(woke_late, Ordering::Relaxed);
@@ -495,6 +722,15 @@ fn spawn_with_sink<S: OutputSink>(
                 light_reset |= session.light_reset.swap(false, Ordering::AcqRel);
                 let next_gen = session.generation.load(Ordering::Acquire);
                 if next_gen != generation {
+                    #[cfg(feature = "idle-feedback-experiment")]
+                    {
+                        idle_feedback = IdleFeedback::default();
+                    }
+                    #[cfg(feature = "paired-feedback-experiment")]
+                    {
+                        waiting_pair = None;
+                        previous_media = false;
+                    }
                     generation = next_gen;
                     needs_prime = true;
                     pending_pcm = false;
@@ -537,7 +773,34 @@ fn spawn_with_sink<S: OutputSink>(
                 if light_reset {
                     state[1] |= 8;
                 }
+                #[cfg(feature = "paired-feedback-experiment")]
+                let mut paired_wire = false;
                 let mut ok = true;
+                #[cfg(feature = "paired-feedback-experiment")]
+                if classic_test {
+                    if let Some(frame) = waiting_pair.take() {
+                        let mut report = audio::build_combined_report(
+                            seq,
+                            counter,
+                            &previous_state,
+                            &frame.opus,
+                            &frame.haptics,
+                            previous_route,
+                        );
+                        if cfg.microphone_enabled {
+                            audio::enable_microphone(&mut report);
+                        }
+                        if physical.write_realtime(&report).is_ok() {
+                            seq = seq.wrapping_add(1);
+                            counter = counter.wrapping_add(1);
+                            stats.output_frames.fetch_add(1, Ordering::Relaxed);
+                            stats.blocks.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            stats.write_fail.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    previous_media = false;
+                }
                 if !classic_test
                     && (cfg.audio_enabled
                         || cfg.haptics_enabled
@@ -575,26 +838,27 @@ fn spawn_with_sink<S: OutputSink>(
                             {
                                 warmup = 8;
                             }
-                            pending_pcm = warmup > 0 && pcm.is_some();
-                            pending_haptics = warmup > 0 && native.is_some();
+                            if consume {
+                                pending_pcm = warmup > 0 && pcm.is_some();
+                                pending_haptics = warmup > 0 && native.is_some();
+                            }
+                        } else if consume {
+                            // The payload has not been sent yet. Retry priming with the same first block.
+                            pending_pcm = pcm.is_some();
+                            pending_haptics = native.is_some();
                         }
                     }
-                    if primed {
+                    if ok && primed {
                         let warm = warmup > 0;
-                        warmup = warmup.saturating_sub(1);
+
                         let mut h = if native_test {
                             if warm {
                                 [0; HAPTICS_BYTES]
                             } else {
-                                let start = test_start.get_or_insert_with(Instant::now);
-                                test_finished = start.elapsed() >= FEEDBACK_TEST_DURATION
-                                    || test_frame >= HAPTICS_TEST_FRAMES;
-                                if test_finished {
+                                if test_frame >= HAPTICS_TEST_FRAMES {
                                     [0; HAPTICS_BYTES]
                                 } else {
-                                    let block = haptics_test_sweep(test_frame);
-                                    test_frame += audio::HAPTICS_FRAMES;
-                                    block
+                                    haptics_test_sweep(test_frame)
                                 }
                             }
                         } else if cfg.haptics_enabled && !warm {
@@ -639,14 +903,213 @@ fn spawn_with_sink<S: OutputSink>(
                         if cfg.audio_enabled && pcm.is_some() && !warm && packet.is_none() {
                             stats.encode_fail.fetch_add(1, Ordering::Relaxed);
                         }
+                        #[cfg(feature = "paired-feedback-experiment")]
+                        let mut pair_first = {
+                            let eligible =
+                                has_data && !warm && !native_test && !light_reset && failures == 0;
+                            let unchanged = state == previous_state && route == previous_route;
+                            let mut first = waiting_pair.take();
+                            if let Some(frame) = first.take_if(|_| !eligible || !unchanged) {
+                                let mut report = audio::build_combined_report(
+                                    seq,
+                                    counter,
+                                    &previous_state,
+                                    &frame.opus,
+                                    &frame.haptics,
+                                    previous_route,
+                                );
+                                if cfg.microphone_enabled {
+                                    audio::enable_microphone(&mut report);
+                                }
+                                if physical.write_realtime(&report).is_ok() {
+                                    seq = seq.wrapping_add(1);
+                                    counter = counter.wrapping_add(1);
+                                    stats.output_frames.fetch_add(1, Ordering::Relaxed);
+                                    stats.blocks.fetch_add(1, Ordering::Relaxed);
+                                    if let Some(m) = session.monitor.get() {
+                                        m.speaker_forwarded(&frame.front);
+                                        m.haptics(&frame.haptics);
+                                    }
+                                    if !has_data
+                                        && unchanged
+                                        && !native_test
+                                        && !warm
+                                        && !light_reset
+                                    {
+                                        previous_media = false;
+                                        idle_feedback.sent(state, false);
+                                        advance_output_tick(&mut tick, period);
+                                        continue;
+                                    }
+                                } else {
+                                    stats.write_fail.fetch_add(1, Ordering::Relaxed);
+                                }
+                            } else if first.is_none() && eligible && previous_media && unchanged {
+                                if let Some(opus) = packet.or(silent_packet) {
+                                    waiting_pair = Some(PairedFrame {
+                                        opus,
+                                        haptics: h,
+                                        front,
+                                    });
+                                    advance_output_tick(&mut tick, period);
+                                    continue;
+                                }
+                            }
+                            previous_media = eligible;
+                            first
+                        };
+                        #[cfg(feature = "paired-feedback-experiment")]
+                        if native_test
+                            && !warm
+                            && !light_reset
+                            && pcm.is_none_or(|samples| samples.iter().all(|&sample| sample == 0))
+                            && state == previous_state
+                            && route == previous_route
+                            && test_frame > 0
+                            && test_frame + audio::HAPTICS_FRAMES < HAPTICS_TEST_FRAMES
+                        {
+                            if !sweep_pair_due {
+                                sweep_pair_due = true;
+                                #[cfg(feature = "feedback-timing-trace")]
+                                {
+                                    sweep_trace.intentionally_skipped += 1;
+                                }
+                                advance_output_tick(&mut tick, period);
+                                continue;
+                            }
+                            if let Some(opus) = silent_packet {
+                                pair_first = Some(PairedFrame {
+                                    opus,
+                                    haptics: h,
+                                    front,
+                                });
+                                h = haptics_test_sweep(test_frame + audio::HAPTICS_FRAMES);
+                            }
+                        }
+                        #[cfg(feature = "idle-feedback-experiment")]
+                        let suppress_idle = !idle_feedback.should_send(
+                            &state,
+                            !has_data
+                                && !warm
+                                && !native_test
+                                && !cfg.microphone_enabled
+                                && !light_reset
+                                && failures == 0
+                                && h.iter().all(|&v| v == 0),
+                        );
+                        #[cfg(not(feature = "idle-feedback-experiment"))]
+                        let suppress_idle = false;
+                        if suppress_idle {
+                            #[cfg(feature = "idle-feedback-experiment")]
+                            stats.idle_reports_elided.fetch_add(1, Ordering::Relaxed);
+                            // No report was issued, so the next report must retain the wire counters.
+                            advance_output_tick(&mut tick, period);
+                            continue;
+                        }
                         if let Some(p) = packet.as_ref().or(silent_packet.as_ref()) {
                             let mut report =
                                 audio::build_combined_report(seq, counter, &state, p, &h, route);
                             if cfg.microphone_enabled {
                                 audio::enable_microphone(&mut report);
                             }
-                            ok &= physical.write(&report);
+                            let wire_report: &[u8] = &report;
+                            #[cfg(feature = "paired-feedback-experiment")]
+                            let paired = pair_first.as_ref().map(|first| {
+                                audio::build_paired_report(
+                                    seq,
+                                    counter,
+                                    [&first.opus, p],
+                                    [&first.haptics, &h],
+                                    route,
+                                    cfg.microphone_enabled,
+                                    session
+                                        .paired_device_buffer
+                                        .get()
+                                        .map_or(cfg.paired_device_buffer, |value| {
+                                            value.load(Ordering::Relaxed)
+                                        }),
+                                )
+                            });
+                            #[cfg(feature = "paired-feedback-experiment")]
+                            let wire_report = if let Some(paired) = paired.as_ref() {
+                                paired_wire = true;
+                                paired
+                            } else {
+                                wire_report
+                            };
+                            #[cfg(feature = "feedback-timing-trace")]
+                            let sweep_started = native_test.then(Instant::now);
+                            #[cfg(feature = "hid-drop-experiment")]
+                            {
+                                if !warm && !native_test && !light_reset {
+                                    let result = physical.write_realtime(wire_report);
+                                    ok = result.is_ok();
+                                    if result.is_err_and(|err| {
+                                        err.kind() == std::io::ErrorKind::TimedOut
+                                    }) {
+                                        let now = Instant::now();
+                                        let missed =
+                                            (now.saturating_duration_since(tick).as_nanos()
+                                                / OUTPUT_PERIOD.as_nanos())
+                                                as usize;
+                                        stats.skipped_pcm_frames.fetch_add(
+                                            session.pcm.drop_expired(generation, now, missed)
+                                                as u64,
+                                            Ordering::Relaxed,
+                                        );
+                                        stats.skipped_haptic_frames.fetch_add(
+                                            session.haptics.drop_expired(generation, now, missed)
+                                                as u64,
+                                            Ordering::Relaxed,
+                                        );
+                                        stats.expired_reports.fetch_add(1, Ordering::Release);
+                                    }
+                                } else {
+                                    ok = physical.write(wire_report);
+                                }
+                            }
+                            #[cfg(not(feature = "hid-drop-experiment"))]
+                            {
+                                ok = physical.write(wire_report);
+                            }
+                            #[cfg(feature = "feedback-timing-trace")]
+                            if let Some(started) = sweep_started {
+                                sweep_trace.observe(wire_report[0], started, started.elapsed(), ok);
+                            }
                             if ok {
+                                #[cfg(feature = "paired-feedback-experiment")]
+                                {
+                                    previous_state = state;
+                                    previous_route = route;
+                                    if let Some(frame) = pair_first.as_ref() {
+                                        stats.paired_reports.fetch_add(1, Ordering::Relaxed);
+                                        stats.blocks.fetch_add(1, Ordering::Relaxed);
+                                        if let Some(m) = session.monitor.get() {
+                                            m.speaker_forwarded(&frame.front);
+                                            m.haptics(&frame.haptics);
+                                        }
+                                    }
+                                }
+                                #[cfg(feature = "idle-feedback-experiment")]
+                                if idle_feedback.sent(state, has_data) {
+                                    stats.idle_data_resumes.fetch_add(1, Ordering::Relaxed);
+                                }
+                                warmup = warmup.saturating_sub(1);
+                                if native_test && !warm {
+                                    if test_frame < HAPTICS_TEST_FRAMES {
+                                        test_frame += audio::HAPTICS_FRAMES;
+                                        #[cfg(feature = "paired-feedback-experiment")]
+                                        {
+                                            sweep_pair_due = false;
+                                            if paired_wire {
+                                                test_frame += audio::HAPTICS_FRAMES;
+                                                sweep_pairs += 1;
+                                            }
+                                        }
+                                    } else {
+                                        test_finished = true;
+                                    }
+                                }
                                 if let Some(m) = session.monitor.get() {
                                     m.speaker_forwarded(&front);
                                     m.haptics(&h);
@@ -657,6 +1120,10 @@ fn spawn_with_sink<S: OutputSink>(
                         }
                     }
                 } else if light_reset || classic_test || rev != 0 {
+                    #[cfg(feature = "idle-feedback-experiment")]
+                    {
+                        idle_feedback = IdleFeedback::default();
+                    }
                     let mut adapted = game;
                     if cfg.headphone_volume_override {
                         adapted[0] |= ALLOW_HEADPHONE_VOLUME;
@@ -691,6 +1158,26 @@ fn spawn_with_sink<S: OutputSink>(
                         }
                         test_start = None;
                         test_frame = 0;
+                        #[cfg(feature = "feedback-timing-trace")]
+                        if native_test {
+                            let next = sweep_trace.number + 1;
+                            if let Ok(mut trace) = session.sweep_trace.lock() {
+                                *trace = Some(std::mem::replace(
+                                    &mut sweep_trace,
+                                    SweepTrace {
+                                        number: next,
+                                        ..SweepTrace::default()
+                                    },
+                                ));
+                            }
+                        }
+                        #[cfg(feature = "paired-feedback-experiment")]
+                        if native_test {
+                            sweep_pair_due = false;
+                            stats.last_sweep_pairs.store(sweep_pairs, Ordering::Relaxed);
+                            stats.completed_sweeps.fetch_add(1, Ordering::Release);
+                            sweep_pairs = 0;
+                        }
                         test_primed_audio = false;
                         rumble = audio::RumbleMixer::default();
                         session.feedback_test.store(0, Ordering::Release);
@@ -699,7 +1186,15 @@ fn spawn_with_sink<S: OutputSink>(
                     failures = 0;
                     seq = seq.wrapping_add(1);
                     counter = counter.wrapping_add(1);
+                    #[cfg(feature = "paired-feedback-experiment")]
+                    if paired_wire {
+                        counter = counter.wrapping_add(1);
+                    }
                 } else {
+                    #[cfg(feature = "paired-feedback-experiment")]
+                    {
+                        previous_media = false;
+                    }
                     failures += 1;
                     stats.write_fail.fetch_add(1, Ordering::Relaxed);
                 }
@@ -707,13 +1202,7 @@ fn spawn_with_sink<S: OutputSink>(
                     stats.failed.store(true, Ordering::Release);
                     break;
                 }
-                tick += period;
-                let now = Instant::now();
-                if tick > now {
-                    std::thread::sleep(tick - now);
-                } else {
-                    tick = now;
-                }
+                advance_output_tick(&mut tick, period);
             }
             let mut off = [0u8; 47];
             off[0] = 0x0F;
@@ -788,6 +1277,120 @@ mod tests {
         assert_eq!(reports[0][0], 0x31);
         assert_eq!(reports[0][4] & 8, 8);
         assert_eq!(reports.iter().filter(|r| r[4] & 8 != 0).count(), 1);
+    }
+
+    #[test]
+    fn failed_audio_prime_preserves_the_first_haptic_block() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        struct PrimeSink {
+            primes: AtomicU64,
+            running: Arc<AtomicBool>,
+            received_haptics: AtomicBool,
+        }
+        impl OutputSink for PrimeSink {
+            fn write(&self, report: &[u8]) -> bool {
+                if report[0] == audio::REPORT_ID_HAPTICS {
+                    return self.primes.fetch_add(1, Ordering::Relaxed) != 0;
+                }
+                if report[0] == audio::REPORT_ID_COMBINED && report[78..142].iter().any(|&v| v != 0)
+                {
+                    self.received_haptics.store(true, Ordering::Release);
+                    self.running.store(false, Ordering::Release);
+                }
+                true
+            }
+        }
+        let session = AudioSession::new(1);
+        session
+            .haptics
+            .push_bytes(&bytes(&[4096; audio::FRAMES_PER_BLOCK * 2]), 0);
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(PrimeSink {
+            primes: AtomicU64::new(0),
+            running: running.clone(),
+            received_haptics: AtomicBool::new(false),
+        });
+        let worker =
+            spawn_with_sink(session, sink.clone(), running.clone(), Config::default()).unwrap();
+        let received = wait_for_output(|| sink.received_haptics.load(Ordering::Acquire));
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(received);
+        assert_eq!(sink.primes.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn sweep_keeps_every_block_after_a_slow_failed_write() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        #[derive(Default)]
+        struct SweepSink {
+            rejected: AtomicBool,
+            blocks: Mutex<Vec<[u8; HAPTICS_BYTES]>>,
+        }
+        impl OutputSink for SweepSink {
+            fn write(&self, report: &[u8]) -> bool {
+                let haptics = match report[0] {
+                    0x36 => &report[78..142],
+                    0x39 => &report[12..140],
+                    _ => return true,
+                };
+                if haptics.iter().all(|&v| v == 0) {
+                    return true;
+                }
+                if !self.rejected.swap(true, Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(110));
+                    return false;
+                }
+                self.blocks.lock().unwrap().extend(
+                    haptics
+                        .chunks_exact(HAPTICS_BYTES)
+                        .map(|block| <[u8; HAPTICS_BYTES]>::try_from(block).unwrap()),
+                );
+                true
+            }
+        }
+        let session = AudioSession::new(1);
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(SweepSink::default());
+        let worker = spawn_with_sink(
+            session.clone(),
+            sink.clone(),
+            running.clone(),
+            Config::default(),
+        )
+        .unwrap();
+        let ready = wait_for_output(|| session.feedback_test_options().0);
+        session.request_feedback_test(FeedbackTest::NativeHaptics);
+        let finished = wait_for_output(|| session.feedback_test_options().0);
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(ready && finished);
+        let expected: Vec<_> = (0..HAPTICS_TEST_FRAMES)
+            .step_by(audio::HAPTICS_FRAMES)
+            .map(haptics_test_sweep)
+            .collect();
+        assert_eq!(*sink.blocks.lock().unwrap(), expected);
+        assert_eq!(session.stats.write_fail.load(Ordering::Relaxed), 1);
+        #[cfg(feature = "feedback-timing-trace")]
+        {
+            let trace = session.sweep_trace.lock().unwrap();
+            let trace = trace.as_ref().unwrap();
+            assert_eq!(trace.number, 1);
+            assert_eq!(trace.failed, 1);
+            assert_eq!(trace.max_write_report, 9);
+            assert_eq!(trace.max_gap_after_report, 9);
+            assert!(trace.write_over_budget >= 1);
+            assert!(trace.max_gap_late_us >= 90_000);
+        }
+        #[cfg(feature = "paired-feedback-experiment")]
+        {
+            assert_eq!(session.stats.completed_sweeps.load(Ordering::Relaxed), 1);
+            assert_eq!(session.stats.last_sweep_pairs.load(Ordering::Relaxed), 46);
+        }
     }
 
     #[test]
@@ -899,12 +1502,267 @@ mod tests {
             .unwrap();
         }
     }
+    #[cfg(feature = "paired-feedback-experiment")]
+    #[test]
+    fn paired_sweep_preserves_microphone_and_automatic_headphone_route() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        let session = AudioSession::new(2);
+        session.headset.store(true, Ordering::Relaxed);
+        let depth = Arc::new(AtomicU8::new(Config::DEFAULT_PAIRED_DEVICE_BUFFER));
+        session.paired_device_buffer.set(depth.clone()).unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(PulseSink::default());
+        let cfg = Config {
+            microphone_enabled: true,
+            ..Config::default()
+        };
+        let worker = spawn_with_sink(session.clone(), sink.clone(), running.clone(), cfg).unwrap();
+        let ready = wait_for_output(|| session.feedback_test_options().0);
+        session.request_feedback_test(FeedbackTest::NativeHaptics);
+        let completed =
+            wait_for_output(|| session.stats.completed_sweeps.load(Ordering::Acquire) == 1);
+        let idle = wait_for_output(|| session.feedback_test_options().0);
+        depth.store(48, Ordering::Relaxed);
+        session.request_feedback_test(FeedbackTest::NativeHaptics);
+        let completed_again =
+            wait_for_output(|| session.stats.completed_sweeps.load(Ordering::Acquire) == 2);
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(ready && completed && idle && completed_again);
+        assert_eq!(session.stats.last_sweep_pairs.load(Ordering::Relaxed), 46);
+        let reports = sink.0.lock().unwrap();
+        let pairs: Vec<_> = reports.iter().filter(|report| report[0] == 0x39).collect();
+        assert_eq!(pairs.len(), 92);
+        assert!(pairs[..46].iter().all(|report| report[8] == 96));
+        assert!(pairs[46..].iter().all(|report| report[8] == 48));
+        assert!(pairs
+            .iter()
+            .all(|report| report[4] == 0x7f && report[140] == 0xd6));
+    }
+
+    #[cfg(feature = "paired-feedback-experiment")]
+    #[test]
+    fn paired_output_keeps_single_onset_and_flushes_the_final_unpaired_block() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        let session = AudioSession::new(4);
+        let block = audio::FRAMES_PER_BLOCK * 2;
+        let samples: Vec<i16> = [1024, 2048, 3072, 4096]
+            .into_iter()
+            .flat_map(|value| std::iter::repeat_n(value, block))
+            .collect();
+        session.haptics.push_bytes(&bytes(&samples), 0);
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(PulseSink::default());
+        let worker =
+            spawn_with_sink(session, sink.clone(), running.clone(), Config::default()).unwrap();
+        let sent = wait_for_output(|| {
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| match r[0] {
+                    0x36 => r[78..142].iter().any(|&x| x != 0),
+                    0x39 => true,
+                    _ => false,
+                })
+                .count()
+                >= 3
+        });
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(sent);
+        let reports = sink.0.lock().unwrap();
+        let media: Vec<_> = reports
+            .iter()
+            .filter(|r| match r[0] {
+                0x36 => r[78..142].iter().any(|&x| x != 0),
+                0x39 => true,
+                _ => false,
+            })
+            .collect();
+        assert_eq!(
+            media.iter().map(|r| r[0]).collect::<Vec<_>>(),
+            [0x36, 0x39, 0x36]
+        );
+        let pair = media[1];
+        assert!(media[0][78] < pair[12] && pair[12] < pair[76] && pair[76] < media[2][78]);
+        assert_eq!(pair[8], Config::DEFAULT_PAIRED_DEVICE_BUFFER);
+        assert_eq!(pair[9], media[0][10].wrapping_add(3));
+        assert_eq!(pair[9], media[2][10]);
+        assert_eq!(
+            &pair[543..],
+            &crate::report::bt_output_crc32(&pair[..543]).to_le_bytes()
+        );
+    }
+
+    #[cfg(feature = "idle-feedback-experiment")]
+    #[test]
+    fn idle_gate_keeps_control_changes_and_every_fourth_quiet_tick() {
+        let mut idle = IdleFeedback::default();
+        let mut state = [0; 47];
+        for _ in 0..4 {
+            assert!(idle.should_send(&state, true));
+            assert!(!idle.sent(state, false));
+        }
+        for _ in 0..3 {
+            assert!(!idle.should_send(&state, true));
+        }
+        assert!(idle.should_send(&state, true));
+        assert!(!idle.sent(state, false));
+        assert!(!idle.should_send(&state, true));
+        state[44] = 255;
+        assert!(idle.should_send(&state, true));
+        assert!(!idle.sent(state, false));
+        assert!(idle.should_send(&state, false));
+        assert!(idle.sent(state, true));
+    }
+
+    #[cfg(feature = "idle-feedback-experiment")]
+    #[test]
+    fn idle_resume_sends_the_first_audio_or_haptics_block() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        for audio in [false, true] {
+            let session = AudioSession::new(4);
+            let running = Arc::new(AtomicBool::new(true));
+            let sink = Arc::new(PulseSink::default());
+            session
+                .pcm
+                .push_bytes(&bytes(&[0; audio::FRAMES_PER_BLOCK * 4]), 0);
+            let worker = spawn_with_sink(
+                session.clone(),
+                sink.clone(),
+                running.clone(),
+                Config::default(),
+            )
+            .unwrap();
+            let throttled =
+                wait_for_output(|| session.stats.idle_reports_elided.load(Ordering::Relaxed) >= 3);
+            let from = sink.0.lock().unwrap().len();
+            let queue = if audio {
+                &session.pcm
+            } else {
+                &session.haptics
+            };
+            let pulse: Vec<_> = (0..audio::FRAMES_PER_BLOCK)
+                .flat_map(|frame| {
+                    std::iter::repeat_n(if frame % 16 < 8 { 12000 } else { 4000 }, queue.channels)
+                })
+                .collect();
+            queue.push_bytes(&bytes(&pulse), 0);
+            let resumed =
+                wait_for_output(|| session.stats.idle_data_resumes.load(Ordering::Relaxed) != 0);
+            running.store(false, Ordering::Release);
+            worker.join().unwrap();
+            assert!(throttled && resumed);
+            let reports = sink.0.lock().unwrap();
+            let idle = reports[..from]
+                .iter()
+                .rfind(|r| r[0] == audio::REPORT_ID_COMBINED)
+                .unwrap();
+            assert!(reports[from..]
+                .iter()
+                .any(|r| r[0] == audio::REPORT_ID_COMBINED
+                    && if audio {
+                        r[144..344] != idle[144..344]
+                    } else {
+                        r[78..142].iter().any(|&v| v != 0)
+                    }));
+            let combined: Vec<_> = reports
+                .iter()
+                .filter(|r| r[0] == audio::REPORT_ID_COMBINED)
+                .collect();
+            assert!(combined
+                .windows(2)
+                .all(|pair| pair[1][10] == pair[0][10].wrapping_add(1)));
+        }
+    }
+
+    #[cfg(feature = "hid-drop-experiment")]
+    #[test]
+    fn timeout_skips_expired_input_without_discarding_a_fresh_block() {
+        if !crate::opus::is_available() {
+            return;
+        }
+        struct TimeoutSink {
+            session: Arc<AudioSession>,
+            timed_out: AtomicBool,
+        }
+        impl OutputSink for TimeoutSink {
+            fn write(&self, _report: &[u8]) -> bool {
+                true
+            }
+
+            fn write_realtime(&self, _report: &[u8]) -> std::io::Result<()> {
+                if self.timed_out.swap(true, Ordering::Relaxed) {
+                    return Ok(());
+                }
+                for queue in [&self.session.pcm, &self.session.haptics] {
+                    let block = audio::FRAMES_PER_BLOCK * queue.channels;
+                    queue.push_bytes(&bytes(&vec![1; block * 2]), 0);
+                }
+                std::thread::sleep(Duration::from_millis(24));
+                for queue in [&self.session.pcm, &self.session.haptics] {
+                    let block = audio::FRAMES_PER_BLOCK * queue.channels;
+                    queue.push_bytes(&bytes(&vec![2; block]), 0);
+                }
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
+        let session = AudioSession::new(4);
+        session
+            .pcm
+            .push_bytes(&bytes(&[0; audio::FRAMES_PER_BLOCK * 4]), 0);
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(TimeoutSink {
+            session: session.clone(),
+            timed_out: AtomicBool::new(false),
+        });
+        let worker =
+            spawn_with_sink(session.clone(), sink, running.clone(), Config::default()).unwrap();
+        let expired =
+            wait_for_output(|| session.stats.expired_reports.load(Ordering::Acquire) != 0);
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(expired);
+        assert_eq!(
+            session.stats.skipped_pcm_frames.load(Ordering::Relaxed),
+            1024
+        );
+        assert_eq!(
+            session.stats.skipped_haptic_frames.load(Ordering::Relaxed),
+            1024
+        );
+    }
+
+    #[cfg(feature = "hid-drop-experiment")]
+    #[test]
+    fn skip_respects_age_budget_and_generation() {
+        let queue = PcmBuffer::new(4, 2);
+        let block = audio::FRAMES_PER_BLOCK * 2;
+        queue.push_bytes(&bytes(&vec![1; block * 2]), 3);
+        let now = Instant::now();
+        queue.inner.lock().unwrap().arrivals[0].0 = now - OUTPUT_PERIOD * 2;
+        queue.push_bytes(&bytes(&vec![2; block]), 3);
+        assert_eq!(queue.drop_expired(2, now, 3), 0);
+        assert_eq!(queue.drop_expired(3, now, 1), audio::FRAMES_PER_BLOCK);
+        assert_eq!(queue.drop_expired(3, now, 3), audio::FRAMES_PER_BLOCK);
+        assert_eq!(queue.take(3).unwrap(), vec![2; block]);
+    }
+
     #[test]
     fn oversized_pcm_keeps_whole_latest_frames_with_bounded_memory() {
         let q = PcmBuffer::new(1, 4);
         q.push_bytes(&bytes(&vec![1; 4096]), 0);
-        assert_eq!(q.inner.lock().unwrap().samples.len(), 2048);
-        assert!(q.take(0).is_some());
+        assert_eq!(q.inner.lock().unwrap().samples.len(), q.limit);
+        for _ in 0..q.limit / (audio::FRAMES_PER_BLOCK * 4) {
+            assert!(q.take(0).is_some());
+        }
         assert!(q.take(0).is_none());
         q.push_bytes(&[0, 1, 2], 0);
         assert!(q.take(0).is_none());
@@ -1191,7 +2049,7 @@ mod bench {
             let mut q = self.inner.lock().ok()?;
             if generation != q.generation {
                 if generation > q.generation {
-                    q.samples.clear();
+                    q.clear();
                     q.generation = generation;
                 }
                 return None;

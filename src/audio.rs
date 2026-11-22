@@ -135,6 +135,48 @@ pub fn enable_microphone(report: &mut [u8; COMBINED_REPORT_SIZE]) {
     report[COMBINED_REPORT_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
 }
 
+// Dual-frame layout from DS5Dongle and KytyPS5; microphone and jack flags from DualSense Companion.
+#[cfg(feature = "paired-feedback-experiment")]
+pub fn build_paired_report(
+    seq: u8,
+    counter: u8,
+    opus: [&[u8; OPUS_BYTES]; 2],
+    haptics: [&[u8; HAPTICS_BYTES]; 2],
+    audio_route: u8,
+    microphone: bool,
+    device_buffer: u8,
+) -> [u8; 547] {
+    let mut report = [0; 547];
+    report[0] = 0x39;
+    report[1] = (seq & 15) << 4;
+    // The last config byte controls device buffering. 64 reduced measured
+    // vibration troughs with dual-frame output while host writes stayed on time.
+    report[2..9].copy_from_slice(&[
+        0x91,
+        6,
+        0x7e | u8::from(microphone),
+        48,
+        48,
+        48,
+        device_buffer,
+    ]);
+    report[9] = counter.wrapping_add(2);
+    report[10..12].copy_from_slice(&[0xd2, HAPTICS_BYTES as u8]);
+    report[12..76].copy_from_slice(haptics[0]);
+    report[76..140].copy_from_slice(haptics[1]);
+    let audio_tag = if audio_route == route::HEADSET {
+        0xd6
+    } else {
+        0xd3
+    };
+    report[140..142].copy_from_slice(&[audio_tag, OPUS_BYTES as u8]);
+    report[142..342].copy_from_slice(opus[0]);
+    report[342..542].copy_from_slice(opus[1]);
+    let crc = crate::report::bt_output_crc32(&report[..543]);
+    report[543..].copy_from_slice(&crc.to_le_bytes());
+    report
+}
+
 pub fn microphone_control(seq: u8, enabled: bool) -> [u8; HAPTICS_REPORT_SIZE] {
     // Explicit audio-control subreport, independently of speaker PCM. The
     // controller keeps this mode until another control report or reconnect.

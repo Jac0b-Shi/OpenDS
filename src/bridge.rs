@@ -54,6 +54,8 @@ struct SessionProgress {
 
 #[derive(Default)]
 pub struct BridgeState {
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub paired_device_buffer: Arc<std::sync::atomic::AtomicU8>,
     pub monitor: Arc<crate::monitor::Monitor>,
     pub running: AtomicBool,
     pub connected: AtomicBool,
@@ -70,6 +72,7 @@ pub struct BridgeState {
     pub last_error: Mutex<Option<String>>,
     pub connection_issue: Mutex<Option<ConnectionIssue>>,
     logs: Mutex<VecDeque<String>>,
+    /// 日志内容的修订号，供 GUI 检测跨桥接会话的日志变化。
     pub log_revision: AtomicU64,
 }
 impl BridgeState {
@@ -199,6 +202,10 @@ impl BridgeController {
         }
         let state = Arc::new(BridgeState {
             monitor: self.state.monitor.clone(),
+            #[cfg(feature = "paired-feedback-experiment")]
+            paired_device_buffer: Arc::new(std::sync::atomic::AtomicU8::new(
+                cfg.paired_device_buffer,
+            )),
             ..BridgeState::default()
         });
         state.monitor.battery.resume();
@@ -733,6 +740,10 @@ fn run_session(
         return Err(crate::tr!(bridge_viiper_does_not_support_the_usb_audio).into());
     }
     let audio = AudioSession::new(cfg.buffer as usize);
+    #[cfg(feature = "paired-feedback-experiment")]
+    let _ = audio
+        .paired_device_buffer
+        .set(state.paired_device_buffer.clone());
     let _ = audio.monitor.set(state.monitor.clone());
     audio
         .forward_pcm
@@ -849,6 +860,18 @@ fn run_session(
     );
     let mut last_valid = Instant::now();
     let mut last_stats = Instant::now();
+    #[cfg(all(feature = "hid-drop-experiment", feature = "feedback-timing-trace"))]
+    let mut logged_expirations = 0;
+    #[cfg(all(
+        feature = "idle-feedback-experiment",
+        feature = "feedback-timing-trace"
+    ))]
+    let mut logged_idle_resumes = 0;
+    #[cfg(all(
+        feature = "paired-feedback-experiment",
+        feature = "feedback-timing-trace"
+    ))]
+    let mut logged_sweeps = 0;
     let mut last_hidhide_check = Instant::now();
     let mut old_blocks = 0;
     let mut old_outputs = 0;
@@ -1030,6 +1053,65 @@ fn run_session(
                 .fetch_add(outputs.saturating_sub(old_outputs), Ordering::Relaxed);
             old_blocks = blocks;
             old_outputs = outputs;
+            #[cfg(all(feature = "hid-drop-experiment", feature = "feedback-timing-trace"))]
+            {
+                let stats = &audio.stats;
+                let expired = stats.expired_reports.load(Ordering::Acquire);
+                if expired != logged_expirations {
+                    state.log(format!(
+                        "[hid-drop-experiment] expired_reports={expired} skipped_pcm_frames={} skipped_haptic_frames={}",
+                        stats.skipped_pcm_frames.load(Ordering::Relaxed),
+                        stats.skipped_haptic_frames.load(Ordering::Relaxed),
+                    ));
+                    logged_expirations = expired;
+                }
+            }
+            #[cfg(all(
+                feature = "idle-feedback-experiment",
+                feature = "feedback-timing-trace"
+            ))]
+            {
+                let stats = &audio.stats;
+                let resumes = stats.idle_data_resumes.load(Ordering::Relaxed);
+                if resumes != logged_idle_resumes {
+                    state.log(format!(
+                        "[idle-feedback-experiment] data_resumes={resumes} silent_reports_elided={}",
+                        stats.idle_reports_elided.load(Ordering::Relaxed),
+                    ));
+                    logged_idle_resumes = resumes;
+                }
+            }
+            #[cfg(all(
+                feature = "paired-feedback-experiment",
+                feature = "feedback-timing-trace"
+            ))]
+            {
+                let stats = &audio.stats;
+                let sweeps = stats.completed_sweeps.load(Ordering::Acquire);
+                if sweeps != logged_sweeps {
+                    state.log(format!(
+                        "[paired-sweep] sweep={sweeps} paired_reports={} microphone_enabled={} device_buffer={}",
+                        stats.last_sweep_pairs.load(Ordering::Relaxed),
+                        cfg.microphone_enabled,
+                        state.paired_device_buffer.load(Ordering::Relaxed),
+                    ));
+                    logged_sweeps = sweeps;
+                }
+            }
+            #[cfg(feature = "feedback-timing-trace")]
+            if let Some(t) = audio
+                .sweep_trace
+                .lock()
+                .ok()
+                .and_then(|mut trace| trace.take())
+            {
+                state.log(format!(
+                    "[feedback-timing-trace] sweep={} attempts={} pairs={} failed={} writes_over_budget={} gaps_over_budget={} max_write_us={} write_report={} write_id=0x{:02X} max_gap_us={} max_gap_late_us={} gap_expected_us={} gap_after_report={}",
+                    t.number, t.attempts, t.paired, t.failed, t.write_over_budget, t.gap_over_budget,
+                    t.max_write_us, t.max_write_report, t.max_write_id, t.max_gap_us, t.max_gap_late_us,
+                    t.max_gap_expected_us, t.max_gap_after_report,
+                ));
+            }
             last_stats = Instant::now();
             if diagnostic.elapsed() >= Duration::from_secs(60) {
                 state.log_message(crate::i18n::MessageId::bridge_microphone_audio_flags_header_opus_packets_decoded, crate::tr!(bridge_microphone_audio_flags_header_opus_packets_decoded, flags = crate::i18n_arg!(state.monitor.mic_tagged.load(Ordering::Relaxed)), header = format!("{:02X}", state.monitor.mic_prefix.load(Ordering::Relaxed)), packets = crate::i18n_arg!(state.monitor.mic_packets.load(Ordering::Relaxed)), samples = crate::i18n_arg!(state.monitor.mic_samples.load(Ordering::Relaxed)), frames = crate::i18n_arg!(state.monitor.mic_usb_frames.load(Ordering::Relaxed))));
@@ -1095,6 +1177,10 @@ fn run_session(
                             crate::i18n_arg!(audio.haptics.overflow_drops.load(Ordering::Relaxed))
                     ),
                 );
+                #[cfg(all(feature = "paired-feedback-experiment", feature = "feedback-timing-trace"))]
+                state.log(format!("[paired-feedback-experiment] paired_reports={} output_reports={} media_blocks={}",
+                    stats.paired_reports.load(Ordering::Relaxed), outputs, blocks,
+                ));
                 diagnostic = Instant::now();
             }
         }

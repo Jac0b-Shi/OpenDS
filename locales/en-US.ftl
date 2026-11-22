@@ -736,3 +736,13 @@ bridge-bluetooth-enable-failed = Could not turn on Bluetooth. Check radio permis
 gui-multimedia-priority = Prioritize audio and haptics
 
 config-version-invalid = Unsupported configuration file version.
+
+gui-paired-device-buffer = Paired device buffer (applies immediately)
+settings-device-connection = Device and connection
+settings-audio-microphone = Audio and microphone
+settings-haptic-buffer = Haptics and buffering
+settings-feedback-tests = Feedback tests
+settings-language-appearance = Language and appearance
+settings-startup-tray = Startup and tray
+settings-notifications = Notifications
+settings-microphone-gain = Microphone gain

@@ -66,7 +66,7 @@ impl fmt::Display for ThemeMode {
 }
 
 /// 配置项，对应配置结构布局。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub commands: crate::commands::Settings,
     /// 本机 USB/IP 监听端口，默认 3241，避免占用其他 USB/IP 服务。
@@ -93,7 +93,10 @@ pub struct Config {
     pub usb_face: u8,
     pub auto_start: bool,
     pub enable_bluetooth: bool,
+    /// 音频/震动线程的 Windows 多媒体调度优先级，默认开启，更改后重启桥接生效。
     pub multimedia_priority: bool,
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub paired_device_buffer: u8,
     pub battery_threshold: u8,
     pub language: String,
     pub theme: ThemeMode,
@@ -140,7 +143,9 @@ impl Default for Config {
             usb_face: 0,
             auto_start: false,
             enable_bluetooth: false,
-            multimedia_priority: false,
+            multimedia_priority: true,
+            #[cfg(feature = "paired-feedback-experiment")]
+            paired_device_buffer: Self::DEFAULT_PAIRED_DEVICE_BUFFER,
             battery_threshold: 20,
             language: "auto".into(),
             theme: ThemeMode::System,
@@ -172,8 +177,15 @@ impl Config {
     pub const DEFAULT_HEADPHONE_VOLUME: u8 = 63;
     pub const MAX_HEADPHONE_VOLUME: u8 = 127;
 
-    /// 按原始实现的规则钳制所有字段。
+    #[cfg(feature = "paired-feedback-experiment")]
+    pub const DEFAULT_PAIRED_DEVICE_BUFFER: u8 = 96;
+
+    /// 将配置值限制在支持的范围内。
     pub fn clamp(&mut self) {
+        #[cfg(feature = "paired-feedback-experiment")]
+        if !(16..=128).contains(&self.paired_device_buffer) || self.paired_device_buffer % 8 != 0 {
+            self.paired_device_buffer = Self::DEFAULT_PAIRED_DEVICE_BUFFER;
+        }
         if self.port == 0 {
             self.port = 3241;
         }
@@ -306,6 +318,8 @@ impl Config {
                 "edge_as_ds" => boolean!(edge_as_ds),
                 "usb_face" => number!(usb_face),
                 "multimedia_priority" => boolean!(multimedia_priority),
+                #[cfg(feature = "paired-feedback-experiment")]
+                "paired_device_buffer" => number!(paired_device_buffer),
                 "enable_bluetooth" => boolean!(enable_bluetooth),
                 "battery_threshold" => number!(battery_threshold),
                 "auto_start" => boolean!(auto_start),
@@ -420,6 +434,8 @@ impl Config {
             s.push_str(&format!("command_{key}={value}\n"));
         }
         macro_rules! fields { ($($field:ident),+) => { $(s.push_str(&format!("{}={}\n", stringify!($field), self.$field));)+ }; }
+        #[cfg(feature = "paired-feedback-experiment")]
+        fields!(paired_device_buffer);
         fields!(
             port,
             buffer,
@@ -516,6 +532,21 @@ impl fmt::Display for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "paired-feedback-experiment")]
+    #[test]
+    fn paired_buffer_accepts_each_slider_step_and_preserves_legacy_depths() {
+        for depth in (16..=128).step_by(8) {
+            let config = Config::parse(&format!("paired_device_buffer={depth}")).unwrap();
+            assert_eq!(config.paired_device_buffer, depth);
+        }
+        for depth in [0, 17, 136, 255] {
+            let config = Config::parse(&format!("paired_device_buffer={depth}")).unwrap();
+            assert_eq!(
+                config.paired_device_buffer,
+                Config::DEFAULT_PAIRED_DEVICE_BUFFER
+            );
+        }
+    }
     #[test]
     fn dependency_directories_round_trip_reset_and_reject_ini_injection() {
         let path = std::env::temp_dir().join(format!(

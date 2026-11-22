@@ -22,7 +22,11 @@ fluent-syntax = "0.12"
 unic-langid = { version = "0.9", features = ["likelysubtags"] }
 
 [features]
-default = []
+default = ["paired-feedback-experiment"]
+hid-drop-experiment = []
+idle-feedback-experiment = ["hid-drop-experiment"]
+paired-feedback-experiment = ["idle-feedback-experiment"]
+feedback-timing-trace = []
 # 把 libopus 编译进二进制，运行时不再需要 libopus-0.dll。
 # 代价：构建期需要 C 编译器与 CMake。
 bundled-opus = ["dep:opusic-sys"]

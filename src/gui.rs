@@ -78,6 +78,8 @@ struct Controls {
     headphone: nwg::TextInput,
     fallback: nwg::TextInput,
     multimedia_priority: nwg::CheckBox,
+    #[cfg(feature = "paired-feedback-experiment")]
+    paired_device_buffer: nwg::TrackBar,
     headphone_override: nwg::CheckBox,
     haptic_gain: nwg::ComboBox<String>,
     mic_gain: nwg::TrackBar,
@@ -117,6 +119,7 @@ struct App {
     devices: RefCell<Vec<String>>,
     mic_buffers: Vec<u16>,
     languages: RefCell<Vec<crate::i18n::Language>>,
+    saved_login: Cell<bool>,
     initial_language: String,
     language_files_changed: Cell<bool>,
     exiting: Cell<bool>,
@@ -221,6 +224,7 @@ impl App {
             devices: RefCell::new(vec![]),
             mic_buffers: vec![],
             languages: RefCell::new(vec![]),
+            saved_login: Cell::new(crate::startup::enabled().unwrap_or(false)),
             initial_language: cfg.language.clone(),
             language_files_changed: Cell::new(false),
             exiting: Cell::new(false),
@@ -259,9 +263,23 @@ impl App {
             .build(&mut a.ui.taskbar_icon)
             .map_err(|e| e.to_string())?;
         let build = (|| -> Result<(), nwg::NwgError> {
+            let mut work: RECT = unsafe { std::mem::zeroed() };
+            unsafe {
+                SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as _, 0);
+            }
+            let available = (work.right - work.left, work.bottom - work.top);
+            let size = (
+                theme::px(1180, dpi)
+                    .min((available.0 - theme::px(24, dpi)).max(theme::px(860, dpi))),
+                theme::px(800, dpi)
+                    .min((available.1 - theme::px(54, dpi)).max(theme::px(660, dpi))),
+            );
             nwg::Window::builder()
-                .size((theme::px(980, dpi), theme::px(720, dpi)))
-                .position((theme::px(80, dpi), theme::px(60, dpi)))
+                .size(size)
+                .position((
+                    work.left + (available.0 - size.0).max(0) / 2,
+                    work.top + (available.1 - size.1 - theme::px(40, dpi)).max(0) / 2,
+                ))
                 .title(if smoke { "OpenDS · UI test" } else { "OpenDS" })
                 .flags(
                     nwg::WindowFlags::WINDOW
@@ -389,7 +407,7 @@ impl App {
             cb!(
                 start_on_login,
                 crate::tr!(gui_run_in_the_tray_at_windows_sign),
-                crate::startup::enabled().unwrap_or(false)
+                a.saved_login.get()
             );
             cb!(
                 reconnect,
@@ -495,6 +513,13 @@ impl App {
                 )
                 .selected_index(Some(usize::from(cfg.haptics_gain - 10)))
                 .build(&mut ui.haptic_gain)?;
+            #[cfg(feature = "paired-feedback-experiment")]
+            nwg::TrackBar::builder()
+                .parent(window)
+                .range(Some(2..16))
+                .pos(Some(usize::from(cfg.paired_device_buffer / 8)))
+                .background_color(None)
+                .build(&mut ui.paired_device_buffer)?;
             let mut mic_buffers = vec![
                 16u16,
                 24,
@@ -714,6 +739,8 @@ impl App {
             &self.headphone.handle,
             &self.fallback.handle,
             &self.multimedia_priority.handle,
+            #[cfg(feature = "paired-feedback-experiment")]
+            &self.paired_device_buffer.handle,
             &self.headphone_override.handle,
             &self.haptic_gain.handle,
             &self.mic_gain.handle,
@@ -833,6 +860,130 @@ impl App {
                 .as_ref()
                 .is_some_and(|view| view.visible())
     }
+    // Painting and native child placement share the same logical coordinates.
+    fn settings_layout(
+        &self,
+        x: i32,
+        width: i32,
+        height: i32,
+        mut control: impl FnMut(&nwg::ControlHandle, i32, i32, i32, i32),
+        mut card: impl FnMut(i32, i32, i32, i32, &str),
+        mut label: impl FnMut(i32, i32, i32, &str),
+    ) {
+        let y = |row: i32| 100 + (row - 100) * (height - 172).clamp(475, 660) / 488;
+        let mut group =
+            |left, top, w, bottom, title| card(left, y(top), w, y(bottom) - y(top), title);
+        let mut put = |h: &nwg::ControlHandle, left, top, w, ht| control(h, left, y(top), w, ht);
+        let mut caption = |left, top, w, title: &str| label(left, y(top), w, title);
+        if self.page.get() == 5 {
+            let inner = width - 32;
+            let left = x + 16;
+            let field = left + inner / 3;
+            let fw = inner - inner / 3;
+            let half = (inner - 12) / 2;
+            group(x, 100, width, 259, crate::tr!(settings_language_appearance));
+            caption(left, 145, inner / 3, crate::tr!(language_label));
+            put(&self.language.handle, field, 145, fw, 220);
+            put(&self.import_language.handle, field, 176, (fw - 8) / 2, 28);
+            put(
+                &self.language_folder.handle,
+                field + (fw + 8) / 2,
+                176,
+                (fw - 8) / 2,
+                28,
+            );
+            caption(left, 211, inner / 3, crate::tr!(appearance_label));
+            put(&self.theme_choice.handle, field, 211, fw, 150);
+            put(&self.language_notice.handle, left, 237, inner, 20);
+            group(x, 275, width, 493, crate::tr!(settings_startup_tray));
+            put(&self.auto_start.handle, left, 318, inner, 26);
+            put(&self.start_on_login.handle, left, 347, inner, 26);
+            caption(left, 377, inner / 3, crate::tr!(gui_on_close));
+            put(&self.close_action.handle, field, 377, fw, 150);
+            put(&self.enable_bluetooth.handle, left, 408, inner, 26);
+            put(&self.desktop_shortcut.handle, left, 448, half, 30);
+            put(&self.menu_shortcut.handle, left + half + 12, 448, half, 30);
+            group(x, 509, width, 588, crate::tr!(settings_notifications));
+            caption(left, 553, inner - 72, crate::tr!(gui_battery_threshold));
+            put(
+                &self.battery_threshold.handle,
+                left + inner - 64,
+                552,
+                64,
+                26,
+            );
+            return;
+        }
+        let lw = (width - 16) * 46 / 100;
+        let right = x + lw + 16;
+        let rw = width - lw - 16;
+        let l = x + 16;
+        let r = right + 16;
+        let li = lw - 32;
+        let ri = rw - 32;
+        group(x, 100, lw, 314, crate::tr!(settings_device_connection));
+        caption(l, 142, li, crate::tr!(gui_physical_controller));
+        put(&self.device.handle, l, 165, li, 240);
+        put(&self.reconnect.handle, l, 194, li, 26);
+        put(&self.hide.handle, l, 222, li, 26);
+        put(&self.multimedia_priority.handle, l, 250, li, 26);
+        caption(l, 281, li - 64, crate::tr!(gui_local_service_port));
+        put(&self.port.handle, l + li - 64, 279, 64, 26);
+        group(x, 330, lw, 494, crate::tr!(settings_haptic_buffer));
+        put(&self.haptics.handle, l, 370, li, 25);
+        caption(l, 398, li / 2, crate::tr!(gui_haptics_strength));
+        put(&self.haptic_gain.handle, l + li / 2, 398, li - li / 2, 240);
+        #[cfg(feature = "paired-feedback-experiment")]
+        {
+            caption(l, 427, li - 36, crate::tr!(gui_paired_device_buffer));
+            caption(
+                l + li - 32,
+                427,
+                32,
+                &(self.paired_device_buffer.pos() * 8).to_string(),
+            );
+            put(&self.paired_device_buffer.handle, l, 448, li, 19);
+        }
+        caption(
+            l,
+            468,
+            li - 52,
+            crate::tr!(gui_speaker_haptics_buffer_blocks),
+        );
+        put(&self.buffer.handle, l + li - 48, 466, 48, 24);
+        group(right, 100, rw, 494, crate::tr!(settings_audio_microphone));
+        put(&self.audio.handle, r, 143, ri, 26);
+        put(&self.microphone.handle, r, 175, ri - 102, 26);
+        put(&self.audio_test.handle, r + ri - 100, 174, 100, 28);
+        caption(r, 209, ri, crate::tr!(settings_microphone_gain));
+        put(&self.mic_gain.handle, r, 232, ri - 66, 22);
+        caption(
+            r + ri - 58,
+            232,
+            58,
+            &format!("+{} dB", self.mic_gain.pos()),
+        );
+        caption(r, 262, ri, crate::tr!(gui_audio_output));
+        put(&self.route.handle, r, 285, ri, 160);
+        put(&self.headphone_override.handle, r, 322, ri - 55, 28);
+        put(&self.headphone.handle, r + ri - 50, 322, 50, 26);
+        caption(r, 359, ri - 55, crate::tr!(gui_headphone_fallback));
+        put(&self.fallback.handle, r + ri - 50, 358, 50, 26);
+        caption(r, 396, ri - 55, crate::tr!(gui_speaker_volume_0_255));
+        put(&self.speaker.handle, r + ri - 50, 395, 50, 26);
+        caption(r, 433, ri, crate::tr!(gui_microphone_safety_buffer_ms));
+        put(&self.mic_buffer.handle, r, 456, ri, 220);
+        group(x, 510, width, 588, crate::tr!(settings_feedback_tests));
+        let half = (width - 44) / 2;
+        put(&self.native_haptics_test.handle, l, 552, half, 28);
+        put(
+            &self.classic_rumble_test.handle,
+            l + half + 12,
+            552,
+            half,
+            28,
+        );
+    }
     fn layout(&self) {
         self.refresh_battery(true);
         let (w, h) = self.dimensions();
@@ -910,59 +1061,12 @@ impl App {
                 );
             }
             1 => {}
-            2 => {
-                put(&self.device.handle, x + 24, 158, cw - 48, 240);
-                put(&self.audio.handle, x + 24, 221, cw / 2 - 32, 28);
-                put(&self.haptics.handle, x + cw / 2, 221, cw / 2 - 24, 28);
-                put(&self.microphone.handle, x + 24, 258, cw / 2 - 32, 28);
-                put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
-                put(&self.headphone_override.handle, x + cw - 370, 288, 282, 30);
-                put(&self.fallback.handle, x + cw - 80, 321, 56, 28);
-                put(&self.headphone.handle, x + cw - 80, 288, 56, 30);
-                put(&self.route.handle, x + 24, 353, cw - 48, 180);
-                put(&self.speaker.handle, x + 24, 400, cw / 3 - 40, 34);
-                put(
-                    &self.haptic_gain.handle,
-                    x + cw / 3 + 8,
-                    400,
-                    cw / 3 - 32,
-                    240,
-                );
-                put(&self.mic_gain.handle, x + 2 * cw / 3, 400, cw / 3 - 24, 34);
-                put(&self.port.handle, x + 24, 464, cw / 3 - 40, 34);
-                put(&self.buffer.handle, x + cw / 3 + 8, 464, cw / 3 - 32, 34);
-                put(
-                    &self.mic_buffer.handle,
-                    x + 2 * cw / 3,
-                    464,
-                    cw / 3 - 24,
-                    220,
-                );
-                put(&self.reconnect.handle, x + 24, 504, cw / 2 - 24, 27);
-                put(
-                    &self.multimedia_priority.handle,
-                    x + cw / 2,
-                    504,
-                    cw / 2 - 24,
-                    27,
-                );
-                put(&self.hide.handle, x + 24, 532, cw - 48, 27);
-                put(
-                    &self.native_haptics_test.handle,
-                    x + 24,
-                    564,
-                    cw / 2 - 30,
-                    30,
-                );
-                put(
-                    &self.classic_rumble_test.handle,
-                    x + cw / 2 + 6,
-                    564,
-                    cw / 2 - 30,
-                    30,
-                );
-                put(&self.refresh.handle, x, h - 62, 136, 38);
-                put(&self.save.handle, w - 176, h - 62, 144, 38);
+            2 | 5 => {
+                self.settings_layout(x, cw, h, &mut put, |_, _, _, _, _| {}, |_, _, _, _| {});
+                if page == 2 {
+                    put(&self.refresh.handle, x, h - 54, 136, 36);
+                }
+                put(&self.save.handle, w - 176, h - 54, 144, 36);
             }
             3 => {
                 put(&self.active.handle, x + 24, 176, cw - 48, 28);
@@ -1002,22 +1106,7 @@ impl App {
                 put(&self.install_status.handle, x + 24, 439, cw - 48, 54);
                 put(&self.logs.handle, x + 24, 554, cw - 48, (h - 602).max(52));
             }
-            _ => {
-                put(&self.language.handle, x + 24, 164, cw - 48, 240);
-                let half = (cw - 64) / 2;
-                put(&self.import_language.handle, x + 24, 208, half, 32);
-                put(&self.language_folder.handle, x + 40 + half, 208, half, 32);
-                put(&self.language_notice.handle, x + 24, 250, cw - 48, 28);
-                put(&self.theme_choice.handle, x + 24, 312, 280, 240);
-                put(&self.auto_start.handle, x + 24, 352, cw - 48, 28);
-                put(&self.start_on_login.handle, x + 24, 386, cw - 48, 28);
-                put(&self.close_action.handle, x + 24, 454, 280, 220);
-                put(&self.enable_bluetooth.handle, x + 24, 542, cw - 48, 28);
-                put(&self.battery_threshold.handle, x + cw - 80, 578, 56, 28);
-                put(&self.desktop_shortcut.handle, x + 24, 502, half, 30);
-                put(&self.menu_shortcut.handle, x + 40 + half, 502, half, 30);
-                put(&self.save.handle, w - 176, h - 62, 144, 38);
-            }
+            _ => {}
         }
         let all: Vec<_> = self
             .all()
@@ -1026,6 +1115,9 @@ impl App {
             .map(theme::hwnd)
             .collect();
         self.placement.borrow_mut().apply(&all, &wanted, dpi);
+        if matches!(page, 2 | 5) {
+            self.refresh_save_button();
+        }
         unsafe {
             if let Some(tip) = self.battery_tip.borrow_mut().as_mut() {
                 let rect = if page == 0 {
@@ -1221,57 +1313,40 @@ impl App {
                 }
             }
             1 => {}
-            2 => {
-                card(x, 112, cw, 490);
-                theme::text(
-                    dc,
-                    &rect(x + 24, 321, cw - 124, 28),
-                    crate::tr!(gui_headphone_fallback),
-                    &f.small,
-                    theme::palette().muted,
-                    DT_LEFT | DT_WORDBREAK,
-                );
-                for (left, y, width, s) in [
-                    (x + 24, 130, cw - 48, crate::tr!(gui_physical_controller)),
-                    (x + 24, 296, cw - 402, crate::tr!(gui_audio_output)),
-                    (
-                        x + 24,
-                        376,
-                        cw / 3 - 40,
-                        crate::tr!(gui_speaker_volume_0_255),
-                    ),
-                    (
-                        x + cw / 3 + 8,
-                        376,
-                        cw / 3 - 32,
-                        crate::tr!(gui_haptics_strength),
-                    ),
-                    (
-                        x + 2 * cw / 3,
-                        376,
-                        cw / 3 - 24,
-                        &crate::tr!(
-                            gui_microphone_db_0_50,
-                            gain = crate::i18n_arg!(self.mic_gain.pos())
-                        ),
-                    ),
-                    (x + 24, 432, cw / 3 - 40, crate::tr!(gui_local_service_port)),
-                    (
-                        x + cw / 3 + 8,
-                        432,
-                        cw / 3 - 32,
-                        crate::tr!(gui_speaker_haptics_buffer_blocks),
-                    ),
-                    (
-                        x + 2 * cw / 3,
-                        432,
-                        cw / 3 - 24,
-                        crate::tr!(gui_microphone_safety_buffer_ms),
-                    ),
-                ] {
-                    text(left, y, width, 24, s, &f.small, theme::palette().muted);
-                }
-            }
+            2 | 5 => self.settings_layout(
+                x,
+                cw,
+                h,
+                |_, _, _, _, _| {},
+                |left, top, width, height, title| {
+                    card(left, top, width, height);
+                    text(
+                        left + 16,
+                        top + 8,
+                        width - 32,
+                        24,
+                        title,
+                        &f.strong,
+                        theme::palette().text,
+                    );
+                    theme::fill(
+                        dc,
+                        &rect(left + 16, top + 36, width - 32, 1),
+                        theme::palette().line,
+                    );
+                },
+                |left, top, width, label| {
+                    text(
+                        left,
+                        top,
+                        width,
+                        24,
+                        label,
+                        &f.small,
+                        theme::palette().muted,
+                    )
+                },
+            ),
             3 => {
                 card(x, 112, cw, 448);
                 text(
@@ -1315,45 +1390,7 @@ impl App {
                     theme::palette().text,
                 );
             }
-            _ => {
-                card(x, 112, cw, 505);
-                text(
-                    x + 24,
-                    578,
-                    cw - 118,
-                    28,
-                    crate::tr!(gui_battery_threshold),
-                    &f.body,
-                    theme::palette().text,
-                );
-                text(
-                    x + 24,
-                    130,
-                    cw - 48,
-                    24,
-                    crate::tr!(language_label),
-                    &f.strong,
-                    theme::palette().text,
-                );
-                text(
-                    x + 24,
-                    426,
-                    cw - 48,
-                    24,
-                    crate::tr!(gui_on_close),
-                    &f.strong,
-                    theme::palette().text,
-                );
-                text(
-                    x + 24,
-                    284,
-                    cw - 48,
-                    24,
-                    crate::tr!(appearance_label),
-                    &f.strong,
-                    theme::palette().text,
-                );
-            }
+            _ => {}
         }
         EndPaint(hwnd, &ps);
     }
@@ -1631,7 +1668,7 @@ impl App {
         Ok(())
     }
     fn read_config(&self) -> Result<Config, String> {
-        let mut c = self.config.borrow().clone();
+        let mut c = self.read_form()?;
         // The command editor saves independently from the general settings form.
         let monitor = self.controller.borrow().state.monitor.clone();
         c.commands = monitor
@@ -1641,6 +1678,19 @@ impl App {
             .map_err(|_| crate::tr!(monitor_monitor_cache_unavailable))?
             .settings
             .clone();
+        Ok(c)
+    }
+    fn refresh_save_button(&self) {
+        let changed = checked(&self.start_on_login) != self.saved_login.get()
+            || self
+                .read_form()
+                .map_or(true, |form| form != *self.config.borrow());
+        if self.save.enabled() != changed {
+            self.save.set_enabled(changed);
+        }
+    }
+    fn read_form(&self) -> Result<Config, String> {
+        let mut c = self.config.borrow().clone();
         c.port = self
             .port
             .text()
@@ -1855,7 +1905,9 @@ impl App {
         if crate::startup::enabled()? != startup {
             crate::startup::set_enabled(startup)?;
         }
+        self.saved_login.set(startup);
         *self.config.borrow_mut() = c.clone();
+        self.refresh_save_button();
         Ok(c)
     }
     fn start_bridge(&self) {
@@ -2360,6 +2412,37 @@ impl App {
             }
             return;
         }
+        #[cfg(feature = "paired-feedback-experiment")]
+        if matches!(event, E::OnHorizontalScroll | E::TrackBarUpdated)
+            && handle == self.paired_device_buffer
+        {
+            let depth = (self.paired_device_buffer.pos().clamp(2, 16) * 8) as u8;
+            let state = self.controller.borrow().state.clone();
+            state.paired_device_buffer.store(depth, Ordering::Relaxed);
+            unsafe {
+                InvalidateRect(theme::hwnd(&self.window.handle), std::ptr::null(), 0);
+                if event == E::OnHorizontalScroll && GetKeyState(VK_LBUTTON) < 0 {
+                    return;
+                }
+            }
+            let previous = self.config.borrow().paired_device_buffer;
+            if depth != previous {
+                let saved = Config::load(&self.path).and_then(|mut config| {
+                    config.paired_device_buffer = depth;
+                    config.save(&self.path)
+                });
+                if let Err(error) = saved {
+                    self.paired_device_buffer.set_pos(usize::from(previous / 8));
+                    state
+                        .paired_device_buffer
+                        .store(previous, Ordering::Relaxed);
+                    self.error(error);
+                } else {
+                    self.config.borrow_mut().paired_device_buffer = depth;
+                }
+            }
+            return;
+        }
         if event == E::OnComboxBoxSelection && handle == self.mic_buffer {
             let ms = selected_mic_buffer(&self.mic_buffer, &self.mic_buffers);
             let result = Config::load(&self.path).and_then(|mut c| {
@@ -2428,6 +2511,41 @@ impl App {
                     .store(db as u32, Ordering::Relaxed);
             }
             return;
+        }
+        if matches!(self.page.get(), 2 | 5)
+            && (event == E::OnTextInput
+                && [
+                    &self.port.handle,
+                    &self.buffer.handle,
+                    &self.speaker.handle,
+                    &self.headphone.handle,
+                    &self.fallback.handle,
+                    &self.battery_threshold.handle,
+                ]
+                .contains(&&handle)
+                || event == E::OnComboxBoxSelection
+                    && [
+                        &self.device.handle,
+                        &self.route.handle,
+                        &self.haptic_gain.handle,
+                    ]
+                    .contains(&&handle)
+                || event == E::OnButtonClick
+                    && [
+                        &self.reconnect.handle,
+                        &self.hide.handle,
+                        &self.multimedia_priority.handle,
+                        &self.audio.handle,
+                        &self.microphone.handle,
+                        &self.haptics.handle,
+                        &self.headphone_override.handle,
+                        &self.auto_start.handle,
+                        &self.start_on_login.handle,
+                        &self.enable_bluetooth.handle,
+                    ]
+                    .contains(&&handle))
+        {
+            self.refresh_save_button();
         }
         if event == E::OnTooltipText {
             let state = self.controller.borrow().state.clone();
