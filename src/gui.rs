@@ -2537,6 +2537,9 @@ impl App {
             return;
         }
         if let Some(i) = self.nav.iter().position(|b| handle == *b) {
+            if i == usize::from(self.page.get()) {
+                return;
+            }
             if i != 2 {
                 if let Some(d) = self.audio_test_view.borrow().as_ref() {
                     d.hide();
