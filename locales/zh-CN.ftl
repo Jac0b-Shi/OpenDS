@@ -235,7 +235,7 @@ bridge-diagnostics-full-input-simple-input-gyro-game = 诊断：完整输入={ $
 # Parameters: $bytes, $rejected, $nonzero, $failures
 bridge-audio-batches-max-b-rejected-nonzero-encoding = 音频批次：最大={ $bytes }B 拒绝={ $rejected } 非零={ $nonzero } 编码失败={ $failures }
 # Parameters: $mmcss, $wake, $encode, $write, $pcm_contention, $pcm_overflow, $haptics_contention, $haptics_overflow
-bridge-feedback-metrics = 反馈：MMCSS={ $mmcss } 唤醒最大={ $wake }µs 编码最大={ $encode }µs HID写入最大={ $write }µs；PCM争用={ $pcm_contention } 溢出={ $pcm_overflow } 触觉争用={ $haptics_contention } 溢出={ $haptics_overflow }
+bridge-feedback-metrics = 反馈：MMCSS={ $mmcss } 唤醒最大={ $wake }µs 编码最大={ $encode }µs HID写入最大={ $write }µs；PCM争用={ $pcm_contention } 溢出={ $pcm_overflow } 触觉争用={ $haptics_contention } 溢出={ $haptics_overflow }；超过一个周期的写入：组合报告 { $slow_audio }，其他报告 { $slow_control }
 
 ## config
 

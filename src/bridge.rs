@@ -1067,6 +1067,10 @@ fn run_session(
                         wake = crate::i18n_arg!(stats.wake_max_us.swap(0, Ordering::Relaxed)),
                         encode = crate::i18n_arg!(stats.encode_max_us.swap(0, Ordering::Relaxed)),
                         write = crate::i18n_arg!(stats.write_max_us.swap(0, Ordering::Relaxed)),
+                        slow_audio =
+                            crate::i18n_arg!(stats.slow_audio_writes.swap(0, Ordering::Relaxed)),
+                        slow_control =
+                            crate::i18n_arg!(stats.slow_control_writes.swap(0, Ordering::Relaxed)),
                         pcm_contention =
                             crate::i18n_arg!(audio.pcm.contention_drops.load(Ordering::Relaxed)),
                         pcm_overflow =

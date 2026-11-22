@@ -117,6 +117,8 @@ pub struct AudioStats {
     pub wake_max_us: AtomicU64,
     pub encode_max_us: AtomicU64,
     pub write_max_us: AtomicU64,
+    pub slow_control_writes: AtomicU64,
+    pub slow_audio_writes: AtomicU64,
     pub mmcss_active: AtomicBool,
     pub resets: AtomicU64,
     pub ready: AtomicBool,
@@ -340,6 +342,7 @@ impl OutputSink for HidDevice {
     }
 }
 
+const OUTPUT_PERIOD: Duration = Duration::from_nanos(10_666_667); // 512 frames at 48 kHz
 const FEEDBACK_TEST_DURATION: Duration = Duration::from_secs(1);
 const HAPTICS_TEST_FRAMES: usize = audio::SAMPLE_RATE as usize / audio::HAPTICS_DECIMATION;
 
@@ -403,9 +406,18 @@ impl<S: OutputSink> OutputSink for TimedSink<S> {
     fn write(&self, report: &[u8]) -> bool {
         let start = Instant::now();
         let ok = self.sink.write(report);
+        let elapsed = start.elapsed();
         self.stats
             .write_max_us
-            .fetch_max(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+            .fetch_max(elapsed.as_micros() as u64, Ordering::Relaxed);
+        if elapsed >= OUTPUT_PERIOD {
+            let counter = if report.first() == Some(&audio::REPORT_ID_COMBINED) {
+                &self.stats.slow_audio_writes
+            } else {
+                &self.stats.slow_control_writes
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
         ok
     }
 }
@@ -436,7 +448,7 @@ fn spawn_with_sink<S: OutputSink>(
             {
                 stats.encode_fail.fetch_add(1, Ordering::Relaxed);
             }
-            let period = Duration::from_secs_f64(512.0 / 48000.0);
+            let period = OUTPUT_PERIOD;
             let mut tick = Instant::now();
             let (mut seq, mut counter) = (1u8, 0u8);
             let (mut primed, mut needs_prime) = (false, true);
