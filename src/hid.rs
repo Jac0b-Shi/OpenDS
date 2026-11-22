@@ -174,7 +174,7 @@ extern "system" {
 pub struct HidDevice {
     handle: *mut c_void,
     read_lock: Mutex<()>,
-    write_lock: Mutex<()>,
+    write_lock: Mutex<Option<(Vec<u8>, IoEvent)>>,
     pub path: String,
     pub vendor_id: u16,
     pub product_id: u16,
@@ -303,7 +303,7 @@ impl HidDevice {
         Some(Self {
             handle,
             read_lock: Mutex::new(()),
-            write_lock: Mutex::new(()),
+            write_lock: Mutex::new(None),
             path: path.to_string(),
             vendor_id: attrs.vendor_id,
             product_id: attrs.product_id,
@@ -365,7 +365,7 @@ impl HidDevice {
     }
 
     pub fn write_result(&self, data: &[u8], timeout_ms: u32) -> io::Result<()> {
-        let _guard = self
+        let mut storage = self
             .write_lock
             .lock()
             .map_err(|_| io::Error::other(crate::tr!(hid_hid_not_opened_for_writing)))?;
@@ -375,10 +375,16 @@ impl HidDevice {
                 crate::tr!(hid_invalid_hid_output_report_length),
             ));
         }
-        let mut padded = vec![0u8; self.output_len as usize];
+        if storage.is_none() {
+            *storage = Some((vec![0u8; self.output_len as usize], self.event()?));
+        }
+        let (padded, event) = storage.as_mut().unwrap();
+        if unsafe { winapi::um::synchapi::ResetEvent(event.0.cast()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        padded[data.len()..].fill(0);
         padded[..data.len()].copy_from_slice(data);
         let mut written = 0u32;
-        let event = self.event()?;
         let mut op = Overlapped {
             internal: 0,
             internal_high: 0,
@@ -583,7 +589,7 @@ mod tests {
         let device = HidDevice {
             handle: client,
             read_lock: Mutex::new(()),
-            write_lock: Mutex::new(()),
+            write_lock: Mutex::new(None),
             path: String::new(),
             vendor_id: 0,
             product_id: 0,

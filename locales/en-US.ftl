@@ -234,6 +234,8 @@ bridge-microphone-audio-flags-header-opus-packets-decoded = Microphone: audio fl
 bridge-diagnostics-full-input-simple-input-gyro-game = Diagnostics: full input={ $full } simple input={ $simple } gyro={ $gyro }; game feedback={ $callbacks } nonzero rumble={ $rumble } native haptics={ $haptics } audio callbacks={ $audio }; flags={ $flags } motors=({ $motor_left }, { $motor_right }) Bluetooth writes={ $outputs } write failures={ $failures }
 # Parameters: $bytes, $rejected, $nonzero, $failures
 bridge-audio-batches-max-b-rejected-nonzero-encoding = Audio batches: max={ $bytes } B rejected={ $rejected } nonzero={ $nonzero } encoding failures={ $failures }
+# Parameters: $mmcss, $wake, $encode, $write, $pcm_contention, $pcm_overflow, $haptics_contention, $haptics_overflow
+bridge-feedback-metrics = Feedback: MMCSS={ $mmcss } wake max={ $wake } µs encode max={ $encode } µs HID write max={ $write } µs; PCM contention={ $pcm_contention } overflow={ $pcm_overflow } haptics contention={ $haptics_contention } overflow={ $haptics_overflow }
 
 ## config
 

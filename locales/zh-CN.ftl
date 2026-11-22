@@ -234,6 +234,8 @@ bridge-microphone-audio-flags-header-opus-packets-decoded = 麦克风：音频�
 bridge-diagnostics-full-input-simple-input-gyro-game = 诊断：完整输入={ $full } 兼容输入={ $simple } 陀螺仪={ $gyro }；游戏反馈={ $callbacks } 非零震动={ $rumble } 原生触觉={ $haptics } 音频回调={ $audio }；最近标志={ $flags } 马达=({ $motor_left }, { $motor_right }) 蓝牙发送={ $outputs } 写失败={ $failures }
 # Parameters: $bytes, $rejected, $nonzero, $failures
 bridge-audio-batches-max-b-rejected-nonzero-encoding = 音频批次：最大={ $bytes }B 拒绝={ $rejected } 非零={ $nonzero } 编码失败={ $failures }
+# Parameters: $mmcss, $wake, $encode, $write, $pcm_contention, $pcm_overflow, $haptics_contention, $haptics_overflow
+bridge-feedback-metrics = 反馈：MMCSS={ $mmcss } 唤醒最大={ $wake }µs 编码最大={ $encode }µs HID写入最大={ $write }µs；PCM争用={ $pcm_contention } 溢出={ $pcm_overflow } 触觉争用={ $haptics_contention } 溢出={ $haptics_overflow }
 
 ## config
 

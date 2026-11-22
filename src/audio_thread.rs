@@ -24,7 +24,8 @@ pub struct PcmBuffer {
     inner: Mutex<Queue>,
     channels: usize,
     limit: usize,
-    pub dropped: AtomicU64,
+    pub contention_drops: AtomicU64,
+    pub overflow_drops: AtomicU64,
 }
 impl PcmBuffer {
     fn new(blocks: usize, channels: usize) -> Self {
@@ -36,16 +37,16 @@ impl PcmBuffer {
             }),
             channels,
             limit,
-            dropped: AtomicU64::new(0),
+            contention_drops: AtomicU64::new(0),
+            overflow_drops: AtomicU64::new(0),
         }
     }
     pub fn push_bytes(&self, bytes: &[u8], generation: u64) {
         if bytes.is_empty() || bytes.len() % (self.channels * 2) != 0 {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
         let Ok(mut q) = self.inner.try_lock() else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.contention_drops.fetch_add(1, Ordering::Relaxed);
             return;
         };
         if generation < q.generation {
@@ -62,7 +63,7 @@ impl PcmBuffer {
             q.samples.drain(..excess);
         }
         if excess > 0 || skip > 0 {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.overflow_drops.fetch_add(1, Ordering::Relaxed);
         }
         q.samples.extend(
             bytes[skip * 2..]
@@ -70,20 +71,32 @@ impl PcmBuffer {
                 .map(|b| i16::from_le_bytes([b[0], b[1]])),
         );
     }
+    #[cfg(test)]
     pub(crate) fn take(&self, generation: u64) -> Option<Vec<i16>> {
-        let mut q = self.inner.lock().ok()?;
+        let mut block = vec![0; audio::FRAMES_PER_BLOCK * self.channels];
+        self.read_into(generation, &mut block).then_some(block)
+    }
+    fn read_into(&self, generation: u64, block: &mut [i16]) -> bool {
+        let Ok(mut q) = self.inner.lock() else {
+            return false;
+        };
         if generation != q.generation {
             if generation > q.generation {
                 q.samples.clear();
                 q.generation = generation;
             }
-            return None;
+            return false;
         }
-        let n = audio::FRAMES_PER_BLOCK * self.channels;
+        let n = block.len();
         if q.samples.len() < n {
-            return None;
+            return false;
         }
-        Some(q.samples.drain(..n).collect())
+        let (first, second) = q.samples.as_slices();
+        let split = first.len().min(n);
+        block[..split].copy_from_slice(&first[..split]);
+        block[split..].copy_from_slice(&second[..n - split]);
+        q.samples.drain(..n);
+        true
     }
 }
 
@@ -101,6 +114,10 @@ pub struct AudioStats {
     pub output_frames: AtomicU64,
     pub write_fail: AtomicU64,
     pub encode_fail: AtomicU64,
+    pub wake_max_us: AtomicU64,
+    pub encode_max_us: AtomicU64,
+    pub write_max_us: AtomicU64,
+    pub mmcss_active: AtomicBool,
     pub resets: AtomicU64,
     pub ready: AtomicBool,
     pub failed: AtomicBool,
@@ -279,23 +296,30 @@ fn encode_observed(
     route: u8,
     mut observe: impl FnMut(&[i16]),
 ) -> Option<[u8; OPUS_BYTES]> {
-    let front = if route == audio::route::SPEAKER {
-        audio::downmix_4_to_2(block, audio::FRAMES_PER_BLOCK)
-    } else {
-        block.chunks_exact(4).flat_map(|c| [c[0], c[1]]).collect()
+    let frames = block.len() / 4;
+    if frames == 0 {
+        return None;
+    }
+    let mut pcm = [0i16; audio::OPUS_FRAMES * 2];
+    let step = frames as f32 / audio::OPUS_FRAMES as f32;
+    let sample = |frame: usize, channel: usize| {
+        let pair = &block[frame * 4..frame * 4 + 2];
+        if route == audio::route::SPEAKER {
+            ((pair[0] as i32 + pair[1] as i32) / 2) as f32
+        } else {
+            pair[channel] as f32
+        }
     };
-    let left: Vec<i16> = front.chunks_exact(2).map(|c| c[0]).collect();
-    let right: Vec<i16> = front.chunks_exact(2).map(|c| c[1]).collect();
-    let l = audio::resample_linear(&left, audio::OPUS_FRAMES);
-    let r = audio::resample_linear(&right, audio::OPUS_FRAMES);
-    let pcm: Vec<i16> = (0..audio::OPUS_FRAMES)
-        .flat_map(|i| {
-            [
-                l.get(i).copied().unwrap_or(0),
-                r.get(i).copied().unwrap_or(0),
-            ]
-        })
-        .collect();
+    for (i, pair) in pcm.chunks_exact_mut(2).enumerate() {
+        let position = i as f32 * step;
+        let index = position as usize;
+        let next = (index + 1).min(frames - 1);
+        let fraction = position - index as f32;
+        for (channel, out) in pair.iter_mut().enumerate() {
+            *out = (sample(index, channel) * (1.0 - fraction) + sample(next, channel) * fraction)
+                as i16;
+        }
+    }
     let mut packet = [0; OPUS_BYTES];
     // 不给短 Opus 包补零；短于 200B 的 CBR 包代表配置或编码错误。
     if encoder.encode(&pcm, &mut packet) == OPUS_BYTES {
@@ -350,6 +374,41 @@ pub fn spawn(
 ) -> std::io::Result<JoinHandle<()>> {
     spawn_with_sink(session, physical, running, cfg)
 }
+#[link(name = "avrt")]
+extern "system" {
+    fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> *mut std::ffi::c_void;
+    fn AvRevertMmThreadCharacteristics(handle: *mut std::ffi::c_void) -> i32;
+}
+struct AudioPriority(std::ptr::NonNull<std::ffi::c_void>);
+impl AudioPriority {
+    fn register() -> Option<Self> {
+        let task = [65, 117, 100, 105, 111, 0]; // L"Audio"
+        let mut index = 0;
+        std::ptr::NonNull::new(unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) })
+            .map(Self)
+    }
+}
+impl Drop for AudioPriority {
+    fn drop(&mut self) {
+        unsafe {
+            AvRevertMmThreadCharacteristics(self.0.as_ptr());
+        }
+    }
+}
+struct TimedSink<S> {
+    sink: Arc<S>,
+    stats: Arc<AudioStats>,
+}
+impl<S: OutputSink> OutputSink for TimedSink<S> {
+    fn write(&self, report: &[u8]) -> bool {
+        let start = Instant::now();
+        let ok = self.sink.write(report);
+        self.stats
+            .write_max_us
+            .fetch_max(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        ok
+    }
+}
 fn spawn_with_sink<S: OutputSink>(
     session: Arc<AudioSession>,
     physical: Arc<S>,
@@ -360,6 +419,17 @@ fn spawn_with_sink<S: OutputSink>(
         .name("opends-output".into())
         .spawn(move || {
             let stats = session.stats.clone();
+            let _priority = cfg
+                .multimedia_priority
+                .then(AudioPriority::register)
+                .flatten();
+            stats
+                .mmcss_active
+                .store(_priority.is_some(), Ordering::Relaxed);
+            let physical = TimedSink {
+                sink: physical,
+                stats: stats.clone(),
+            };
             let mut encoder = LibOpusEncoder::with_complexity(cfg.opus_complexity);
             if encoder.is_none()
                 && (cfg.audio_enabled || cfg.haptics_enabled || cfg.microphone_enabled)
@@ -374,9 +444,11 @@ fn spawn_with_sink<S: OutputSink>(
             let (mut generation, mut revision) = (0, 0);
             let mut game = [0u8; 47];
             let mut failures = 0;
-            let mut pending_pcm = None;
-            let mut pending_haptics = None;
-            let mut light_reset = false;
+            let mut pcm_block = [0; audio::FRAMES_PER_BLOCK * 4];
+            let mut haptic_block = [0; audio::FRAMES_PER_BLOCK * 2];
+            let mut pending_pcm = false;
+            let mut pending_haptics = false;
+            let mut light_reset = true; // Claim the physical Bluetooth lightbar once per connection.
             let mut rumble = audio::RumbleMixer::default();
             let silence = vec![0i16; audio::FRAMES_PER_BLOCK * 4];
             let mut silent_packet = encoder
@@ -390,6 +462,9 @@ fn spawn_with_sink<S: OutputSink>(
             let mut test_primed_audio = false;
             let mut resume_audio = false;
             while running.load(Ordering::Acquire) {
+                stats
+                    .wake_max_us
+                    .fetch_max(tick.elapsed().as_micros() as u64, Ordering::Relaxed);
                 let test = session.feedback_test.load(Ordering::Acquire);
                 let native_test = test == FeedbackTest::NativeHaptics as u8;
                 let classic_test = test == FeedbackTest::ClassicRumble as u8;
@@ -399,8 +474,8 @@ fn spawn_with_sink<S: OutputSink>(
                 if next_gen != generation {
                     generation = next_gen;
                     needs_prime = true;
-                    pending_pcm = None;
-                    pending_haptics = None;
+                    pending_pcm = false;
+                    pending_haptics = false;
                     if let Some(e) = encoder.as_mut() {
                         e.reset();
                         silent_packet = encode_block(e, &silence, audio::route::SPEAKER);
@@ -416,18 +491,15 @@ fn spawn_with_sink<S: OutputSink>(
                         revision = rev;
                     }
                 }
-                let mut pcm = if warmup == 0 || classic_test {
-                    pending_pcm.take().or_else(|| session.pcm.take(generation))
-                } else {
-                    None
-                };
-                let mut native = if warmup == 0 || classic_test {
-                    pending_haptics
-                        .take()
-                        .or_else(|| session.haptics.take(generation))
-                } else {
-                    None
-                };
+                let consume = warmup == 0 || classic_test;
+                let pcm = (consume
+                    && (std::mem::take(&mut pending_pcm)
+                        || session.pcm.read_into(generation, &mut pcm_block)))
+                .then_some(&pcm_block[..]);
+                let native = (consume
+                    && (std::mem::take(&mut pending_haptics)
+                        || session.haptics.read_into(generation, &mut haptic_block)))
+                .then_some(&haptic_block[..]);
                 let has_data = pcm.is_some() || native.is_some();
                 let (mut state, route) =
                     audio_state(&game, &cfg, session.headset.load(Ordering::Relaxed));
@@ -473,8 +545,8 @@ fn spawn_with_sink<S: OutputSink>(
                             needs_prime = false;
                             resume_audio = false;
                             warmup = 8;
-                            pending_pcm = pcm.take();
-                            pending_haptics = native.take();
+                            pending_pcm = pcm.is_some();
+                            pending_haptics = native.is_some();
                         }
                     }
                     if primed {
@@ -518,11 +590,17 @@ fn spawn_with_sink<S: OutputSink>(
                         let packet = if cfg.audio_enabled && !warm {
                             pcm.as_ref().and_then(|p| {
                                 encoder.as_mut().and_then(|e| {
-                                    encode_observed(e, p, route, |samples| {
+                                    let start = Instant::now();
+                                    let encoded = encode_observed(e, p, route, |samples| {
                                         if session.monitor.get().is_some_and(|m| m.wants(1)) {
                                             front.copy_from_slice(samples);
                                         }
-                                    })
+                                    });
+                                    stats.encode_max_us.fetch_max(
+                                        start.elapsed().as_micros() as u64,
+                                        Ordering::Relaxed,
+                                    );
+                                    encoded
                                 })
                             })
                         } else {
@@ -548,7 +626,7 @@ fn spawn_with_sink<S: OutputSink>(
                             }
                         }
                     }
-                } else if classic_test || rev != 0 {
+                } else if light_reset || classic_test || rev != 0 {
                     let mut adapted = game;
                     if cfg.headphone_volume_override {
                         adapted[0] |= ALLOW_HEADPHONE_VOLUME;
@@ -570,7 +648,7 @@ fn spawn_with_sink<S: OutputSink>(
                     if light_reset {
                         adapted[1] |= 8;
                     }
-                    ok = write_hid_state(physical.as_ref(), &adapted, seq);
+                    ok = write_hid_state(&physical, &adapted, seq);
                     if ok {
                         stats.output_frames.fetch_add(1, Ordering::Relaxed);
                     }
@@ -609,13 +687,15 @@ fn spawn_with_sink<S: OutputSink>(
             }
             let mut off = [0u8; 47];
             off[0] = 0x0F;
+            off[1] = 0x04;
+            off[46] = 255; // Restore the idle Bluetooth blue on teardown.
             crate::output::adapt_rumble(&mut off, session.vibration_v2.load(Ordering::Relaxed));
             if !primed
                 || silent_packet.is_none()
                 || session.feedback_test.load(Ordering::Acquire)
                     == FeedbackTest::ClassicRumble as u8
             {
-                let _ = write_hid_state(physical.as_ref(), &off, seq);
+                let _ = write_hid_state(&physical, &off, seq);
                 seq = seq.wrapping_add(1);
             }
             if primed {
@@ -661,6 +741,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         true
+    }
+
+    #[test]
+    fn idle_connection_claims_lightbar_before_game_output() {
+        let session = AudioSession::new(1);
+        let running = Arc::new(AtomicBool::new(true));
+        let sink = Arc::new(PulseSink::default());
+        let worker =
+            spawn_with_sink(session, sink.clone(), running.clone(), Config::default()).unwrap();
+        let wrote = wait_for_output(|| !sink.0.lock().unwrap().is_empty());
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        let reports = sink.0.lock().unwrap();
+        assert!(wrote);
+        assert_eq!(reports[0][0], 0x31);
+        assert_eq!(reports[0][4] & 8, 8);
+        assert_eq!(reports.iter().filter(|r| r[4] & 8 != 0).count(), 1);
     }
 
     #[test]
@@ -737,7 +834,10 @@ mod tests {
                 let stop = &reports[last + 1];
                 assert_eq!(stop[0], audio::REPORT_ID_COMBINED);
                 assert!(stop[78..142].iter().all(|&v| v == 0));
-                assert!(reports[..=last].iter().all(|r| r[0] != 0x31));
+                assert!(reports[..=last]
+                    .iter()
+                    .filter(|r| r[0] == 0x31)
+                    .all(|r| r[4] & 8 != 0 && r[5..7] == [0, 0]));
             }
         }
     }
@@ -977,6 +1077,10 @@ mod tests {
         let r = sink.reports.lock().unwrap();
         let combined: Vec<_> = r.iter().filter(|r| r[0] == 0x36).collect();
         assert!(combined.len() >= 13);
+        assert_ne!(r[0][4 + 1] & 8, 0); // First audio priming report claims the LED.
+        let idle = combined.last().unwrap();
+        assert_ne!(idle[13 + 1] & 4, 0);
+        assert_eq!(&idle[13 + 44..13 + 47], &[0, 0, 255]);
         assert!(combined[8][78..142]
             .chunks_exact(2)
             .all(|v| v[0] as i8 == 16 && v[1] as i8 == -32));

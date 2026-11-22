@@ -638,12 +638,27 @@ extern "system" {
         resume: i32,
     ) -> i32;
     fn WaitForSingleObject(handle: *mut std::ffi::c_void, millis: u32) -> u32;
+    fn WaitForMultipleObjects(
+        count: u32,
+        handles: *const *mut std::ffi::c_void,
+        wait_all: i32,
+        millis: u32,
+    ) -> u32;
+    fn CreateEventW(
+        attributes: *mut std::ffi::c_void,
+        manual_reset: i32,
+        initial_state: i32,
+        name: *const u16,
+    ) -> *mut std::ffi::c_void;
+    fn SetEvent(handle: *mut std::ffi::c_void) -> i32;
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
 }
 struct DrawClock {
     stop: Arc<std::sync::atomic::AtomicBool>,
     pending: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Signalled by `drop` so leaving the page does not wait out a frame.
+    wake: *mut std::ffi::c_void,
     fps: u32,
 }
 impl DrawClock {
@@ -652,6 +667,9 @@ impl DrawClock {
         let pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (end, posted) = (stop.clone(), pending.clone());
         let hwnd = hwnd as usize;
+        // Manual-reset event: once the owner leaves the page every wait returns.
+        let wake = unsafe { CreateEventW(null_mut(), 1, 0, null()) };
+        let wake_arg = wake as usize;
         let thread = std::thread::Builder::new()
             .name("opends-monitor-draw".into())
             .spawn(move || unsafe {
@@ -672,10 +690,25 @@ impl DrawClock {
                     if !remaining.is_zero() {
                         let due =
                             -((remaining.as_nanos() / 100).max(1).min(i64::MAX as u128) as i64);
+                        let wake = wake_arg as *mut std::ffi::c_void;
                         if !timer.is_null()
+                            && !wake.is_null()
                             && SetWaitableTimer(timer, &due, 0, null_mut(), null_mut(), 0) != 0
                         {
-                            WaitForSingleObject(timer, 1000);
+                            // Index 0 is the frame timer, index 1 is the wake event.
+                            let handles = [timer, wake];
+                            match WaitForMultipleObjects(2, handles.as_ptr(), 0, 1000) {
+                                0 => {}
+                                // Wake event: the page was left, stop drawing.
+                                1 => break,
+                                u32::MAX => break,
+                                _ => {}
+                            }
+                        } else if !wake.is_null() {
+                            let millis = remaining.as_millis().min(u128::from(u32::MAX / 2)) as u32;
+                            if WaitForSingleObject(wake, millis) == 0 {
+                                break;
+                            }
                         } else {
                             std::thread::sleep(remaining);
                         }
@@ -691,6 +724,7 @@ impl DrawClock {
             stop,
             pending,
             thread: Some(thread),
+            wake,
             fps,
         })
     }
@@ -698,8 +732,15 @@ impl DrawClock {
 impl Drop for DrawClock {
     fn drop(&mut self) {
         self.stop.store(true, Release);
+        if !self.wake.is_null() {
+            unsafe { SetEvent(self.wake) };
+        }
         if let Some(t) = self.thread.take() {
             let _ = crate::shutdown::join(t);
+        }
+        if !self.wake.is_null() {
+            unsafe { CloseHandle(self.wake) };
+            self.wake = null_mut();
         }
     }
 }

@@ -1058,6 +1058,27 @@ fn run_session(
                             crate::i18n_arg!(audio.stats.encode_fail.load(Ordering::Relaxed))
                     ),
                 );
+                let stats = &audio.stats;
+                state.log_message(
+                    crate::i18n::MessageId::bridge_feedback_metrics,
+                    crate::tr!(
+                        bridge_feedback_metrics,
+                        mmcss = crate::i18n_arg!(stats.mmcss_active.load(Ordering::Relaxed)),
+                        wake = crate::i18n_arg!(stats.wake_max_us.swap(0, Ordering::Relaxed)),
+                        encode = crate::i18n_arg!(stats.encode_max_us.swap(0, Ordering::Relaxed)),
+                        write = crate::i18n_arg!(stats.write_max_us.swap(0, Ordering::Relaxed)),
+                        pcm_contention =
+                            crate::i18n_arg!(audio.pcm.contention_drops.load(Ordering::Relaxed)),
+                        pcm_overflow =
+                            crate::i18n_arg!(audio.pcm.overflow_drops.load(Ordering::Relaxed)),
+                        haptics_contention = crate::i18n_arg!(audio
+                            .haptics
+                            .contention_drops
+                            .load(Ordering::Relaxed)),
+                        haptics_overflow =
+                            crate::i18n_arg!(audio.haptics.overflow_drops.load(Ordering::Relaxed))
+                    ),
+                );
                 diagnostic = Instant::now();
             }
         }
