@@ -721,4 +721,16 @@ command-group-colors = Colors and theme palettes
 
 command-distinguish-strength = Distinguish strength
 
+gui-enable-bluetooth = Turn on Bluetooth when the bridge starts
+
+gui-battery-threshold = Low battery notification threshold (%; 0 disables)
+
+gui-battery-threshold-error = Enter a battery threshold from 0 to 100.
+
+gui-battery-low = DualSense battery low
+
+bridge-bluetooth-enable-failed = Could not turn on Bluetooth. Check radio permissions or turn it on manually.
+
+gui-multimedia-priority = Prioritize audio and haptics
+
 config-version-invalid = Unsupported configuration file version.

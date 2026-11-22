@@ -218,8 +218,51 @@ impl Display {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct LowBatteryAlert {
+    notified_session: Option<u64>,
+}
+impl LowBatteryAlert {
+    pub fn update(&mut self, session: u64, view: View, threshold: u8) -> bool {
+        if threshold == 0
+            || matches!(view.status, Status::Charging | Status::Full)
+            || view.percent.is_some_and(|p| p > threshold)
+        {
+            self.notified_session = None;
+        } else if view.status == Status::Discharging
+            && view.percent.is_some_and(|p| p <= threshold)
+            && self.notified_session != Some(session)
+        {
+            self.notified_session = Some(session);
+            return true;
+        }
+        false
+    }
+}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn low_battery_notification_rearms_after_recovery_or_reconnect() {
+        let mut alert = super::LowBatteryAlert::default();
+        let low = super::View {
+            status: super::Status::Discharging,
+            percent: Some(15),
+        };
+        assert!(!alert.update(1, low, 0));
+        assert!(alert.update(1, low, 15));
+        assert!(!alert.update(1, super::View::default(), 15));
+        assert!(!alert.update(1, low, 15));
+        assert!(alert.update(2, low, 15));
+        assert!(!alert.update(
+            2,
+            super::View {
+                status: super::Status::Charging,
+                ..low
+            },
+            15
+        ));
+        assert!(alert.update(2, low, 15));
+    }
     use super::*;
     fn sample(raw: u8, seconds: u64) -> Snapshot {
         Snapshot {

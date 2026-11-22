@@ -720,4 +720,16 @@ command-group-colors = 颜色与主题配色
 
 command-distinguish-strength = 区分力度
 
+gui-enable-bluetooth = 桥接启动时开启蓝牙
+
+gui-battery-threshold = 低电量通知阈值（%，0 表示关闭）
+
+gui-battery-threshold-error = 请输入 0 到 100 之间的电量阈值。
+
+gui-battery-low = DualSense 电量不足
+
+bridge-bluetooth-enable-failed = 无法开启蓝牙，请检查无线电权限或手动开启。
+
+gui-multimedia-priority = 提高音频与震动线程优先级
+
 config-version-invalid = 不支持此配置文件版本。

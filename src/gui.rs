@@ -58,6 +58,8 @@ struct Controls {
     install_status: nwg::TextBox,
     tips: nwg::Tooltip,
     logs: nwg::TextBox,
+    enable_bluetooth: nwg::CheckBox,
+    battery_threshold: nwg::TextInput,
     auto_start: nwg::CheckBox,
     start_on_login: nwg::CheckBox,
     reconnect: nwg::CheckBox,
@@ -75,6 +77,7 @@ struct Controls {
     speaker: nwg::TextInput,
     headphone: nwg::TextInput,
     fallback: nwg::TextInput,
+    multimedia_priority: nwg::CheckBox,
     headphone_override: nwg::CheckBox,
     haptic_gain: nwg::ComboBox<String>,
     mic_gain: nwg::TrackBar,
@@ -123,6 +126,7 @@ struct App {
     fonts: RefCell<theme::Fonts>,
     battery: Rc<Cell<crate::battery::Display>>,
     battery_tip: RefCell<Option<crate::battery_ui::Tooltip>>,
+    battery_alert: Cell<crate::battery::LowBatteryAlert>,
     battery_observed: Cell<crate::battery::View>,
     battery_preview: Cell<Option<u8>>,
     placement: RefCell<theme::ControlLayout>,
@@ -151,6 +155,26 @@ impl DerefMut for App {
         &mut self.ui
     }
 }
+// Shell_NotifyIconW reserves 64 UTF-16 units including the terminator.
+fn tray_title(title: &str) -> &str {
+    let mut units = 0;
+    for (index, ch) in title.char_indices() {
+        units += ch.len_utf16();
+        if units > 63 {
+            return &title[..index];
+        }
+    }
+    title
+}
+
+#[test]
+fn tray_title_preserves_whole_characters_at_the_shell_limit() {
+    let prefix = "中".repeat(62);
+    assert_eq!(tray_title(&format!("{prefix}🎮")), prefix);
+    let exact = format!("{}🎮", "a".repeat(61));
+    assert_eq!(tray_title(&exact), exact);
+}
+
 fn check(v: bool) -> nwg::CheckBoxState {
     if v {
         nwg::CheckBoxState::Checked
@@ -204,6 +228,7 @@ impl App {
             fonts: RefCell::new(fonts),
             battery: Rc::new(Cell::new(crate::battery::Display::default())),
             battery_tip: RefCell::new(None),
+            battery_alert: Cell::default(),
             battery_observed: Cell::new(crate::battery::View::default()),
             battery_preview: Cell::new(None),
             placement: RefCell::new(theme::ControlLayout::default()),
@@ -347,6 +372,12 @@ impl App {
                     .build(textbox)?;
             }
             cb!(
+                enable_bluetooth,
+                crate::tr!(gui_enable_bluetooth),
+                cfg.enable_bluetooth
+            );
+            input!(battery_threshold, &cfg.battery_threshold.to_string());
+            cb!(
                 auto_start,
                 crate::tr!(gui_start_bridging_when_opends_opens),
                 cfg.auto_start
@@ -434,6 +465,11 @@ impl App {
                     .to_string()
             );
             input!(fallback, &cfg.headphone_fallback_volume.to_string());
+            cb!(
+                multimedia_priority,
+                crate::tr!(gui_multimedia_priority),
+                cfg.multimedia_priority
+            );
             ui.headphone.set_enabled(cfg.headphone_volume_override);
             nwg::ComboBox::builder()
                 .flags(unsafe {
@@ -654,6 +690,8 @@ impl App {
             &self.dependencies.handle,
             &self.install_status.handle,
             &self.logs.handle,
+            &self.enable_bluetooth.handle,
+            &self.battery_threshold.handle,
             &self.auto_start.handle,
             &self.start_on_login.handle,
             &self.reconnect.handle,
@@ -671,6 +709,7 @@ impl App {
             &self.speaker.handle,
             &self.headphone.handle,
             &self.fallback.handle,
+            &self.multimedia_priority.handle,
             &self.headphone_override.handle,
             &self.haptic_gain.handle,
             &self.mic_gain.handle,
@@ -743,7 +782,22 @@ impl App {
     fn refresh_battery(&self, force: bool) {
         let hub = self.controller.borrow().state.monitor.clone();
         let mut display = self.battery.get();
-        display.update(hub.battery.snapshot(), hub.battery.now(), force);
+        let snapshot = hub.battery.snapshot();
+        let now = hub.battery.now();
+        display.update(snapshot, now, force);
+        let view = snapshot.view(now);
+        let threshold = self.config.borrow().battery_threshold;
+        let mut alert = self.battery_alert.get();
+        let notify = alert.update(snapshot.session, view, threshold);
+        self.battery_alert.set(alert);
+        if notify && !self.smoke {
+            self.tray.show(
+                &view.tooltip(),
+                Some(tray_title(crate::tr!(gui_battery_low))),
+                None,
+                None,
+            );
+        }
         self.battery.set(display);
         if self.battery_observed.replace(display.view) != display.view && self.page.get() == 0 {
             let (w, _) = self.dimensions();
@@ -880,7 +934,14 @@ impl App {
                     cw / 3 - 24,
                     220,
                 );
-                put(&self.reconnect.handle, x + 24, 504, cw - 48, 27);
+                put(&self.reconnect.handle, x + 24, 504, cw / 2 - 24, 27);
+                put(
+                    &self.multimedia_priority.handle,
+                    x + cw / 2,
+                    504,
+                    cw / 2 - 24,
+                    27,
+                );
                 put(&self.hide.handle, x + 24, 532, cw - 48, 27);
                 put(
                     &self.native_haptics_test.handle,
@@ -947,6 +1008,8 @@ impl App {
                 put(&self.auto_start.handle, x + 24, 352, cw - 48, 28);
                 put(&self.start_on_login.handle, x + 24, 386, cw - 48, 28);
                 put(&self.close_action.handle, x + 24, 454, 280, 220);
+                put(&self.enable_bluetooth.handle, x + 24, 542, cw - 48, 28);
+                put(&self.battery_threshold.handle, x + cw - 80, 578, 56, 28);
                 put(&self.desktop_shortcut.handle, x + 24, 502, half, 30);
                 put(&self.menu_shortcut.handle, x + 40 + half, 502, half, 30);
                 put(&self.save.handle, w - 176, h - 62, 144, 38);
@@ -1249,7 +1312,16 @@ impl App {
                 );
             }
             _ => {
-                card(x, 112, cw, 424);
+                card(x, 112, cw, 505);
+                text(
+                    x + 24,
+                    578,
+                    cw - 118,
+                    28,
+                    crate::tr!(gui_battery_threshold),
+                    &f.body,
+                    theme::palette().text,
+                );
                 text(
                     x + 24,
                     130,
@@ -1590,6 +1662,7 @@ impl App {
             return Err(crate::tr!(gui_headphone_volume_must_be_0_127).into());
         }
         c.headphone_fallback_volume = fallback;
+        c.multimedia_priority = checked(&self.multimedia_priority);
         c.headphone_volume_override = checked(&self.headphone_override);
         if c.headphone_volume_override {
             c.headphone_override_volume = self
@@ -1609,6 +1682,15 @@ impl App {
         if !(1..=128).contains(&c.buffer) {
             return Err(crate::tr!(gui_buffer_must_be_1_128_blocks).into());
         }
+        c.enable_bluetooth = checked(&self.enable_bluetooth);
+        c.battery_threshold = self
+            .battery_threshold
+            .text()
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .filter(|v| *v <= 100)
+            .ok_or(crate::tr!(gui_battery_threshold_error))?;
         c.auto_start = checked(&self.auto_start);
         c.reconnect = checked(&self.reconnect);
         c.hide_device = checked(&self.hide);
@@ -2109,28 +2191,30 @@ impl App {
                 ));
             }
         }
-        let logs = if issue_visible {
-            format!(
-                "{}\r\n\r\n{}",
-                issue.as_ref().unwrap().detail().replace('\n', "\r\n"),
-                s.logs()
-            )
-        } else {
-            s.logs()
-        };
-        if *self.last_logs.borrow() != logs {
-            self.logs.set_text(&logs);
-            if issue_visible {
-                self.logs.scroll(-self.logs.linecount());
+        if matches!(self.page.get(), 0 | 4) && self.window.visible() {
+            let logs = if issue_visible {
+                format!(
+                    "{}\r\n\r\n{}",
+                    issue.as_ref().unwrap().detail().replace('\n', "\r\n"),
+                    s.logs()
+                )
             } else {
-                self.logs.scroll_lastline();
+                s.logs()
+            };
+            if *self.last_logs.borrow() != logs {
+                self.logs.set_text(&logs);
+                if issue_visible {
+                    self.logs.scroll(-self.logs.linecount());
+                } else {
+                    self.logs.scroll_lastline();
+                }
+                *self.last_logs.borrow_mut() = logs;
             }
-            *self.last_logs.borrow_mut() = logs;
-        }
-        if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
-            self.logs.set_text(crate::tr!(
-                gui_ready_start_bridging_to_see_connection_feedback
-            ));
+            if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
+                self.logs.set_text(crate::tr!(
+                    gui_ready_start_bridging_to_see_connection_feedback
+                ));
+            }
         }
         if self.exiting.get() && idle {
             nwg::stop_thread_dispatch();

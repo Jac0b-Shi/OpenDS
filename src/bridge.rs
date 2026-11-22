@@ -482,8 +482,51 @@ impl InitialGuide {
     }
 }
 
+fn enable_bluetooth(state: &BridgeState, started: Instant, limit: Option<Duration>) -> bool {
+    use std::os::windows::{ffi::OsStringExt, process::CommandExt};
+    use winapi::um::sysinfoapi::GetSystemDirectoryW;
+
+    let mut directory = vec![0u16; 32768];
+    let written =
+        unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) } as usize;
+    if written == 0 || written >= directory.len() || expired(started, limit, state) {
+        return false;
+    }
+    let system = std::path::PathBuf::from(std::ffi::OsString::from_wide(&directory[..written]));
+    let powershell = system.join(r"WindowsPowerShell\v1.0");
+    let Ok(mut child) = std::process::Command::new(powershell.join("powershell.exe"))
+        .env("PSModulePath", powershell.join("Modules"))
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            include_str!("enable_bluetooth.ps1"),
+        ])
+        .creation_flags(0x08000000)
+        .spawn()
+    else {
+        return false;
+    };
+    let start = Instant::now();
+    while !expired(started, limit, state) && start.elapsed() < Duration::from_secs(10) {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => wait_retry(started, limit, state, Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
 fn run(cfg: Config, state: &Arc<BridgeState>, limit: Option<Duration>) -> Result<(), String> {
     let started = Instant::now();
+    if cfg.enable_bluetooth
+        && !enable_bluetooth(state, started, limit)
+        && !expired(started, limit, state)
+    {
+        state.log(crate::tr!(bridge_bluetooth_enable_failed));
+    }
     let mut waiting = false;
     let mut backoff = RetryBackoff::default();
     while !expired(started, limit, state) {

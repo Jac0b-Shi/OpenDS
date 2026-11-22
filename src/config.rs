@@ -92,6 +92,9 @@ pub struct Config {
     /// USB 外观：0 = DualSense，1 = Xbox One，2 = PS4。
     pub usb_face: u8,
     pub auto_start: bool,
+    pub enable_bluetooth: bool,
+    pub multimedia_priority: bool,
+    pub battery_threshold: u8,
     pub language: String,
     pub theme: ThemeMode,
     pub close_action: CloseAction,
@@ -136,6 +139,9 @@ impl Default for Config {
             edge_as_ds: false,
             usb_face: 0,
             auto_start: false,
+            enable_bluetooth: false,
+            multimedia_priority: false,
+            battery_threshold: 20,
             language: "auto".into(),
             theme: ThemeMode::System,
             close_action: CloseAction::Ask,
@@ -171,6 +177,7 @@ impl Config {
         if self.port == 0 {
             self.port = 3241;
         }
+        self.battery_threshold = self.battery_threshold.min(100);
         self.buffer = self.buffer.clamp(1, 128);
         self.speaker_gain = self.speaker_gain.min(7);
         self.haptics_gain = self.haptics_gain.clamp(10, 20);
@@ -298,6 +305,9 @@ impl Config {
                 "dsx_exe" => boolean!(dsx_exe),
                 "edge_as_ds" => boolean!(edge_as_ds),
                 "usb_face" => number!(usb_face),
+                "multimedia_priority" => boolean!(multimedia_priority),
+                "enable_bluetooth" => boolean!(enable_bluetooth),
+                "battery_threshold" => number!(battery_threshold),
                 "auto_start" => boolean!(auto_start),
                 "language" => cfg.language = value.to_owned(),
                 "theme" => cfg.theme = ThemeMode::parse(value),
@@ -422,6 +432,9 @@ impl Config {
             dsx_exe,
             edge_as_ds,
             usb_face,
+            multimedia_priority,
+            enable_bluetooth,
+            battery_threshold,
             auto_start,
             language,
             theme,
