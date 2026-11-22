@@ -131,6 +131,8 @@ struct App {
     battery_preview: Cell<Option<u8>>,
     placement: RefCell<theme::ControlLayout>,
     last_logs: RefCell<String>,
+    displayed_log_revision: Cell<Option<u64>>,
+    displayed_issue: RefCell<Option<crate::bridge::ConnectionIssue>>,
     smoke_deadline: Cell<Option<std::time::Instant>>,
     dependency_attention: Cell<bool>,
     connection_issue_visible: Cell<bool>,
@@ -233,6 +235,8 @@ impl App {
             battery_preview: Cell::new(None),
             placement: RefCell::new(theme::ControlLayout::default()),
             last_logs: RefCell::new(String::new()),
+            displayed_log_revision: Cell::new(None),
+            displayed_issue: RefCell::new(None),
             smoke_deadline: Cell::new(None),
             dependency_attention: Cell::new(false),
             connection_issue_visible: Cell::new(false),
@@ -2192,28 +2196,35 @@ impl App {
             }
         }
         if matches!(self.page.get(), 0 | 4) && self.window.visible() {
-            let logs = if issue_visible {
-                format!(
-                    "{}\r\n\r\n{}",
-                    issue.as_ref().unwrap().detail().replace('\n', "\r\n"),
-                    s.logs()
-                )
-            } else {
-                s.logs()
-            };
-            if *self.last_logs.borrow() != logs {
-                self.logs.set_text(&logs);
-                if issue_visible {
-                    self.logs.scroll(-self.logs.linecount());
+            let revision = s.log_revision.load(Ordering::Acquire);
+            let visible_issue = issue.filter(|_| issue_visible);
+            if self.displayed_log_revision.replace(Some(revision)) != Some(revision)
+                || *self.displayed_issue.borrow() != visible_issue
+            {
+                let logs = if let Some(issue) = &visible_issue {
+                    format!(
+                        "{}\r\n\r\n{}",
+                        issue.detail().replace('\n', "\r\n"),
+                        s.logs()
+                    )
                 } else {
-                    self.logs.scroll_lastline();
+                    s.logs()
+                };
+                if *self.last_logs.borrow() != logs {
+                    self.logs.set_text(&logs);
+                    if issue_visible {
+                        self.logs.scroll(-self.logs.linecount());
+                    } else {
+                        self.logs.scroll_lastline();
+                    }
+                    *self.last_logs.borrow_mut() = logs;
                 }
-                *self.last_logs.borrow_mut() = logs;
-            }
-            if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
-                self.logs.set_text(crate::tr!(
-                    gui_ready_start_bridging_to_see_connection_feedback
-                ));
+                *self.displayed_issue.borrow_mut() = visible_issue;
+                if self.last_logs.borrow().is_empty() && self.logs.text().is_empty() {
+                    self.logs.set_text(crate::tr!(
+                        gui_ready_start_bridging_to_see_connection_feedback
+                    ));
+                }
             }
         }
         if self.exiting.get() && idle {

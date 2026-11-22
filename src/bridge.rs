@@ -19,7 +19,7 @@ use std::{
 
 const STABLE_CONNECTION: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionIssue {
     pub error: String,
     pub connected_for: Option<Duration>,
@@ -70,6 +70,7 @@ pub struct BridgeState {
     pub last_error: Mutex<Option<String>>,
     pub connection_issue: Mutex<Option<ConnectionIssue>>,
     logs: Mutex<VecDeque<String>>,
+    pub log_revision: AtomicU64,
 }
 impl BridgeState {
     fn feedback_session(&self) -> Option<Arc<AudioSession>> {
@@ -131,12 +132,23 @@ impl BridgeState {
                 l.pop_front();
             }
             l.push_back(s);
+            // Unique across bridge sessions, including when a new session has fewer entries.
+            static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+            self.log_revision.store(
+                NEXT_REVISION.fetch_add(1, Ordering::Relaxed),
+                Ordering::Release,
+            );
         }
     }
     pub fn logs(&self) -> String {
         self.logs
             .lock()
-            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\r\n"))
+            .map(|l| {
+                l.iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\r\n")
+            })
             .unwrap_or_default()
     }
     pub fn error(&self, s: String) {
