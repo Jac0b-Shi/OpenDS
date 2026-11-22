@@ -132,6 +132,10 @@ pub enum FeedbackTest {
 }
 
 pub struct AudioSession {
+    #[cfg(test)]
+    bench_warmup: AtomicU8,
+    #[cfg(test)]
+    bench_wakes: OnceLock<Mutex<Vec<u32>>>,
     pub monitor: OnceLock<Arc<crate::monitor::Monitor>>,
     pub forward_pcm: AtomicBool,
     pub pcm: PcmBuffer,
@@ -148,6 +152,10 @@ pub struct AudioSession {
 impl AudioSession {
     pub fn new(blocks: usize) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(test)]
+            bench_warmup: AtomicU8::new(8),
+            #[cfg(test)]
+            bench_wakes: OnceLock::new(),
             monitor: OnceLock::new(),
             forward_pcm: AtomicBool::new(true),
             pcm: PcmBuffer::new(blocks, 4),
@@ -474,9 +482,12 @@ fn spawn_with_sink<S: OutputSink>(
             let mut test_primed_audio = false;
             let mut resume_audio = false;
             while running.load(Ordering::Acquire) {
-                stats
-                    .wake_max_us
-                    .fetch_max(tick.elapsed().as_micros() as u64, Ordering::Relaxed);
+                let woke_late = tick.elapsed().as_micros() as u64;
+                stats.wake_max_us.fetch_max(woke_late, Ordering::Relaxed);
+                #[cfg(test)]
+                if let Some(samples) = session.bench_wakes.get() {
+                    samples.lock().unwrap().push(woke_late as u32);
+                }
                 let test = session.feedback_test.load(Ordering::Acquire);
                 let native_test = test == FeedbackTest::NativeHaptics as u8;
                 let classic_test = test == FeedbackTest::ClassicRumble as u8;
@@ -556,9 +567,16 @@ fn spawn_with_sink<S: OutputSink>(
                             primed = true;
                             needs_prime = false;
                             resume_audio = false;
-                            warmup = 8;
-                            pending_pcm = pcm.is_some();
-                            pending_haptics = native.is_some();
+                            #[cfg(test)]
+                            {
+                                warmup = session.bench_warmup.load(Ordering::Relaxed);
+                            }
+                            #[cfg(not(test))]
+                            {
+                                warmup = 8;
+                            }
+                            pending_pcm = warmup > 0 && pcm.is_some();
+                            pending_haptics = warmup > 0 && native.is_some();
                         }
                     }
                     if primed {
@@ -854,6 +872,34 @@ mod tests {
         }
     }
     #[test]
+    fn optimized_resampler_matches_original_for_both_routes() {
+        let block: Vec<i16> = (0..audio::FRAMES_PER_BLOCK * 4)
+            .map(|i| (i as u32 * 3749) as i16)
+            .collect();
+        for route in [audio::route::SPEAKER, audio::route::HEADSET] {
+            let front = if route == audio::route::SPEAKER {
+                audio::downmix_4_to_2(&block, audio::FRAMES_PER_BLOCK)
+            } else {
+                block.chunks_exact(4).flat_map(|p| [p[0], p[1]]).collect()
+            };
+            let channel = |c: usize| {
+                audio::resample_linear(
+                    &front.iter().skip(c).step_by(2).copied().collect::<Vec<_>>(),
+                    audio::OPUS_FRAMES,
+                )
+            };
+            let expected: Vec<_> = channel(0)
+                .into_iter()
+                .zip(channel(1))
+                .flat_map(|(l, r)| [l, r])
+                .collect();
+            encode_observed(&mut audio::NullEncoder, &block, route, |actual| {
+                assert_eq!(actual, expected)
+            })
+            .unwrap();
+        }
+    }
+    #[test]
     fn oversized_pcm_keeps_whole_latest_frames_with_bounded_memory() {
         let q = PcmBuffer::new(1, 4);
         q.push_bytes(&bytes(&vec![1; 4096]), 0);
@@ -1111,5 +1157,426 @@ mod tests {
                 crate::report::bt_output_crc32(&r[..end])
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    //! 量化 0.4.3 音频/震动优化的收益。全部为可重复的本地测量，不需要游戏。
+    //!
+    //! 每个实验都保留**旧实现的逐字复刻**作为对照组，否则无法回答「省了多少」。
+    use super::*;
+
+    fn bytes(p: &[i16]) -> Vec<u8> {
+        p.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    fn ping_pong(frames: usize) -> Vec<i16> {
+        (0..frames * 4)
+            .map(|i| ((i as f32 * 0.07).sin() * 9000.0) as i16)
+            .collect()
+    }
+
+    fn percentile(sorted: &[u64], p: f64) -> u64 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+        sorted[idx]
+    }
+
+    /// 旧实现的取块路径：锁内 \`drain(..n).collect()\`，每次分配一个 Vec。
+    impl PcmBuffer {
+        fn legacy_take(&self, generation: u64) -> Option<Vec<i16>> {
+            let mut q = self.inner.lock().ok()?;
+            if generation != q.generation {
+                if generation > q.generation {
+                    q.samples.clear();
+                    q.generation = generation;
+                }
+                return None;
+            }
+            let n = audio::FRAMES_PER_BLOCK * self.channels;
+            if q.samples.len() < n {
+                return None;
+            }
+            Some(q.samples.drain(..n).collect())
+        }
+        /// 把队列填到刚好够一次读取，便于逐次测量。
+        fn refill(&self, generation: u64) {
+            let pcm = ping_pong(audio::FRAMES_PER_BLOCK);
+            self.push_bytes(&bytes(&pcm), generation);
+        }
+    }
+
+    /// 旧实现的下混 + 重采样管线：一次编码要建 6 个 Vec。
+    fn legacy_encode(block: &[i16], route: u8) -> Vec<i16> {
+        let front: Vec<i16> = if route == audio::route::SPEAKER {
+            audio::downmix_4_to_2(block, audio::FRAMES_PER_BLOCK)
+        } else {
+            block.chunks_exact(4).flat_map(|c| [c[0], c[1]]).collect()
+        };
+        let left: Vec<i16> = front.chunks_exact(2).map(|c| c[0]).collect();
+        let right: Vec<i16> = front.chunks_exact(2).map(|c| c[1]).collect();
+        let l = audio::resample_linear(&left, audio::OPUS_FRAMES);
+        let r = audio::resample_linear(&right, audio::OPUS_FRAMES);
+        (0..audio::OPUS_FRAMES).flat_map(|i| [l[i], r[i]]).collect()
+    }
+
+    /// 绕开 libopus，让 E2 只测下混/重采样本身。
+    struct FakeEncoder;
+    impl OpusEncoder for FakeEncoder {
+        fn encode(&mut self, pcm: &[i16], out: &mut [u8; OPUS_BYTES]) -> usize {
+            for (i, byte) in out.iter_mut().enumerate() {
+                *byte = (pcm[(i * 7) % pcm.len()] >> 8) as u8;
+            }
+            OPUS_BYTES
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// E1：取块路径。对照 \`legacy_take\`（锁内分配）与 \`read_into\`（复用缓冲）。
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e1_pcm_take_allocation_and_latency() {
+        const ITER: usize = 20_000;
+        let pcm = PcmBuffer::new(4, 4);
+        let mut block = [0i16; audio::FRAMES_PER_BLOCK * 4];
+
+        let ((), legacy_allocs) = crate::alloc_probe::measure(|| {
+            for _ in 0..ITER {
+                pcm.refill(0);
+                assert!(pcm.legacy_take(0).is_some());
+            }
+        });
+        let ((), inplace_allocs) = crate::alloc_probe::measure(|| {
+            for _ in 0..ITER {
+                pcm.refill(0);
+                assert!(pcm.read_into(0, &mut block));
+            }
+        });
+
+        let mut legacy_ns = Vec::with_capacity(ITER);
+        let mut inplace_ns = Vec::with_capacity(ITER);
+        for _ in 0..ITER {
+            pcm.refill(0);
+            let t = Instant::now();
+            std::hint::black_box(pcm.legacy_take(0));
+            legacy_ns.push(t.elapsed().as_nanos() as u64);
+            pcm.refill(0);
+            let t = Instant::now();
+            std::hint::black_box(pcm.read_into(0, &mut block));
+            inplace_ns.push(t.elapsed().as_nanos() as u64);
+        }
+        legacy_ns.sort_unstable();
+        inplace_ns.sort_unstable();
+        let legacy_avg = legacy_ns.iter().sum::<u64>() / ITER as u64;
+        let inplace_avg = inplace_ns.iter().sum::<u64>() / ITER as u64;
+        println!(
+            "E1 取块（512 帧 × 4ch，{ITER} 次/路径）\n  \
+             legacy_take: 分配 {legacy_allocs} 次（{:.1}/轮），p50 {} ns，p99 {} ns，均值 {legacy_avg} ns\n  \
+             read_into  : 分配 {inplace_allocs} 次（{:.1}/轮），p50 {} ns，p99 {} ns，均值 {inplace_avg} ns\n  \
+             差值：{:+.1} ns/块（{:.2}%），每次取块少 {:.1} 次分配",
+            legacy_allocs as f64 / ITER as f64,
+            percentile(&legacy_ns, 0.50),
+            percentile(&legacy_ns, 0.99),
+            inplace_allocs as f64 / ITER as f64,
+            percentile(&inplace_ns, 0.50),
+            percentile(&inplace_ns, 0.99),
+            inplace_avg as f64 - legacy_avg as f64,
+            (inplace_avg as f64 / legacy_avg.max(1) as f64 - 1.0) * 100.0,
+            (legacy_allocs as f64 - inplace_allocs as f64) / ITER as f64,
+        );
+    }
+
+    /// E2：下混/重采样管线。对照旧版 6 个 Vec 与新版栈上单缓冲。
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e2_encode_pipeline_allocation_and_latency() {
+        const ITER: usize = 2_000;
+        let block = ping_pong(audio::FRAMES_PER_BLOCK);
+        let mut front = [0i16; audio::OPUS_FRAMES * 2];
+
+        let ((), legacy_allocs) = crate::alloc_probe::measure(|| {
+            for _ in 0..ITER {
+                std::hint::black_box(legacy_encode(&block, audio::route::SPEAKER));
+            }
+        });
+        let ((), inplace_allocs) = crate::alloc_probe::measure(|| {
+            let mut encoder = FakeEncoder;
+            for _ in 0..ITER {
+                std::hint::black_box(encode_observed(
+                    &mut encoder,
+                    &block,
+                    audio::route::SPEAKER,
+                    |samples| front[..samples.len()].copy_from_slice(samples),
+                ));
+            }
+        });
+
+        let mut legacy_ns = Vec::with_capacity(ITER);
+        let mut inplace_ns = Vec::with_capacity(ITER);
+        let mut encoder = FakeEncoder;
+        for _ in 0..ITER {
+            let t = Instant::now();
+            std::hint::black_box(legacy_encode(&block, audio::route::SPEAKER));
+            legacy_ns.push(t.elapsed().as_nanos() as u64);
+            let t = Instant::now();
+            std::hint::black_box(encode_observed(
+                &mut encoder,
+                &block,
+                audio::route::SPEAKER,
+                |samples| front[..samples.len()].copy_from_slice(samples),
+            ));
+            inplace_ns.push(t.elapsed().as_nanos() as u64);
+        }
+        legacy_ns.sort_unstable();
+        inplace_ns.sort_unstable();
+        let legacy_avg = legacy_ns.iter().sum::<u64>() / ITER as u64;
+        let inplace_avg = inplace_ns.iter().sum::<u64>() / ITER as u64;
+        println!(
+            "E2 编码管线下混/重采样（512→480 帧，{ITER} 次/路径）\n  \
+             legacy 6×Vec : 分配 {legacy_allocs} 次（{:.1}/轮），p50 {} ns，p99 {} ns，均值 {legacy_avg} ns\n  \
+             encode_observed: 分配 {inplace_allocs} 次（{:.1}/轮），p50 {} ns，p99 {} ns，均值 {inplace_avg} ns\n  \
+             差值：{:+.1} ns/块（{:.2}%），每块少 {:.1} 次分配",
+            legacy_allocs as f64 / ITER as f64,
+            percentile(&legacy_ns, 0.50),
+            percentile(&legacy_ns, 0.99),
+            inplace_allocs as f64 / ITER as f64,
+            percentile(&inplace_ns, 0.50),
+            percentile(&inplace_ns, 0.99),
+            inplace_avg as f64 - legacy_avg as f64,
+            (inplace_avg as f64 / legacy_avg.max(1) as f64 - 1.0) * 100.0,
+            (legacy_allocs as f64 - inplace_allocs as f64) / ITER as f64,
+        );
+    }
+
+    struct QuietSink;
+    impl OutputSink for QuietSink {
+        fn write(&self, _report: &[u8]) -> bool {
+            true
+        }
+    }
+
+    /// 跑一段输出循环，收集唤醒迟到样本（毫秒级节拍，跑 seconds 秒）。
+    /// 返回 (样本, MMCSS 是否真的注册成功)。
+    fn sample_wakes(multimedia: bool, seconds: f64) -> (Vec<u32>, bool) {
+        let running = Arc::new(AtomicBool::new(true));
+        let s = AudioSession::new(4);
+        s.bench_wakes
+            .set(Mutex::new(Vec::with_capacity(256)))
+            .unwrap();
+        let sink = Arc::new(QuietSink);
+        let mut cfg = Config::default();
+        cfg.multimedia_priority = multimedia;
+        let handle = spawn_with_sink(s.clone(), sink, running.clone(), cfg).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+        running.store(false, Ordering::Release);
+        handle.join().unwrap();
+        let active = s.stats.mmcss_active.load(Ordering::Relaxed);
+        let wakes = std::mem::take(&mut *s.bench_wakes.get().unwrap().lock().unwrap());
+        (wakes, active)
+    }
+
+    /// CPU 争用：占满除两个核之外的所有核，模拟游戏加合成器的负载。
+    struct Load {
+        stop: Arc<AtomicBool>,
+        threads: Vec<std::thread::JoinHandle<()>>,
+    }
+    impl Load {
+        fn start() -> Self {
+            let n = std::thread::available_parallelism()
+                .map(|v| v.get().saturating_sub(2).clamp(1, 16))
+                .unwrap_or(4);
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut threads = Vec::new();
+            for i in 0..n {
+                let stop = stop.clone();
+                threads.push(
+                    std::thread::Builder::new()
+                        .name(format!("bench-load-{i}"))
+                        .spawn(move || {
+                            let mut x = 0u64;
+                            while !stop.load(Ordering::Relaxed) {
+                                for _ in 0..10_000 {
+                                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                                }
+                                std::hint::black_box(x);
+                            }
+                        })
+                        .unwrap(),
+                );
+            }
+            Self { stop, threads }
+        }
+    }
+    impl Drop for Load {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            for t in self.threads.drain(..) {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// 汇总一组唤醒样本。
+    fn summarize(
+        label: &'static str,
+        multimedia: bool,
+        runs: usize,
+        seconds: f64,
+    ) -> (&'static str, bool, usize, u64, u64, u64, u64, usize) {
+        let mut all = Vec::new();
+        let mut active = false;
+        for _ in 0..runs {
+            let (mut samples, registered) = sample_wakes(multimedia, seconds);
+            active |= registered;
+            if samples.len() > 5 {
+                samples.drain(..5);
+            }
+            all.extend(samples);
+        }
+        all.sort_unstable();
+        let values: Vec<u64> = all.iter().map(|&x| x as u64).collect();
+        let late = values.iter().filter(|&&v| v > 5_000).count();
+        (
+            label,
+            active,
+            values.len(),
+            percentile(&values, 0.50),
+            percentile(&values, 0.95),
+            percentile(&values, 0.99),
+            values.last().copied().unwrap_or(0),
+            late,
+        )
+    }
+
+    /// E3：MMCSS 开关对输出线程唤醒迟到的影响。
+    ///
+    /// 空载时线程几乎全程睡在定时器上，看不出差别；真正要回答的是游戏
+    /// 占满 CPU 时唤醒会不会迟到，所以空载与满载都要测。
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e3_mmcss_wake_jitter() {
+        const RUNS: usize = 3;
+        let mut rows = vec![
+            summarize("空载 / MMCSS=off", false, RUNS, 2.0),
+            summarize("空载 / MMCSS=on ", true, RUNS, 2.0),
+        ];
+        {
+            let _load = Load::start();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            rows.push(summarize("满载 / MMCSS=off", false, RUNS, 2.0));
+            rows.push(summarize("满载 / MMCSS=on ", true, RUNS, 2.0));
+        }
+        let mut report = String::new();
+        for (label, active, n, p50, p95, p99, max, late) in rows {
+            report.push_str(&format!(
+                "  {label}（MMCSS {}）样本 {n:>5}：p50 {p50} µs，p95 {p95} µs，p99 {p99} µs，最大 {max} µs，超 5 ms {late} 次\n",
+                if active { "已生效" } else { "未生效" }
+            ));
+        }
+        println!("E3 输出线程唤醒迟到（µs，2 s × 3 次运行，剔除前 5 块）\n{report}");
+    }
+
+    /// E6：缓冲块数作为「队列容量上限」的代价。
+    ///
+    /// 用户指南旧版建议调到 64 块。这里模拟积压：一口气塞进 100 块数据，
+    /// 再看积压排空时最先被播放的那块有多旧、丢了多少块。
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e6_buffer_depth_and_staleness() {
+        const BURST: u32 = 100;
+        let mut report = String::new();
+        for blocks in [4usize, 16, 64] {
+            let pcm = PcmBuffer::new(blocks, 4);
+            for tag in 0..BURST {
+                let mut block = vec![0i16; audio::FRAMES_PER_BLOCK * 4];
+                block[0] = tag as i16;
+                pcm.push_bytes(&bytes(&block), 0);
+            }
+            let dropped = pcm.overflow_drops.load(Ordering::Relaxed);
+            let mut out = [0i16; audio::FRAMES_PER_BLOCK * 4];
+            let mut delivered = 0;
+            let mut first_tag = None;
+            while pcm.read_into(0, &mut out) {
+                if first_tag.is_none() {
+                    first_tag = Some(out[0]);
+                }
+                delivered += 1;
+            }
+            let stale_blocks = first_tag.map(|t| BURST - t as u32).unwrap_or(0);
+            let stale_ms = stale_blocks as f64 * 512.0 / 48.0;
+            report.push_str(&format!(
+                "  {blocks:>3} 块（容量 {:>6} 样本）：保住 {delivered:>3} 块，丢 {dropped:>3} 块，\
+                 最旧的可播放数据落后 {stale_blocks} 块 ≈ {:.0} ms\n",
+                blocks * audio::FRAMES_PER_BLOCK * 4,
+                stale_ms
+            ));
+        }
+        println!("E6 积压时缓冲容量的代价（一次塞入 {BURST} 块）\n{report}");
+    }
+
+    /// 记录每个输出块到达 sink 的时刻与触觉内容，供 E5 计算脉冲延迟。
+    struct TraceSink {
+        running: Arc<AtomicBool>,
+        writes: Mutex<Vec<(Instant, bool)>>,
+        limit: usize,
+    }
+    impl OutputSink for TraceSink {
+        fn write(&self, report: &[u8]) -> bool {
+            // 只看 0x36 合并报告：0x32 prime 报告尾部是 CRC，会被误判成触觉。
+            let nonzero = report.len() >= 78 + HAPTICS_BYTES
+                && report[0] == audio::REPORT_ID_COMBINED
+                && report[78..78 + HAPTICS_BYTES].iter().any(|&v| v != 0);
+            let mut writes = self.writes.lock().unwrap();
+            writes.push((Instant::now(), nonzero));
+            if writes.len() >= self.limit {
+                self.running.store(false, Ordering::Release);
+            }
+            true
+        }
+    }
+
+    /// E5：预热代价。1 块短脉冲在预热 8 块 / 0 块下，多久到达 sink、还剩几个非零块。
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e5_warmup_blocks_gate_short_haptics() {
+        if !crate::opus::is_available() {
+            eprintln!("E5 跳过：libopus 不可用");
+            return;
+        }
+        let mut report = String::new();
+        for warmup in [8u8, 0u8] {
+            let s = AudioSession::new(4);
+            s.bench_warmup.store(warmup, Ordering::Relaxed);
+            let running = Arc::new(AtomicBool::new(true));
+            let pulse: Vec<i16> = (0..audio::FRAMES_PER_BLOCK)
+                .flat_map(|_| [1000i16, 1000, 4096, -8192])
+                .collect();
+            let sink = Arc::new(TraceSink {
+                running: running.clone(),
+                writes: Mutex::new(Vec::with_capacity(64)),
+                limit: 40,
+            });
+            let pushed = Instant::now();
+            s.pcm.push_bytes(&bytes(&pulse), 0);
+            spawn_with_sink(s.clone(), sink.clone(), running, Config::default())
+                .unwrap()
+                .join()
+                .unwrap();
+            let writes = sink.writes.lock().unwrap();
+            let first_nonzero = writes
+                .iter()
+                .find(|(_, nonzero)| *nonzero)
+                .map(|(at, _)| at.duration_since(pushed).as_secs_f64() * 1000.0);
+            let nonzero_blocks = writes.iter().filter(|(_, n)| *n).count();
+            report.push_str(&format!(
+                "  预热 {warmup} 块：首个非零触觉块 {:?} ms，非零块 {nonzero_blocks} 个\n",
+                first_nonzero.map(|v| (v * 100.0).round() / 100.0)
+            ));
+            assert_eq!(nonzero_blocks, 1);
+        }
+        println!("E5 短震动首下延迟（1 块脉冲，相对推送时刻）\n{report}");
     }
 }

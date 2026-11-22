@@ -3,6 +3,12 @@
     all(windows, not(debug_assertions), not(test)),
     windows_subsystem = "windows"
 )]
+#[cfg(test)]
+mod alloc_probe;
+#[cfg(test)]
+#[global_allocator]
+static ALLOC_COUNTER: alloc_probe::Counting = alloc_probe::Counting;
+
 mod appearance;
 mod attach;
 mod audio;

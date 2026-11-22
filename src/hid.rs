@@ -628,3 +628,100 @@ mod tests {
         assert!(sent[2..].iter().all(|&x| x == 0));
     }
 }
+#[cfg(test)]
+mod bench {
+    //! E4：HID 写入的每块固定开销。
+    //!
+    //! 旧实现每次写都新分配一份 output_len 缓冲并 CreateEventW/CloseHandle；
+    //! 新实现复用同一缓冲与同一事件，只 ResetEvent。这里量固定开销，
+    //! 不含真实 HID 传输（那部分两侧相同）。
+    use super::*;
+    use std::time::Instant;
+
+    extern "system" {
+        fn ResetEvent(event: *mut c_void) -> i32;
+    }
+
+    const WRITES: usize = 20_000;
+    const OUTPUT_LEN: usize = 547;
+
+    fn make_event() -> *mut c_void {
+        let h = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
+        assert!(!h.is_null(), "事件创建失败");
+        h
+    }
+
+    #[test]
+    #[ignore = "run release benchmarks explicitly"]
+    fn e4_hid_write_fixed_overhead() {
+        let payload = [0x36u8, 1, 2, 3];
+
+        let ((), legacy_allocs) = crate::alloc_probe::measure(|| {
+            for _ in 0..WRITES {
+                let mut padded = vec![0u8; OUTPUT_LEN];
+                let event = make_event();
+                padded[payload.len()..].fill(0);
+                padded[..payload.len()].copy_from_slice(&payload);
+                std::hint::black_box(&padded);
+                unsafe { CloseHandle(event) };
+            }
+        });
+
+        let mut reused = vec![0u8; OUTPUT_LEN];
+        let event = make_event();
+        let ((), reuse_allocs) = crate::alloc_probe::measure(|| {
+            for _ in 0..WRITES {
+                unsafe { ResetEvent(event) };
+                reused[payload.len()..].fill(0);
+                reused[..payload.len()].copy_from_slice(&payload);
+                std::hint::black_box(&reused);
+            }
+        });
+
+        let mut legacy_ns = Vec::with_capacity(WRITES);
+        let mut reuse_ns = Vec::with_capacity(WRITES);
+        for _ in 0..WRITES {
+            let start = Instant::now();
+            let mut padded = vec![0u8; OUTPUT_LEN];
+            let handle = make_event();
+            padded[..payload.len()].copy_from_slice(&payload);
+            std::hint::black_box(&padded);
+            unsafe { CloseHandle(handle) };
+            legacy_ns.push(start.elapsed().as_nanos() as u64);
+
+            let start = Instant::now();
+            unsafe { ResetEvent(event) };
+            reused[payload.len()..].fill(0);
+            reused[..payload.len()].copy_from_slice(&payload);
+            std::hint::black_box(&reused);
+            reuse_ns.push(start.elapsed().as_nanos() as u64);
+        }
+        unsafe { CloseHandle(event) };
+        legacy_ns.sort_unstable();
+        reuse_ns.sort_unstable();
+        let pct = |v: &[u64], p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        println!(
+            "E4 HID 写入固定开销（{}B 报告 ×{} 次，不含真实传输）",
+            OUTPUT_LEN, WRITES
+        );
+        println!(
+            "  旧：每块新建缓冲+事件，分配 {} 次（{:.2}/次），p50 {} ns，p99 {} ns",
+            legacy_allocs,
+            legacy_allocs as f64 / WRITES as f64,
+            pct(&legacy_ns, 0.50),
+            pct(&legacy_ns, 0.99)
+        );
+        println!(
+            "  新：复用缓冲+事件，分配 {} 次（{:.2}/次），p50 {} ns，p99 {} ns",
+            reuse_allocs,
+            reuse_allocs as f64 / WRITES as f64,
+            pct(&reuse_ns, 0.50),
+            pct(&reuse_ns, 0.99)
+        );
+        println!(
+            "  每块省 {} 次分配、约 {} ns（p50）",
+            (legacy_allocs.saturating_sub(reuse_allocs)) / WRITES,
+            pct(&legacy_ns, 0.50).saturating_sub(pct(&reuse_ns, 0.50))
+        );
+    }
+}
