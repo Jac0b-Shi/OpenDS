@@ -74,6 +74,7 @@ struct Controls {
     port: nwg::TextInput,
     speaker: nwg::TextInput,
     headphone: nwg::TextInput,
+    fallback: nwg::TextInput,
     headphone_override: nwg::CheckBox,
     haptic_gain: nwg::ComboBox<String>,
     mic_gain: nwg::TrackBar,
@@ -428,10 +429,11 @@ impl App {
             );
             input!(
                 headphone,
-                &cfg.headphone_volume
+                &cfg.headphone_override_volume
                     .min(Config::MAX_HEADPHONE_VOLUME)
                     .to_string()
             );
+            input!(fallback, &cfg.headphone_fallback_volume.to_string());
             ui.headphone.set_enabled(cfg.headphone_volume_override);
             nwg::ComboBox::builder()
                 .flags(unsafe {
@@ -668,6 +670,7 @@ impl App {
             &self.port.handle,
             &self.speaker.handle,
             &self.headphone.handle,
+            &self.fallback.handle,
             &self.headphone_override.handle,
             &self.haptic_gain.handle,
             &self.mic_gain.handle,
@@ -856,6 +859,7 @@ impl App {
                 put(&self.microphone.handle, x + 24, 258, cw / 2 - 32, 28);
                 put(&self.audio_test.handle, x + cw / 2, 258, 156, 30);
                 put(&self.headphone_override.handle, x + cw - 370, 288, 282, 30);
+                put(&self.fallback.handle, x + cw - 80, 321, 56, 28);
                 put(&self.headphone.handle, x + cw - 80, 288, 56, 30);
                 put(&self.route.handle, x + 24, 353, cw - 48, 180);
                 put(&self.speaker.handle, x + 24, 400, cw / 3 - 40, 34);
@@ -1154,11 +1158,8 @@ impl App {
                 card(x, 112, cw, 490);
                 theme::text(
                     dc,
-                    &rect(x + cw - 350, 320, 326, 32),
-                    &crate::tr!(
-                        gui_headphone_volume_hint,
-                        volume = crate::i18n_arg!(Config::DEFAULT_HEADPHONE_VOLUME)
-                    ),
+                    &rect(x + 24, 321, cw - 124, 28),
+                    crate::tr!(gui_headphone_fallback),
                     &f.small,
                     theme::palette().muted,
                     DT_LEFT | DT_WORDBREAK,
@@ -1579,9 +1580,19 @@ impl App {
             .text()
             .parse()
             .map_err(|_| crate::tr!(gui_speaker_volume_must_be_0_255))?;
+        let fallback = self
+            .fallback
+            .text()
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| crate::tr!(gui_headphone_volume_must_be_0_127))?;
+        if fallback > Config::MAX_HEADPHONE_VOLUME && fallback != c.headphone_fallback_volume {
+            return Err(crate::tr!(gui_headphone_volume_must_be_0_127).into());
+        }
+        c.headphone_fallback_volume = fallback;
         c.headphone_volume_override = checked(&self.headphone_override);
         if c.headphone_volume_override {
-            c.headphone_volume = self
+            c.headphone_override_volume = self
                 .headphone
                 .text()
                 .parse::<u8>()

@@ -238,9 +238,9 @@ pub fn merge_output(old: &mut [u8; 47], new: &[u8; 47]) {
 pub fn audio_state(game: &[u8; 47], cfg: &Config, headset: bool) -> ([u8; 47], u8) {
     let mut s = *game;
     if cfg.headphone_volume_override {
-        s[4] = cfg.headphone_volume;
+        s[4] = cfg.headphone_override_volume;
     } else if game[0] & ALLOW_HEADPHONE_VOLUME == 0 {
-        s[4] = Config::DEFAULT_HEADPHONE_VOLUME;
+        s[4] = cfg.headphone_fallback_volume;
     }
     if game[0] & (1 << 5) == 0 {
         s[5] = cfg.speaker_volume;
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn manual_headphone_volume_overrides_only_the_game_headphone_field() {
         let mut cfg = Config {
-            headphone_volume: 127,
+            headphone_override_volume: 127,
             ..Config::default()
         };
         let mut game = [0; 47];
