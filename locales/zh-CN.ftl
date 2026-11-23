@@ -745,3 +745,17 @@ settings-language-appearance = 语言与外观
 settings-startup-tray = 启动与托盘行为
 settings-notifications = 通知与提醒
 settings-microphone-gain = 麦克风增益
+
+check-updates = 检查更新
+
+update-available = 可更新
+
+update-title = 发现新版本
+
+update-current = 当前版本
+
+update-latest = 更新版本
+
+update-github = 前往 GitHub 下载
+
+update-gitee = 前往 Gitee 下载（国内用户推荐）

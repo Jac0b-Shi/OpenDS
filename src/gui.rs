@@ -59,6 +59,8 @@ struct Controls {
     tips: nwg::Tooltip,
     logs: nwg::TextBox,
     enable_bluetooth: nwg::CheckBox,
+    check_updates: nwg::CheckBox,
+    update_available: nwg::Button,
     battery_threshold: nwg::TextInput,
     auto_start: nwg::CheckBox,
     start_on_login: nwg::CheckBox,
@@ -131,6 +133,8 @@ struct App {
     battery_tip: RefCell<Option<crate::battery_ui::Tooltip>>,
     battery_alert: Cell<crate::battery::LowBatteryAlert>,
     battery_observed: Cell<crate::battery::View>,
+    releases: RefCell<Option<std::sync::mpsc::Receiver<crate::updates::Version>>>,
+    latest: Cell<Option<crate::updates::Version>>,
     battery_preview: Cell<Option<u8>>,
     placement: RefCell<theme::ControlLayout>,
     last_logs: RefCell<String>,
@@ -236,6 +240,8 @@ impl App {
             battery_tip: RefCell::new(None),
             battery_alert: Cell::default(),
             battery_observed: Cell::new(crate::battery::View::default()),
+            releases: RefCell::default(),
+            latest: Cell::default(),
             battery_preview: Cell::new(None),
             placement: RefCell::new(theme::ControlLayout::default()),
             last_logs: RefCell::new(String::new()),
@@ -398,6 +404,8 @@ impl App {
                 crate::tr!(gui_enable_bluetooth),
                 cfg.enable_bluetooth
             );
+            cb!(check_updates, crate::tr!(check_updates), cfg.check_updates);
+            button!(update_available, crate::tr!(update_available));
             input!(battery_threshold, &cfg.battery_threshold.to_string());
             cb!(
                 auto_start,
@@ -690,6 +698,7 @@ impl App {
         a.apply_devices(Vec::new());
         a.refresh();
         a.refresh_languages();
+        a.restart_update_check();
         a.layout();
         if let Some(e) = error {
             a.controller.borrow().state.error(e);
@@ -719,6 +728,8 @@ impl App {
             &self.dependencies.handle,
             &self.install_status.handle,
             &self.logs.handle,
+            &self.check_updates.handle,
+            &self.update_available.handle,
             &self.enable_bluetooth.handle,
             &self.battery_threshold.handle,
             &self.auto_start.handle,
@@ -904,10 +915,22 @@ impl App {
             put(&self.desktop_shortcut.handle, left, 448, half, 30);
             put(&self.menu_shortcut.handle, left + half + 12, 448, half, 30);
             group(x, 509, width, 588, crate::tr!(settings_notifications));
-            caption(left, 553, inner - 72, crate::tr!(gui_battery_threshold));
+            put(
+                &self.check_updates.handle,
+                left + inner * 2 / 3,
+                552,
+                inner / 3,
+                26,
+            );
+            caption(
+                left,
+                553,
+                inner * 2 / 3 - 88,
+                crate::tr!(gui_battery_threshold),
+            );
             put(
                 &self.battery_threshold.handle,
-                left + inner - 64,
+                left + inner * 2 / 3 - 80,
                 552,
                 64,
                 26,
@@ -1008,6 +1031,9 @@ impl App {
             put(&b.handle, 16, 156 + i as i32 * 54, 176, 42);
         }
         put(&self.minimize_to_tray.handle, 16, h - 102, 176, 36);
+        if self.latest.get().is_some() {
+            put(&self.update_available.handle, 82, h - 161, 108, 24);
+        }
         put(&self.quit.handle, 16, h - 58, 176, 36);
         match page {
             0 => {
@@ -2119,12 +2145,31 @@ impl App {
             self.refresh();
         }
     }
+    fn restart_update_check(&self) {
+        self.latest.set(None);
+        *self.releases.borrow_mut() =
+            (self.config.borrow().check_updates && !self.smoke).then(crate::updates::start);
+    }
+
+    fn poll_updates(&self) {
+        let mut latest = self.latest.get();
+        if let Some(rx) = self.releases.borrow().as_ref() {
+            for version in rx.try_iter() {
+                latest = latest.max(Some(version));
+            }
+        }
+        if self.latest.replace(latest) != latest {
+            self.layout();
+        }
+    }
+
     fn update(&self) {
         if self.smoke {
             if let Some(raw) = self.battery_preview.get() {
                 self.controller.borrow().state.monitor.battery.observe(raw);
             }
         }
+        self.poll_updates();
         self.refresh_battery(false);
         self.poll_diagnostics();
         if let Some(v) = self.monitor_view.borrow_mut().as_mut() {
@@ -2389,6 +2434,30 @@ impl App {
     }
     fn event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
         use nwg::Event as E;
+        if event == E::OnButtonClick && handle == self.check_updates {
+            let enabled = checked(&self.check_updates);
+            if let Err(e) = Config::load(&self.path).and_then(|mut c| {
+                c.check_updates = enabled;
+                c.save(&self.path)
+            }) {
+                self.check_updates
+                    .set_check_state(check(self.config.borrow().check_updates));
+                self.error(e);
+            } else {
+                self.config.borrow_mut().check_updates = enabled;
+                self.restart_update_check();
+                self.layout();
+            }
+            return;
+        }
+        if event == E::OnButtonClick && handle == self.update_available {
+            if let Some(version) = self.latest.get() {
+                if let Err(e) = crate::updates::show(theme::hwnd(&self.window.handle), version) {
+                    self.error(e);
+                }
+            }
+            return;
+        }
         if event == E::OnComboxBoxSelection && handle == self.theme_choice {
             if let Err(e) = self.select_theme() {
                 self.error(e);

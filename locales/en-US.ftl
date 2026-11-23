@@ -746,3 +746,17 @@ settings-language-appearance = Language and appearance
 settings-startup-tray = Startup and tray
 settings-notifications = Notifications
 settings-microphone-gain = Microphone gain
+
+check-updates = Check for updates
+
+update-available = Update available
+
+update-title = New version available
+
+update-current = Current version
+
+update-latest = New version
+
+update-github = Download on GitHub
+
+update-gitee = Download on Gitee (recommended in China)

@@ -52,6 +52,7 @@ mod shutdown;
 mod startup;
 mod theme_controls;
 mod theme_dialog;
+mod updates;
 mod viiper;
 
 use std::{

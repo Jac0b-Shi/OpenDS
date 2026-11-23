@@ -97,6 +97,7 @@ pub struct Config {
     pub multimedia_priority: bool,
     #[cfg(feature = "paired-feedback-experiment")]
     pub paired_device_buffer: u8,
+    pub check_updates: bool,
     pub battery_threshold: u8,
     pub language: String,
     pub theme: ThemeMode,
@@ -146,6 +147,7 @@ impl Default for Config {
             multimedia_priority: true,
             #[cfg(feature = "paired-feedback-experiment")]
             paired_device_buffer: Self::DEFAULT_PAIRED_DEVICE_BUFFER,
+            check_updates: true,
             battery_threshold: 20,
             language: "auto".into(),
             theme: ThemeMode::System,
@@ -321,6 +323,7 @@ impl Config {
                 #[cfg(feature = "paired-feedback-experiment")]
                 "paired_device_buffer" => number!(paired_device_buffer),
                 "enable_bluetooth" => boolean!(enable_bluetooth),
+                "check_updates" => boolean!(check_updates),
                 "battery_threshold" => number!(battery_threshold),
                 "auto_start" => boolean!(auto_start),
                 "language" => cfg.language = value.to_owned(),
@@ -450,6 +453,7 @@ impl Config {
             usb_face,
             multimedia_priority,
             enable_bluetooth,
+            check_updates,
             battery_threshold,
             auto_start,
             language,
